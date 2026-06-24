@@ -241,6 +241,71 @@ already passes (`text`, `voice`, `language`/`lang_code`) — otherwise `**extras
 is silently swallowed (or `del`'d) rather than rejected, so per-backend `extras` validation
 is what keeps the advertised contract honest.
 
+## Architecture & Call Flow
+
+Five independently-executing components and the context that crosses each boundary. This
+section is the contract for the streaming lifecycle; the Critical risk it resolves is the
+stt-mirrored *commit-then-drain* shape (where `end()` blocks until full synthesis and
+`events()` replays a stored result), which would violate both client contracts (R1 rate,
+R4 steady stream).
+
+```
+client ──ws──> session loop (server.py) ──> TTSStream (backend) ──> daemon worker thread
+  ▲                  │  ▲                         │  ▲                    │ (Metal, serialized)
+  │                  │  │                         │  │                    │ model.generate() yields
+  │ response.audio.* │  │ 20 ms re-chunker        │  │ asyncio.Queue      │ GenerationResult per
+  └──────────────────┘  └─────────────────────────┘  └── call_soon_threadsafe ── segment (\n+)
+```
+
+**Components & triggers**
+- **Client** drives the session: `session.update` → `input_text.append`* → `input_text.commit`.
+  Owns device, resampling, buffering. Reads `hello.audio.rate` once.
+- **Session loop** (`server.py`): one task per connection. On `commit` it allocates a
+  `response_id`, emits `response.created`, opens a backend stream, and runs the **drain
+  loop** (below). It is the *only* component that touches the websocket.
+- **TTSStream** (`open_stream`): adapts one utterance. `feed(text)`/`end()` enqueue work;
+  `events()` is an **async generator that yields `AudioEvent`s as segments land** — it does
+  NOT wait for full synthesis. `cancel()` stops the worker.
+- **Daemon worker thread** (per the stt Lock-pair + in-flight-drain pattern): runs the
+  blocking `model.generate(...)` generator. Metal is not concurrency-safe, so a process-wide
+  lock serializes generate calls. Each yielded `GenerationResult.audio` (float32 mono,
+  [-1,1]) is converted to int16-LE PCM and pushed onto an `asyncio.Queue` via
+  `loop.call_soon_threadsafe(...)`. **This is the boundary `_thread_util` does not currently
+  cross** (it marshals one Future per call; streaming needs the per-chunk queue).
+- **20 ms re-chunker**: lives in the session/drain layer, between the queue and the send
+  loop. Slices native segment PCM into fixed 20 ms frames at `backend.sample_rate` so
+  barge-in latency is bounded regardless of segment length.
+
+**Synthesis drain loop (the steady-stream contract, R4)**
+1. `commit` → `response.created {response_id}`.
+2. `await stream.feed(text)`; `await stream.end()` — **non-blocking**: `end()` signals
+   end-of-input and kicks off the worker; it must NOT block until synthesis completes.
+3. `async for ev in stream.events():` — for each segment that lands, push its PCM through
+   the 20 ms re-chunker and emit `response.audio.delta {response_id, seq, audio}` **as it
+   arrives**. First audio therefore ships after the *first* segment, not the whole utterance
+   (lowers time-to-first-audio; keeps the client's 8192-frame buffer fed).
+4. On generator exhaustion → `response.audio.done {response_id, duration_ms}`.
+
+**Rate (R1)**: `hello.audio.rate` is read from `model.sample_rate` at connect (pre-warmup),
+is the *only* rate on the wire, and every `delta` frame is int16-LE mono at exactly that
+rate — the re-chunker never resamples, so there is no per-utterance drift.
+
+**Cancel / barge-in (R4)**: `response.cancel {response_id}` → session sets a cancel flag,
+calls `stream.cancel()` (stops the worker at the next segment boundary), drains/clears the
+queue, and emits `response.cancelled {response_id}`. No further `delta` for that
+`response_id` may be sent after `cancelled`. Because emission is per-segment (not one final
+flush), cancel lands within ~one segment, not after the whole utterance.
+
+**Backpressure**: if the client stops reading, the session send queue hits its high-water
+mark and the connection is closed (send-queue high-water close, R4) rather than buffering
+unboundedly — a stalled *reader* is a client bug, distinct from a server-side synthesis
+stall (which the steady-stream contract forbids).
+
+**Topology note**: only `pocket_tts` adds a sub-segment streaming layer (native
+`stream`/`streaming_interval`); for it the worker yields intra-segment chunks into the same
+queue, and nothing downstream of the queue changes. The session loop, re-chunker, and send
+path are backend-agnostic.
+
 ## Testing Notes
 - `ToneBackend` makes Phase-1 fully deterministic with **no mlx dependency** — protocol,
   re-chunking, cancel, and the lean-base import-safety test all run in plain CI.
