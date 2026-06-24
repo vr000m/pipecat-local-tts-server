@@ -78,10 +78,18 @@ server is app-agnostic.
 5. **Re-chunk in the session layer, not the backend.** Backends yield native chunks; the
    session slices to fixed **20 ms** wire frames so barge-in latency is bounded
    regardless of a model's `streaming_interval`.
-6. **Streaming + chunk-size are advertised, never branched in the protocol.** `server.hello`
-   `capabilities` carries `streaming: bool` and an `ideal_chunk_chars`/`max_chunk_chars`
-   hint. The **client** uses these to decide how to split long text (see Requirement R7);
-   the server just synthesizes whatever each `input_text.commit` delivers.
+6. **The client segments; the commit is the unit of work.** `server.hello` `capabilities`
+   carries `streaming: bool` and an `ideal_words` hint; the **client** uses these to split
+   long text into commits (see R7), and the server just synthesizes whatever each
+   `input_text.commit` delivers. The commit is also the unit of GPU-lock holding and
+   cross-connection fairness (see R4 / Architecture & Call Flow). The server does NOT
+   expose its queue depth and does NOT require clients to infer load from latency/TTFB —
+   overload is signalled explicitly via backpressure (R1 `ErrorCode.BUSY`).
+   **Never split mid-sentence.** `ideal_words` is a soft target the client rounds up to the
+   next sentence boundary; a half-sentence commit makes the model apply sentence-final
+   prosody mid-phrase. Measured on Kokoro (`scripts/prosody_check.py`): splitting "The quick
+   brown fox jumps over the lazy dog." at a non-boundary ran +22% longer (3975 ms vs 3250 ms)
+   and injected a 389 ms terminal pause after "fox" — audibly wrong.
 
 ## Requirements
 
@@ -93,7 +101,9 @@ server is app-agnostic.
   `response.audio.delta` for the session MUST be int16-LE mono at exactly that rate with
   no per-utterance drift. The client resamples model-rate → device-rate (e.g. 48 kHz USB)
   off this single advertised value; a wrong or variable rate makes it resample at the
-  wrong ratio and pitch/speed-distorts playback.
+  wrong ratio and pitch/speed-distorts playback. The `ErrorCode` enum adds **`BUSY`** (the
+  websocket-native analog of HTTP 429): the `error` event carries `retry_after_ms` when a
+  commit is rejected for synthesis-backlog backpressure (see R4).
 - **R2 — Backend abstraction** (`backend.py`): `TTSBackend` + `TTSStream` Protocols +
   a dependency-free `ToneBackend` (sine) reference for tests (the `EchoBackend` analog).
 - **R3 — Kokoro backend** (`backends/kokoro.py`): mlx-audio load/generate, float→pcm16
@@ -130,6 +140,27 @@ server is app-agnostic.
   commit-then-drain shape); `events()` must yield frames as segments land. The client
   carries a deep (8192-frame) buffer to absorb normal jitter, so the bar is "don't stall
   mid-response," not a redesign.
+  **Multi-connection isolation (correctness):** the server accepts concurrent connections
+  from different apps; each gets its own `_SessionState` (text buffer, config, `response_id`
+  space) — there is **no shared mutable session state**, so one connection's text/synthesis
+  can never pollute another's (mirrors stt's per-connection `_SessionState`). What IS shared
+  is the single model + a process-wide Metal lock (Metal is not concurrency-safe), so the
+  **commit is the unit of GPU-lock holding**: the server synthesizes one commit, releases,
+  and connections **round-robin at commit boundaries** — fairness is bounded by one commit's
+  synthesis time, which is why the `ideal_words` size discipline (decision #6 / R7) is a
+  fairness lever, not just a latency one.
+  **Backpressure — synthesis backlog (distinct from send-queue high-water).** Two separate
+  protections: (1) the existing per-connection **outbound** send-queue high-water *close*
+  (slow audio *reader*); (2) a new **inbound** admission control on the global synthesis
+  backlog — when the bounded synthesis queue is full the server **rejects the commit
+  (does NOT enqueue it)** with `error {code: BUSY, retry_after_ms}` (R1). A per-connection
+  in-flight cap (≤K queued commits) keeps one app from filling the global queue and starving
+  others. Client retry policy is **out of the wire contract** but recommended: hold the text,
+  retry after `retry_after_ms` with **capped** backoff + jitter, **giving up after 5 retries**.
+  The server is protected by the queue cap regardless of client behavior. The threshold is a
+  bounded queue depth in commits (safe because commits are size-capped per decision #6); if
+  short-commit over-counting causes premature rejection, upgrade the metric to queued input
+  characters later.
 - **R5 — Client** (`client.py`): async `TTSClient` — `connect() -> hello`, `update()`,
   `append()`, `commit()`, `cancel()`, `events()`, `status()`, `close()`. Transport-generic
   (no app labels/frame types — the pipecat adapter lives in `examples/`).
@@ -137,8 +168,13 @@ server is app-agnostic.
   --socket-path …` (logs resolved backend+model at startup) and `status` health probe
   (connect → hello → status → print backend/model/rate/queue depth), mirroring stt.
 - **R7 — Capabilities for client chunking:** `capabilities` MUST expose `streaming`,
-  `ideal_chunk_chars`, `max_chunk_chars`, `text_formats`, `languages`, `extras` (accepted
-  model-kwarg names), `max_text_chars`. Unknown `extras` keys are dropped (debug-logged),
+  `ideal_words`, `text_formats`, `languages`, `extras` (accepted model-kwarg names),
+  `max_text_chars`. `ideal_words` is a **soft** chunk-size target the client rounds up to the
+  next **sentence boundary** (never split mid-sentence — decision #6); `max_text_chars` is the
+  **hard** server cap (reject beyond it). For a `streaming:false` backend the client MUST chunk
+  at sentences (else it eats both penalties — slow generation AND no audio until done); for a
+  `streaming:true` backend it MAY pass larger text (incremental audio), though bounded commits
+  still serve cross-connection fairness (R4). Unknown `extras` keys are dropped (debug-logged),
   never errored. **`extras` is per-backend and must list only kwargs that are real AND
   effective for that model** (verified via `scripts/verify_mlx_tts_api.py` against 0.4.4):
   Kokoro → `{speed}` only (`temperature`/`cfg_scale`/`ddpm_steps` are NOT Kokoro params);
@@ -179,7 +215,8 @@ server is app-agnostic.
 ### Phase 3 — Ops parity with stt
 - [ ] `status` subcommand; startup model logging.
 - [ ] Optional bearer auth + cleartext-remote guard; resource limits + send-queue high-water.
-- [ ] Tests (mirror stt, lean-CI on `ToneBackend`): `status` round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; **auth** — token-required reject, token-absent TCP startup warning, UDS no-warn, and client `TTS_WS_TOKEN` vs server `PIPECAT_TTS_AUTH_TOKEN` precedence (client must NOT fall back to the server token); **resource limits** — stalled-reader trips send-queue high-water → connection closed (not unbounded), and `max_text_chars` over-limit rejection.
+- [ ] **Backpressure + multi-connection**: global synthesis-queue cap + per-connection in-flight cap → reject excess `commit` with `error {code: BUSY, retry_after_ms}` (not enqueued); per-connection `_SessionState` isolation.
+- [ ] Tests (mirror stt, lean-CI on `ToneBackend`): `status` round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; **auth** — token-required reject, token-absent TCP startup warning, UDS no-warn, and client `TTS_WS_TOKEN` vs server `PIPECAT_TTS_AUTH_TOKEN` precedence (client must NOT fall back to the server token); **resource limits** — stalled-reader trips send-queue high-water → connection closed (not unbounded), and `max_text_chars` over-limit rejection; **backpressure + isolation** (see Testing Notes) — `BUSY`/`retry_after_ms` on a full synthesis queue, per-connection in-flight cap, and the 2-connection no-intermix / round-robin-fairness assertions.
 
 ### Phase 4 — Reference adapter + docs
 - [ ] `examples/pipecat_tts_service.py` (reference `InterruptibleTTSService` wrapper).
@@ -211,7 +248,7 @@ server is app-agnostic.
 `session.created`/`updated` · `input_text.committed {response_id}` · `input_text.cleared` ·
 `response.created {response_id}` · `response.audio.delta {response_id,seq,audio(base64 pcm16)}` ·
 `response.audio.done {response_id,duration_ms}` · `response.cancelled`/`response.failed {response_id,error?}` ·
-`server.status` · `error {code,message}`.
+`server.status` · `error {code,message,retry_after_ms?}` (`retry_after_ms` present when `code==BUSY` — synthesis-backlog backpressure, R4).
 
 ### capabilities (server.hello) — Kokoro example, verified fields annotated
 ```jsonc
@@ -220,7 +257,7 @@ server is app-agnostic.
   "languages": ["en","ja","zh","fr","es","it","pt","hi"],     // VERIFIED from 54 voice prefixes (a/b→en, e→es, f→fr, h→hi, i→it, j→ja, p→pt, z→zh)
   "voice_count": 54,                                           // VERIFIED (54 distinct voices in mlx-community/Kokoro-82M-bf16)
   "extras": ["speed"],                                         // Kokoro effective set ONLY; temperature/instruct/cfg_scale/ddpm_steps are NOT Kokoro params
-  "ideal_chunk_chars": 280, "max_chunk_chars": 500, "max_text_chars": 2000 }
+  "ideal_words": 40, "max_text_chars": 2000 }                  // ideal_words: soft target, client rounds UP to next sentence boundary; max_text_chars: hard server cap. Values are chosen defaults (not model facts).
 ```
 Note: Kokoro's `language` maps to a single-letter `lang_code` (`a`/`b`=en, `e`=es, `f`=fr,
 `h`=hi, `i`=it, `j`=ja, `p`=pt, `z`=zh) — the backend must translate the ISO `language` to
@@ -316,13 +353,25 @@ queue, and emits `response.cancelled {response_id}`. No further `delta` for that
 `response_id` may be sent after `cancelled`. Because emission is per-segment (not one final
 flush), cancel lands within ~one segment, not after the whole utterance.
 
-**Backpressure**: if the client stops reading, the session send queue hits its high-water
-mark and the connection is closed (send-queue high-water close, R4) rather than buffering
-unboundedly — a stalled *reader* is a client bug, distinct from a server-side synthesis
-stall (which the steady-stream contract forbids).
+**Backpressure (two distinct queues)**: (1) *Outbound* — if the client stops reading, the
+per-connection send queue hits its high-water mark and the connection is **closed** (R4)
+rather than buffering unboundedly; a stalled *reader* is a client bug. (2) *Inbound* — the
+**global synthesis backlog** (commits waiting on the shared Metal lock across all
+connections). When the bounded synthesis queue is full, a new `commit` is **rejected, not
+enqueued**, with `error {code: BUSY, retry_after_ms}`; a per-connection in-flight cap (≤K
+queued commits) stops one app from filling the queue. The recommended client response is
+capped backoff + jitter, giving up after 5 retries (retry policy is outside the wire
+contract; the queue cap protects the server regardless). This is distinct from a *server-side
+synthesis stall*, which the steady-stream contract forbids.
 
-**Topology note**: only `pocket_tts` adds a sub-segment streaming layer (native
-`stream`/`streaming_interval`); for it the worker yields intra-segment chunks into the same
+**Multi-connection isolation & fairness**: each connection has its own `_SessionState` (no
+shared mutable state → no cross-connection text/audio pollution). The model + Metal lock are
+shared, so the **commit is the unit of lock-holding** and connections **round-robin at commit
+boundaries**; per-commit `ideal_words` sizing (decision #6) bounds head-of-line blocking so a
+long commit on connection A delays connection B's *first audio* by at most ~one commit.
+
+**Topology note**: only `voxtral_tts`/`pocket_tts` add a sub-segment streaming layer (native
+`stream`/`streaming_interval`); for them the worker yields intra-segment chunks into the same
 queue, and nothing downstream of the queue changes. The session loop, re-chunker, and send
 path are backend-agnostic.
 
@@ -340,6 +389,15 @@ path are backend-agnostic.
   is synthesized (time-to-first-frame << total synth time) and that the send loop is not
   blocked between segments — i.e. `events()` yields per segment, it does not buffer the
   full utterance then flush.
+- **Multi-connection isolation & fairness:** with two concurrent connections on a
+  delayed `ToneBackend`, assert (a) their `response.audio.delta` streams **never intermix**
+  (each `response_id` belongs to exactly one connection; bytes are not interleaved across
+  sessions) and (b) a long commit on connection A delays connection B's **first audio** by
+  at most ~one commit (round-robin at commit granularity), not by A's full utterance.
+- **Backpressure:** drive the global synthesis queue past its cap and assert the next
+  `commit` gets `error {code: BUSY, retry_after_ms}` and is **not** synthesized; assert a
+  per-connection in-flight cap rejects a connection's (K+1)th queued commit while others
+  still get served. (Distinct from the send-queue high-water *close* test under R4.)
 
 ## Acceptance Criteria
 - `python -m tts_server serve --backend kokoro` serves; `status` prints backend/model/rate.
