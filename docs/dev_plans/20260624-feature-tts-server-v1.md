@@ -268,9 +268,13 @@ server is app-agnostic.
 - [ ] Tests (mirror stt, lean-CI on `ToneBackend`): `status` round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; **auth** — token-required reject, token-absent TCP startup warning, UDS no-warn, and client `TTS_WS_TOKEN` vs server `PIPECAT_TTS_AUTH_TOKEN` precedence (client must NOT fall back to the server token); **resource limits** — stalled-reader trips send-queue high-water → connection closed (not unbounded), and `max_text_chars` over-limit rejection; **backpressure + isolation** (see Testing Notes) — `BUSY`/`retry_after_ms` on a full synthesis queue (assert `retry_after_ms` is a **positive, bounded integer** — not zero/absurd, else the client hot-loops), per-connection in-flight cap, **cancel frees an in-flight slot** (fill to K, `response.cancel` one, assert a new `commit` is accepted — guards a barge-in-heavy client from self-DoSing into permanent `BUSY`), and the 2-connection no-intermix / round-robin-fairness assertions.
 
 ### Phase 4 — Reference adapter + docs
-- [ ] `examples/pipecat_tts_service.py` (reference `InterruptibleTTSService` wrapper).
-- [ ] `README.md`, protocol doc; `python -m tts_server status` usage. (Kokoro-only at this
-  point; Phase 5 must revisit the capabilities/extras table when the other backends land.)
+- [ ] `examples/pipecat_tts_service.py` (reference `InterruptibleTTSService` wrapper). The
+  lightweight `examples/reference_client.py` (stdlib + `websockets`, no pipecat dependency)
+  already exists as a testing oracle; the pipecat-framework adapter is the additional Phase-4
+  deliverable.
+- [ ] `README.md`; **`docs/protocol.md` already authored** (2026-06-24) — Phase 4 verifies it
+  matches the shipped `protocol.py` and updates the Kokoro-only capabilities/extras table
+  (Phase 5 revisits it when the other backends land). `python -m tts_server status` usage.
 
 ### Phase 5 — More backends (later)
 - [ ] **Streaming backend** = `backends/voxtral_tts.py` (verified present in mlx-audio
@@ -296,6 +300,13 @@ server is app-agnostic.
 ## Technical Specifications
 
 ### Wire events
+> The full wire contract is written up in **`docs/protocol.md`** (authored 2026-06-24, ahead
+> of implementation). Phase 1 implements `protocol.py` against that doc; the lightweight
+> stdlib+`websockets` test client **`examples/reference_client.py`** speaks it and has been
+> smoke-tested against a mock server (handshake → append → commit → 3 pcm16 deltas reassembled
+> by `seq` → done → valid 24 kHz mono WAV). The summary below is the source of truth that
+> `docs/protocol.md` expands; keep the two in sync.
+
 **Client→server:** `session.update {voice?,model?,language?,audio_format?,extras?}` ·
 `input_text.append {text,text_format?}` · `input_text.commit {voice?,language?,extras?}` ·
 `input_text.clear` · `response.cancel {response_id?}` · `session.cancel` · `session.close` ·
@@ -583,5 +594,32 @@ Closest of the two to conduct-ready:
 3. This plan has **no external blocker** — it can be conducted first; the gamealerts plan
    depends on its Phases 0–2.
 
+### Autonomous conduct
+This plan is structured to be conducted end-to-end with no human-in-the-loop gate through
+Phase 3:
+- **Branching/commits:** one feature branch per phase off `main`; each phase ends at a green
+  commit. The **lean CI job must pass at every commit** (it is the markdown-plan analog of
+  "tests pass") — that is the per-phase done-check, alongside each phase's acceptance bullets.
+- **No open decisions block Phases 0–3.** All forks are locked in *Decided defaults* and the
+  *Locked design decisions*; the one deferred item ("division of labour … settled with
+  gamealerts") is a Phase-4 integration nicety, not a Phase 0–3 dependency, and v1 has a safe
+  default (newline-join one commit).
+- **Phase 2 is the only environment-gated phase:** Kokoro synth tests need Apple Silicon +
+  model weights/network. They are **off the lean allow-list** (no runtime skip-markers), and
+  Phase 0's CI note requires proving the full job can `uv sync` the extras / marking Kokoro
+  tests manual-or-gated if the runner lacks model access. A conductor without Apple Silicon
+  can complete Phases 0/1/3 (all lean, `ToneBackend`-only) and leave Phase 2's mlx-gated tests
+  to the full job.
+- **Contracts are pre-authored:** `docs/protocol.md` is the wire spec Phase 1 implements
+  against; `examples/reference_client.py` is a runnable oracle (validated against a mock) for
+  manual end-to-end checks once the server is up — so the conductor implements to a written
+  contract rather than re-deriving it.
+
 ## Companion plan
 gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.
+
+<!-- reviewed: 2026-06-24 @ 01247d4a4906b5570c28030d86a9f0c2e427abb6 -->
+
+## Progress
+
+## Findings
