@@ -37,7 +37,15 @@ jobs:
       - name: Run lean test allow-list
         run: |
           uv run pytest -x \
-            tests/test_import_safety.py
+            tests/test_import_safety.py \
+            tests/test_protocol_version.py \
+            tests/test_protocol.py \
+            tests/test_tone_end_to_end.py \
+            tests/test_streaming_and_cancel.py \
+            tests/test_session_lifecycle.py \
+            tests/test_capabilities_extras.py \
+            tests/test_endpoint_resolution.py \
+            tests/test_server_cleartext_guard.py
 
   # Full macOS / Apple-Silicon job: the mlx-audio (Kokoro) wheels are
   # macOS/Apple-Silicon only, so the all-extras job runs on macos-14. It syncs

@@ -68,3 +68,26 @@ def test_lean_base_does_not_pull_heavy_dep(forbidden):
     assert not offenders, (
         f"lean base must not import {forbidden!r}; found in sys.modules: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: ToneBackend construction with no mlx present (moved here from the
+# Phase-0 import-safety bullet -- ToneBackend first exists in Phase 1).
+# ---------------------------------------------------------------------------
+
+
+def test_tone_backend_constructs_without_mlx():
+    """Constructing ToneBackend must not pull mlx_audio or numpy (lean CI)."""
+    from tts_server.backend import ToneBackend
+
+    backend = ToneBackend()
+    assert backend.backend_name == "tone"
+    assert backend.model is None
+    assert backend.sample_rate == 24000
+    caps = backend.capabilities()
+    assert caps["text_formats"] == ["plain"]
+    # Construction did not drag a heavy dep into sys.modules.
+    for forbidden in _FORBIDDEN_AT_IMPORT:
+        assert not any(
+            name == forbidden or name.startswith(forbidden + ".") for name in sys.modules
+        ), f"constructing ToneBackend must not import {forbidden!r}"
