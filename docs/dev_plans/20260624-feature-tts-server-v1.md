@@ -1,7 +1,8 @@
 # Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)
 
 **Status**: Planned — design locked on paper; no code yet. mlx-audio API claims
-verified against installed 0.3.0 via `scripts/verify_mlx_tts_api.py` (2026-06-24).
+verified against installed **0.4.4** via `scripts/verify_mlx_tts_api.py` (2026-06-24);
+pin `mlx-audio==0.4.4` (API drifted from 0.3.0 — see R8).
 **Component**: tts-server (server, protocol, backends, client)
 **Assigned to**: Varun Singh
 **Priority**: High (unblocks gamealerts TTS-server migration)
@@ -41,21 +42,24 @@ server is app-agnostic.
   (`TranscriptionBackend`/`BackendStream` Protocols + `EchoBackend`), lazy-extra
   backends, `python -m stt_server {serve,status}`, optional bearer auth, send-queue
   high-water limits.
-- **mlx-audio API (verified against installed mlx-audio 0.3.0 via
-  `scripts/verify_mlx_tts_api.py`, not docs):** `mlx_audio.tts.utils.load(model_path,
+- **mlx-audio API (verified against installed mlx-audio 0.4.4 via
+  `scripts/verify_mlx_tts_api.py`, not docs — pin in R8):** `mlx_audio.tts.utils.load(model_path,
   lazy=False, strict=True, **kwargs)` (signature confirmed) returns a model whose
-  `model.generate(text, ...)` is a **generator that `yield`s one `GenerationResult`
-  per text segment** (Kokoro splits on `\n+`). `GenerationResult` fields are
-  `.audio` (float32 `mx.array`, **1-D mono**, values bounded in [-1, 1] — verified
-  Kokoro peak ±0.22, so `int16(audio * 32767)` is safe), `.sample_rate`,
-  `.segment_idx`, `.token_count`, `.audio_samples`, `.audio_duration`,
-  `.real_time_factor`, `.prompt`, `.samples`, `.processing_time_seconds`,
-  `.peak_memory_usage`. **There are NO `.is_streaming_chunk` / `.is_final_chunk`
-  fields** (the earlier claim was wrong); segment boundaries are signalled by
-  `.segment_idx`. There is no `generate_audio(...)` wrapper on `tts.utils` — we use
-  the generator directly. **Per-model `generate()` kwargs are disjoint** (see R7): a
-  kwarg valid for one model is silently swallowed by `**kwargs` (or even `del`'d) on
-  another, so each backend advertises its own effective set — there is no global one.
+  `model.generate(text, ...)` is a **generator that `yield`s `GenerationResult`s**
+  (Kokoro splits on `\n+`, one per segment). `GenerationResult` fields are
+  `.audio` (float32 `mx.array`, **1-D mono**, observed in [-1, 1] — Kokoro "Goal!"
+  peak ±0.22 on one sample; clip before scaling, see R3), `.samples`, `.sample_rate`,
+  `.segment_idx`, `.token_count`, `.audio_duration`, `.real_time_factor`, `.prompt`,
+  `.audio_samples`, `.processing_time_seconds`, `.peak_memory_usage`, **and
+  `.is_streaming_chunk` / `.is_final_chunk`** (these DO exist as of 0.4.4 — they were
+  absent in 0.3.0; the streaming drain loop should use `.is_final_chunk` to fire
+  `response.audio.done`, with `.segment_idx` as the per-segment index). There is no
+  `generate_audio(...)` wrapper on `tts.utils` — we use the generator directly.
+  **Per-model `generate()` kwargs are disjoint** (see R7): each backend advertises its
+  own effective set — there is no global one. **Version-sensitive:** the API drifted
+  between 0.3.0 and 0.4.4 (the streaming-chunk fields appeared; `voxtral_tts` was added;
+  `pocket_tts` dropped dead kwargs) — re-run `scripts/verify_mlx_tts_api.py` before any
+  mlx-audio bump.
 
 ## Locked design decisions
 
@@ -92,7 +96,9 @@ server is app-agnostic.
   wrong ratio and pitch/speed-distorts playback.
 - **R2 — Backend abstraction** (`backend.py`): `TTSBackend` + `TTSStream` Protocols +
   a dependency-free `ToneBackend` (sine) reference for tests (the `EchoBackend` analog).
-- **R3 — Kokoro backend** (`backends/kokoro.py`): mlx-audio load/generate, float→pcm16,
+- **R3 — Kokoro backend** (`backends/kokoro.py`): mlx-audio load/generate, float→pcm16
+  (**clip to [-1, 1] before `* 32767`** — the [-1,1] range is observed on one sample, not a
+  decoder-guaranteed bound, so clip to avoid int16 overflow/clicks on an outlier),
   runs the generate generator in a dedicated thread (Metal is not concurrent-safe — reuse
   the **Lock-pair + in-flight-drain** serialization pattern from the stt backends; note
   `_thread_util.run_in_daemon_thread` itself only marshals *one* Future per call and does
@@ -134,15 +140,19 @@ server is app-agnostic.
   `ideal_chunk_chars`, `max_chunk_chars`, `text_formats`, `languages`, `extras` (accepted
   model-kwarg names), `max_text_chars`. Unknown `extras` keys are dropped (debug-logged),
   never errored. **`extras` is per-backend and must list only kwargs that are real AND
-  effective for that model** (verified via `scripts/verify_mlx_tts_api.py`): Kokoro →
-  `{speed}` only (`temperature`/`instruct`/`cfg_scale`/`ddpm_steps` are NOT Kokoro
-  params); pocket_tts → `{temperature}` (it declares `speed`/`cfg_scale`/`ddpm_steps`
-  but `del`s them — no-ops — and is the only family with real `stream`/`streaming_interval`);
-  dia → `{temperature, top_p}`. A backend MUST drop, not forward, a kwarg the model
-  ignores, so the advertised `extras` never lies to the client.
+  effective for that model** (verified via `scripts/verify_mlx_tts_api.py` against 0.4.4):
+  Kokoro → `{speed}` only (`temperature`/`cfg_scale`/`ddpm_steps` are NOT Kokoro params);
+  `voxtral_tts` → `{temperature, top_k, top_p}` (native `stream`/`streaming_interval`, no
+  `ref_audio`); `pocket_tts` → `{temperature}` (also native streaming, but exposes
+  `ref_audio` — leave unwired per decision 2); dia → `{temperature, top_p}`. A backend
+  MUST drop, not forward, a kwarg the model ignores, so the advertised `extras` never
+  lies to the client.
 - **R8 — Packaging:** package `pipecat-local-tts-server`, import `tts_server`. Lean base =
-  `websockets` only. Extras: `client`, `kokoro` (+ later `pocket_tts`, `dia`/`chatterbox`). Backends
-  lazy-import heavy deps.
+  `websockets` only. Extras: `client`, `kokoro` (+ later `voxtral_tts`, `pocket_tts`,
+  `dia`/`chatterbox`). Backends lazy-import heavy deps. **Pin `mlx-audio==0.4.4`** in the
+  backend extras — the TTS API drifted between 0.3.0 and 0.4.4 (streaming-chunk fields,
+  `voxtral_tts`, kwarg changes), so an unpinned bump can silently break verified facts;
+  re-run `scripts/verify_mlx_tts_api.py` before widening the pin.
 - **R9 — Auth (optional):** bearer token, server-side `PIPECAT_TTS_AUTH_TOKEN`, client-side
   `TTS_WS_TOKEN`, cleartext-remote guard — mirror stt exactly.
 
@@ -173,16 +183,16 @@ server is app-agnostic.
 - [ ] `README.md`, protocol doc; `python -m tts_server status` usage.
 
 ### Phase 5 — More backends (later)
-- [ ] **Streaming backend** = `backends/pocket_tts.py`, NOT voxtral. **`voxtral` and
-  `kyutai` are not mlx-audio TTS families** (verified — `get_available_models()` lists
-  bark, chatterbox, chatterbox_turbo, dia, indextts, kokoro, llama, outetts, pocket_tts,
-  qwen3, qwen3_tts, sesame, soprano, spark, vibevoice, voxcpm). `pocket_tts` is the only
-  family with native `stream`/`streaming_interval` (`-> Iterable[GenerationResult]`) — it
-  exercises the no-split client path. Caveat: `pocket_tts` and `dia` expose a `ref_audio`
-  cloning param; per locked decision #2 the backend MUST NOT wire it up.
-- [ ] `backends/dia.py` (multi-speaker **dialogue** model — `[S1]`/`[S2]` tags, `extras`
-  `{temperature, top_p}`; its `voice`/text semantics differ from single-voice backends and
-  need explicit handling) and/or `backends/chatterbox.py`.
+- [ ] **Streaming backend** = `backends/voxtral_tts.py` (verified present in mlx-audio
+  0.4.4; it was NOT in 0.3.0). `voxtral_tts.generate(text, voice, temperature, top_k,
+  top_p, max_tokens, verbose, stream, streaming_interval)` has native `stream`/`streaming_interval`
+  and **no `ref_audio`** — so it's the cleanest streaming backend (exercises the no-split
+  client path with no cloning concern). extras `{temperature, top_k, top_p}`. **`kyutai`
+  is still not an mlx-audio TTS family**; `moss_tts*` exists but is unrelated to Kyutai/Moshi.
+- [ ] `backends/pocket_tts.py` — also native streaming, but exposes `ref_audio` (leave
+  unwired per decision 2); needs `requests` to import in 0.4.4. `backends/dia.py`
+  (multi-speaker **dialogue** model — `[S1]`/`[S2]` tags, `extras` `{temperature, top_p}`,
+  `ref_audio` unwired; its `voice`/text semantics differ from single-voice backends).
 
 ## Technical Specifications
 
