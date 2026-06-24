@@ -167,6 +167,34 @@ Built **per backend** — never copied across backends. Kokoro example (fields V
 `error {code, message, retry_after_ms?}`. Codes mirror stt's `ErrorCode` enum plus TTS
 additions:
 
+The wire envelope is **nested**, mirroring OpenAI-Realtime: the top-level frame carries
+`type: "error"` and an `error` object that repeats an OpenAI-style `type` (derived from the
+code) alongside `code`/`message`. `event_id` echoes the offending client frame's id when one
+was supplied. For `busy`, `retry_after_ms` appears **both** at the top level and inside the
+`error` object:
+
+```json
+{
+  "type": "error",
+  "event_id": "evt_a1b2c3",
+  "error": {
+    "type": "rate_limit_error",
+    "code": "busy",
+    "message": "synthesis backlog full",
+    "retry_after_ms": 1200,
+    "event_id": "<client frame id, if any>"
+  },
+  "retry_after_ms": 1200
+}
+```
+
+A non-`busy` error omits both `retry_after_ms` fields, e.g. `error.type:
+"invalid_request_error"`, `code: "unsupported_format"`. The `error.type` values are
+`invalid_request_error` (the `invalid_*`/`buffer_empty`/`payload_too_large`/`unsupported_format`
+codes), `rate_limit_error` (`busy`), `authentication_error` (`unauthorized`), and `server_error`
+(`backend_error`/`internal_error`). `response.failed` carries the same `error` object (without
+the top-level `error`-frame wrapper) under its `response_id`.
+
 | Code | When |
 |---|---|
 | `invalid_json` | Frame is not valid JSON. |
