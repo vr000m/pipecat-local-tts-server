@@ -122,7 +122,6 @@ class _KokoroStream:
         self._speed = speed
         self._metal_lock = metal_lock
         self._text = ""
-        self._ended = False
         # ``_cancel`` is the bridge's break-out signal. The bridge ALSO sets it
         # in its own consumer ``finally`` on NORMAL exhaustion (to let the worker
         # release the lock), so ``_cancel`` alone cannot distinguish "client
@@ -138,10 +137,10 @@ class _KokoroStream:
         self._text += text
 
     async def end(self) -> None:
-        # Non-blocking: mark end-of-input only. Synthesis runs lazily inside
+        # Non-blocking: end-of-input marker only. Synthesis runs lazily inside
         # ``events()`` so ``end()`` returns before the first segment completes
         # (the R4 steady-stream contract).
-        self._ended = True
+        return None
 
     async def cancel(self) -> None:
         # Breaks the generator out at the next yield boundary, releasing the

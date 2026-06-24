@@ -90,9 +90,11 @@ def _audio_to_pcm(result: Any) -> bytes:
     or a bare iterable of floats (so tests can drive the bridge without mlx).
     """
     audio = getattr(result, "audio", result)
-    # An mx.array / numpy array is iterable into Python scalars; ``list`` keeps
-    # this module numpy-free at import time (we never import numpy/mlx here).
-    return float_to_pcm16(list(audio))
+    # ``float_to_pcm16`` iterates ``audio`` exactly once; pass it straight through
+    # (an mx.array / numpy array / list all iterate into Python scalars) instead
+    # of materializing an intermediate ``list`` and walking the data twice. Stays
+    # numpy-free at import time (we never import numpy/mlx here).
+    return float_to_pcm16(audio)
 
 
 async def stream_generate(
@@ -124,9 +126,25 @@ async def stream_generate(
                 fut.result(timeout=_PUT_TIMEOUT_SECONDS)
                 return True
             except TimeoutError:
-                # Queue still full; cancel the pending put and re-check cancel.
-                fut.cancel()
-                continue
+                # Queue still full after the timeout. Try to cancel the pending
+                # put before re-checking the cancel flag. ``fut.cancel()``
+                # returns True only if the put had NOT completed — then the item
+                # was not enqueued and it is safe to loop and retry. If it
+                # returns False the put has already completed (or is completing)
+                # on the loop, so the item IS enqueued exactly once; blindly
+                # retrying here would put a DUPLICATE chunk (audible glitch /
+                # wrong duration accounting). In that case wait out the put and
+                # report success instead of re-enqueueing.
+                if fut.cancel():
+                    continue
+                try:
+                    fut.result()
+                    return True
+                except (RuntimeError, asyncio.CancelledError):
+                    return False
+                except Exception:
+                    # The put itself failed; surface via the worker's handler.
+                    raise
             except RuntimeError:
                 # Event loop is gone (consumer torn down). Stop the worker.
                 return False

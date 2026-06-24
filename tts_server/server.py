@@ -69,6 +69,20 @@ def _response_id() -> str:
     return f"resp_{uuid.uuid4().hex[:16]}"
 
 
+def _error_object(code: P.ErrorCode, message: str) -> dict[str, Any]:
+    """The OpenAI-shaped ``{type, code, message}`` error object, single-sourced.
+
+    Used by both the top-level ``error`` event (``_error``) and the nested
+    ``error`` of ``response.failed`` so the two never drift. Uses ``.get`` with a
+    fallback type so an unmapped ``ErrorCode`` degrades instead of ``KeyError``.
+    """
+    return {
+        "type": P.ERROR_TYPE_FOR_CODE.get(code, "server_error"),
+        "code": code.value,
+        "message": message,
+    }
+
+
 @dataclass
 class ServerConfig:
     """Transport and policy configuration for ``TTSServer``."""
@@ -289,6 +303,10 @@ class TTSServer:
     def __init__(self, backend: TTSBackend, config: ServerConfig) -> None:
         self._backend = backend
         self._config = config
+        # Backend capabilities are static after ``start()`` (the plan's
+        # contract), so snapshot them once instead of rebuilding the dict on
+        # every hello/commit/append/status. Populated in ``start()``.
+        self._caps: dict[str, Any] = {}
         self._server: Server | None = None
         self._active_handlers: set[asyncio.Task] = set()
         self._active_drains: set[asyncio.Task] = set()
@@ -308,6 +326,8 @@ class TTSServer:
         # connect -> load -> hello: the backend must be loaded before the first
         # ``server.hello`` because the rate comes from the loaded model.
         await self._backend.start()
+        # Snapshot capabilities once (static post-start); hot paths read this.
+        self._caps = self._backend.capabilities()
         if self._config.socket_path:
             socket_path = Path(self._config.socket_path)
             socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,7 +468,7 @@ class TTSServer:
                         "rate": self._backend.sample_rate,
                         "channels": P.AUDIO_CHANNELS,
                     },
-                    "capabilities": self._backend.capabilities(),
+                    "capabilities": self._caps,
                 },
             )
             async for raw in ws:
@@ -523,7 +543,7 @@ class TTSServer:
             return {}, None
         if not isinstance(extras, dict):
             return {}, "extras must be an object"
-        accepted = set(self._backend.capabilities().get("extras", []))
+        accepted = set(self._caps.get("extras", []))
         fixed = {"voice", "language", "text", "lang_code"}
         validated: dict = {}
         for key, value in extras.items():
@@ -611,7 +631,7 @@ class TTSServer:
                 client_event_id=client_event_id,
             )
             return
-        max_chars = self._backend.capabilities().get("max_text_chars")
+        max_chars = self._caps.get("max_text_chars")
         if isinstance(max_chars, int) and len(state.buffer) + len(text) > max_chars:
             await self._error(
                 ws,
@@ -653,7 +673,7 @@ class TTSServer:
         # Hard server cap: reject a committed buffer over ``max_text_chars``
         # (the soft ``ideal_words`` chunking is the client's job; this is the
         # backstop the server enforces regardless of client behavior).
-        max_chars = self._backend.capabilities().get("max_text_chars")
+        max_chars = self._caps.get("max_text_chars")
         if isinstance(max_chars, int) and len(state.buffer) > max_chars:
             await self._error(
                 ws,
@@ -795,7 +815,11 @@ class TTSServer:
             # NOT block until synthesis completes (the anti-pattern).
             await stream.end()
             async for ev in stream.events():
-                if response.cancelled:
+                # ``state.closed`` covers the send-queue high-water close: a slow
+                # reader tripped it (no ``response.cancelled``), and continuing
+                # would pin the Metal lock synthesizing for a dead socket and
+                # starve every other connection's commit. Stop and free the lock.
+                if response.cancelled or state.closed:
                     break
                 if ev.kind == "delta" and ev.pcm:
                     total_samples += len(ev.pcm) // P.AUDIO_SAMPLE_WIDTH_BYTES
@@ -805,12 +829,20 @@ class TTSServer:
                     while len(carry) >= bytes_per_frame:
                         frame = bytes(carry[:bytes_per_frame])
                         del carry[:bytes_per_frame]
-                        if response.cancelled:
+                        if response.cancelled or state.closed:
                             break
                         await self._emit_delta(ws, state, rid, seq, frame)
                         seq += 1
                 # ev.kind == "completed" is the EOF signal (generator exhaustion).
-            if response.cancelled:
+            if response.cancelled or state.closed:
+                # On a high-water close the stream was never cancelled by
+                # ``_cancel_response`` — do it here so the backend worker breaks
+                # out of ``generate()`` and releases the Metal lock promptly.
+                if state.closed and stream is not None and not response.cancelled:
+                    try:
+                        await stream.cancel()
+                    except Exception:
+                        pass
                 return
             # Flush the short tail (NO silence padding).
             if carry:
@@ -844,11 +876,9 @@ class TTSServer:
                         "type": P.EVT_RESPONSE_FAILED,
                         "event_id": _event_id(),
                         "response_id": rid,
-                        "error": {
-                            "type": P.ERROR_TYPE_FOR_CODE[P.ErrorCode.BACKEND_ERROR],
-                            "code": P.ErrorCode.BACKEND_ERROR.value,
-                            "message": "backend synthesis failed",
-                        },
+                        "error": _error_object(
+                            P.ErrorCode.BACKEND_ERROR, "backend synthesis failed"
+                        ),
                     },
                     force=True,
                 )
@@ -986,7 +1016,7 @@ class TTSServer:
         await ws.close()
 
     async def _on_status(self, ws: ServerConnection, state: _SessionState) -> None:
-        caps = self._backend.capabilities()
+        caps = self._caps
         await self._send(
             ws,
             state,
@@ -1089,11 +1119,7 @@ class TTSServer:
         client_event_id: str | None = None,
         retry_after_ms: int | None = None,
     ) -> None:
-        error_obj: dict[str, Any] = {
-            "type": P.ERROR_TYPE_FOR_CODE.get(code, "server_error"),
-            "code": code.value,
-            "message": message,
-        }
+        error_obj: dict[str, Any] = _error_object(code, message)
         if client_event_id:
             error_obj["event_id"] = client_event_id
         payload: dict[str, Any] = {

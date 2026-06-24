@@ -122,7 +122,6 @@ class _ToneStream:
         self._segment_delay_ms = segment_delay_ms
         self._raises = raises
         self._text = ""
-        self._ended = False
         self._cancelled = asyncio.Event()
 
     async def feed(self, text: str) -> None:
@@ -132,7 +131,7 @@ class _ToneStream:
         # Non-blocking: signal end-of-input only. Synthesis (and any delay)
         # happens lazily inside ``events()`` as each segment lands, so ``end()``
         # returns before the first segment completes (the R4 contract).
-        self._ended = True
+        return None
 
     async def cancel(self) -> None:
         self._cancelled.set()
@@ -235,14 +234,6 @@ class ToneBackend:
         # Decided default #4: full voice list via ``server.status``. ToneBackend
         # has a single synthetic voice.
         return ["tone"]
-
-    @property
-    def max_text_chars(self) -> int:
-        return self._max_text_chars
-
-    @property
-    def extras(self) -> list[str]:
-        return list(self._extras)
 
     async def start(self) -> None:
         return None
