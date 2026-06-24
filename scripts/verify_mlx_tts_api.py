@@ -224,10 +224,14 @@ def main() -> None:
     for family in args.families:
         analyze_family(family, models_dir)
 
-    print("== Requested families that are NOT mlx-audio TTS models ==")
+    print("== Requested-name existence (exact or by-prefix match) ==")
     for name in REQUESTED_BUT_CHECK_EXISTENCE:
-        present = name in available or (models_dir / name).is_dir()
-        if not present:
+        # A requested short name (e.g. "voxtral") may ship under a suffixed family
+        # name (e.g. "voxtral_tts"); match by prefix so we don't falsely report absent.
+        matches = [m for m in available if m == name or m.startswith(f"{name}_")]
+        if matches:
+            print(f"  {name}: PRESENT as {', '.join(sorted(matches))}")
+        else:
             print(f"  {name}: ABSENT — no TTS family by this name in mlx-audio")
     print()
 
