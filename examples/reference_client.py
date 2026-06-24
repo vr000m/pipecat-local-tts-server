@@ -70,8 +70,7 @@ async def synthesize(
     if rate <= 0:
         raise ProtocolError(f"server.hello did not advertise a usable rate: {audio!r}")
     print(
-        f"hello: backend={hello.get('backend')} rate={rate} "
-        f"caps={hello.get('capabilities')}",
+        f"hello: backend={hello.get('backend')} rate={rate} caps={hello.get('capabilities')}",
         file=sys.stderr,
     )
 
@@ -143,12 +142,8 @@ async def _connect(args: argparse.Namespace) -> Any:
     if args.uri:
         return await websockets.connect(args.uri, additional_headers=headers)
     if args.socket_path:
-        return await websockets.unix_connect(
-            args.socket_path, additional_headers=headers
-        )
-    return await websockets.connect(
-        f"ws://{args.host}:{args.port}", additional_headers=headers
-    )
+        return await websockets.unix_connect(args.socket_path, additional_headers=headers)
+    return await websockets.connect(f"ws://{args.host}:{args.port}", additional_headers=headers)
 
 
 async def _main(args: argparse.Namespace) -> int:

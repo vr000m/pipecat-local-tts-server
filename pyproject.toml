@@ -1,0 +1,85 @@
+[project]
+name = "pipecat-local-tts-server"
+version = "0.1.0"
+description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Varun Singh", email = "varun@varunsingh.net" }]
+keywords = ["tts", "text-to-speech", "kokoro", "mlx", "websocket", "pipecat", "speech", "audio"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # The wire transport. The client (TTSClient) and the server runtime both
+    # depend on websockets; it is the only hard runtime dependency of the base
+    # package. Backend TTS engines live behind the [kokoro] (and later
+    # [voxtral_tts] / [pocket_tts] / [dia]) extras so a client-only consumer
+    # (e.g. a bot that just talks to a running server) does not pull mlx-audio
+    # or its heavy transitive deps (torch, spacy, ...). numpy is dev-only and
+    # is NEVER a runtime dependency — ToneBackend and the shared float->pcm16
+    # converter are stdlib-only.
+    "websockets>=13.0",
+]
+
+[project.optional-dependencies]
+# Pure client deps — what a downstream consumer of `tts_server.client` needs
+# without pulling any mlx-audio runtime.
+client = ["websockets>=13.0"]
+# Full server install with the Kokoro mlx-audio backend.
+#
+# mlx-audio is pinned to 0.4.4 (R8): the TTS API drifted between 0.3.0 and
+# 0.4.4 (streaming-chunk fields appeared, voxtral_tts was added, pocket_tts
+# kwargs changed). An unpinned bump can silently break facts verified via
+# scripts/verify_mlx_tts_api.py against 0.4.4 — re-run that script before
+# widening the pin. Importing Kokoro pulls misaki (G2P) -> num2words/spacy/
+# en_core_web_sm AND torch, so this extra is heavy by design; keep it out of
+# lean base.
+kokoro = ["websockets>=13.0", "mlx-audio==0.4.4"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+    # Test/verification infrastructure only. numpy is used by the mlx-audio
+    # verification scripts (scripts/verify_mlx_tts_api.py) and by tests that
+    # explicitly opt into it. It is intentionally NOT a runtime dependency:
+    # runtime package code (ToneBackend, the float->pcm16 converter) stays
+    # stdlib-only so the lean base never requires a dev-only dependency.
+    "numpy>=1.26",
+]
+
+[project.urls]
+Homepage = "https://github.com/vr000m/pipecat-local-tts-server"
+Repository = "https://github.com/vr000m/pipecat-local-tts-server"
+Issues = "https://github.com/vr000m/pipecat-local-tts-server/issues"
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# Import name stays `tts_server` so every `import tts_server` callsite, every
+# test, and the `python -m tts_server` invocation work without rename.
+module-name = "tts_server"
+module-root = ""
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Verification scripts under scripts/ are importable under pytest (mirrors the
+# stt repo), so tests that drive them can `from scripts... import ...`.
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100

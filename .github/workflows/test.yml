@@ -1,0 +1,68 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Lean job: client-only install on Linux. Proves the lean base (websockets
+  # only, no mlx-audio / numpy) resolves, the package imports without pulling
+  # any TTS runtime, lint is clean, and the explicit allow-list of lean test
+  # files passes. The ruff step is a deliberate addition over stt's CI.
+  #
+  # The lean allow-list grows with the tests: pytest errors on a missing
+  # allow-listed path, so each phase that adds a lean test extends this list in
+  # the same commit. Phase 0's allow-list contains ONLY the import-safety test.
+  test-lean:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Sync (client only — never kokoro, keeps torch out of lean)
+        run: uv sync --extra client
+      - name: Lint (ruff check + format)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Import-safety (lean base imports with no mlx-audio / numpy)
+        run: uv run python -c "import tts_server; print('import tts_server OK')"
+      - name: Run lean test allow-list
+        run: |
+          uv run pytest -x \
+            tests/test_import_safety.py
+
+  # Full macOS / Apple-Silicon job: the mlx-audio (Kokoro) wheels are
+  # macOS/Apple-Silicon only, so the all-extras job runs on macos-14. It syncs
+  # every declared extra and runs the non-gated suite.
+  #
+  # CI verification note: this job proves the runner can `uv sync` the TTS
+  # extras (the `uv sync` step below installs the `kokoro` extra, pinned
+  # mlx-audio==0.4.4). Kokoro *synthesis* tests need model weights/network and
+  # are gated/manual when those are unavailable in CI — Phase 2 marks them so
+  # (they are simply not on the lean allow-list; no runtime skip-marker
+  # reliance). Until Phase 2 adds them, this job exercises the lean suite on
+  # the full install.
+  test-macos:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Sync (all declared extras — verifies the runner can uv sync TTS extras)
+        run: uv sync --extra client --extra kokoro
+      - name: Run tests (non-gated; Kokoro synth tests are gated/manual)
+        run: uv run pytest

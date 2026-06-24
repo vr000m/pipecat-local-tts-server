@@ -14,9 +14,7 @@ model = load("mlx-community/Kokoro-82M-bf16")
 
 
 def synth(text: str) -> np.ndarray:
-    chunks = [
-        np.array(r.audio, copy=False) for r in model.generate(text, voice="af_heart")
-    ]
+    chunks = [np.array(r.audio, copy=False) for r in model.generate(text, voice="af_heart")]
     return np.concatenate(chunks).astype(np.float32)
 
 

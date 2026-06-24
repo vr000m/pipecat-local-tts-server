@@ -57,14 +57,10 @@ def package_surface() -> list[str]:
 
     print("== mlx_audio.tts.utils.load ==")
     print("  signature:", inspect.signature(tts_utils.load))
-    print(
-        "  has generate_audio (plan says unused):", hasattr(tts_utils, "generate_audio")
-    )
+    print("  has generate_audio (plan says unused):", hasattr(tts_utils, "generate_audio"))
     print()
 
-    print(
-        "== GenerationResult fields (plan claims .is_streaming_chunk / .is_final_chunk) =="
-    )
+    print("== GenerationResult fields (plan claims .is_streaming_chunk / .is_final_chunk) ==")
     from mlx_audio.tts.models.base import GenerationResult
 
     field_names = [f.name for f in dataclasses.fields(GenerationResult)]
@@ -111,9 +107,7 @@ def analyze_family(family: str, models_dir: pathlib.Path) -> None:
     print(f"== {family} ==")
     src_file = models_dir / family / f"{family}.py"
     if not src_file.exists():
-        print(
-            f"  no {family}/{family}.py — skipping (entry point may be named differently)"
-        )
+        print(f"  no {family}/{family}.py — skipping (entry point may be named differently)")
         print()
         return
 
@@ -212,9 +206,7 @@ def main() -> None:
         action="store_true",
         help="also download a model and verify .audio dtype/range",
     )
-    ap.add_argument(
-        "--repo", default="mlx-community/Kokoro-82M-bf16", help="HF repo for --load"
-    )
+    ap.add_argument("--repo", default="mlx-community/Kokoro-82M-bf16", help="HF repo for --load")
     args = ap.parse_args()
 
     available = package_surface()
