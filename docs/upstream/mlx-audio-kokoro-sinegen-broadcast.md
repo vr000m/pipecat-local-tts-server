@@ -1,6 +1,7 @@
 # Upstream report: Kokoro `SineGen._f02sine` is not length-preserving → `broadcast_shapes` failure on most utterances
 
 **Target project:** [`Blaizzy/mlx-audio`](https://github.com/Blaizzy/mlx-audio)
+**Filed as:** https://github.com/Blaizzy/mlx-audio/issues/803
 **Affected version:** `0.4.4` (latest PyPI) and `main` as of 2026-06-24
 **File:** `mlx_audio/tts/models/kokoro/istftnet.py`
 **Severity:** High — Kokoro TTS synthesis raises for the majority of inputs.

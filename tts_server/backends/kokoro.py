@@ -72,7 +72,8 @@ _KOKORO_EXTRAS = ["speed"]
 # input length. This is a NO-OP when the lengths already match, so it is safe for
 # all inputs and stays correct if upstream later fixes the round-trip. Applied
 # once, idempotently, in ``start()`` before any ``generate()`` (warmup or synth).
-# Remove this shim once a fixed mlx-audio is released and the pin is bumped.
+# Reported upstream: https://github.com/Blaizzy/mlx-audio/issues/803 — remove this
+# shim once a fixed mlx-audio is released and the pin is bumped.
 _SINEGEN_PATCH_ATTR = "_tts_server_length_fix"
 
 
