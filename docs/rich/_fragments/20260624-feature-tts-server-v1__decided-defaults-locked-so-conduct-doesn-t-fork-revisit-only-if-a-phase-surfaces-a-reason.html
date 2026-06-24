@@ -1,0 +1,40 @@
+<!-- plan-view-rich-section-sha256: 79187fdc2eeff6aa4b66dfde77f3b4755e307d45763592d510da858f71db90e8 -->
+<section class="section">
+  <h3>Decided defaults (locked so <code>/conduct</code> doesn&#39;t fork; revisit only if a phase surfaces a reason)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Concern</th>
+        <th>Decision</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Audio framing</td>
+        <td><strong>base64-in-JSON</strong> for v1 (advertise <code>binary_audio:false</code>; binary is a later optimization)</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>Event naming</td>
+        <td><strong><code>response.audio.*</code></strong> (OpenAI-Realtime-aligned)</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Wire frame size</td>
+        <td><strong>20 ms</strong></td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Voices</td>
+        <td><strong>count in hello, full list via <code>status</code></strong></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Repo</td>
+        <td>Dev on <code>vr000m/pipecat-local-tts-server</code>; PR to <code>pipecat-ai/</code> upstream later</td>
+      </tr>
+    </tbody>
+  </table>
+</section>

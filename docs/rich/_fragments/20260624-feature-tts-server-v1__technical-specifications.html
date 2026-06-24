@@ -1,0 +1,99 @@
+<!-- plan-view-rich-section-sha256: 3db746d820fe4dd5ea8a86806c1a3e5e6d6f656f635d15da442201fd3e35ec96 -->
+<section class="section" id="technical-specifications">
+  <h2>Technical Specifications</h2>
+
+  <div class="card">
+    <h3>Wire Events</h3>
+    <p>The full wire contract is written up in <code>docs/protocol.md</code> (authored 2026-06-24, ahead of implementation). Phase 1 implements <code>protocol.py</code> against that doc; the lightweight stdlib+<code>websockets</code> test client <code>examples/reference_client.py</code> speaks it and has been smoke-tested against a mock server (handshake → append → commit → 3 pcm16 deltas reassembled by <code>seq</code> → done → valid 24 kHz mono WAV). The summary below is the source of truth that <code>docs/protocol.md</code> expands; keep the two in sync.</p>
+
+    <h4>Client → Server</h4>
+    <p>
+      <span class="chip">session.update</span> <code>{voice?, model?, language?, audio_format?, extras?}</code> ·
+      <span class="chip">input_text.append</span> <code>{text, text_format?}</code> ·
+      <span class="chip">input_text.commit</span> <code>{voice?, language?, extras?}</code> ·
+      <span class="chip">input_text.clear</span> ·
+      <span class="chip">response.cancel</span> <code>{response_id?}</code> ·
+      <span class="chip">session.cancel</span> ·
+      <span class="chip">session.close</span> ·
+      <span class="chip">server.status</span>
+    </p>
+
+    <h4>Server → Client</h4>
+    <p>
+      <span class="chip">server.hello</span> <code>{protocol_version, backend:{name,model}, audio:{format,rate,channels}, capabilities}</code> ·
+      <span class="chip">session.created</span> / <span class="chip">session.updated</span> ·
+      <span class="chip">input_text.committed</span> <code>{response_id}</code> ·
+      <span class="chip">input_text.cleared</span> ·
+      <span class="chip">response.created</span> <code>{response_id}</code> ·
+      <span class="chip">response.audio.delta</span> <code>{response_id, seq, audio(base64 pcm16)}</code> ·
+      <span class="chip">response.audio.done</span> <code>{response_id, duration_ms}</code> ·
+      <span class="chip">response.cancelled</span> / <span class="chip">response.failed</span> <code>{response_id, error?}</code> ·
+      <span class="chip">server.status</span> ·
+      <span class="chip">error</span> <code>{code, message, retry_after_ms?}</code>
+      <em style="font-size:0.85em">(<code>retry_after_ms</code> present when <code>code==BUSY</code> — synthesis-backlog backpressure, R4)</em>
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Capabilities (<code>server.hello</code>) — Kokoro Example, Verified Fields Annotated</h3>
+    <pre><code>{ &quot;streaming&quot;: false, &quot;binary_audio&quot;: false,
+  // rate is NOT here — canonical rate is hello.audio.rate (24000, VERIFIED); R1 client reads that
+  &quot;text_formats&quot;: [&quot;plain&quot;],
+  // ssml/ipa UNVERIFIED for Kokoro — plain confirmed; drop until checked
+  &quot;languages&quot;: [&quot;en&quot;,&quot;ja&quot;,&quot;zh&quot;,&quot;fr&quot;,&quot;es&quot;,&quot;it&quot;,&quot;pt&quot;,&quot;hi&quot;],
+  // VERIFIED as voice-prefix/lang_code mapping only via --load 2026-06-24:
+  // a:20,b:8→en, e:3→es, f:1→fr, h:4→hi, i:2→it, j:5→ja, p:3→pt, z:8→zh
+  // full non-English long-text behaviour needs the Phase-2 language probe
+  &quot;voice_count&quot;: 54,
+  // VERIFIED via --load 2026-06-24 (54 distinct voices in mlx-community/Kokoro-82M-bf16)
+  &quot;extras&quot;: [&quot;speed&quot;],
+  // Kokoro effective set ONLY; temperature/instruct/cfg_scale/ddpm_steps are NOT Kokoro params
+  &quot;ideal_words&quot;: 40, &quot;max_text_chars&quot;: 2000
+  // ideal_words: soft target, client rounds UP to next sentence boundary
+  // max_text_chars: hard server cap. Values are chosen defaults (not model facts).
+}</code></pre>
+    <p>Kokoro's <code>language</code> maps to a single-letter <code>lang_code</code> (<code>a</code>/<code>b</code>=en, <code>e</code>=es, <code>f</code>=fr, <code>h</code>=hi, <code>i</code>=it, <code>j</code>=ja, <code>p</code>=pt, <code>z</code>=zh) — the backend must translate the ISO <code>language</code> to the letter. Treat this as a verified mapping, not proof that every non-English language has equivalent long-text G2P/chunking behaviour; Phase 2 must probe short synth and long/newline-split cases before the language list becomes a supported client contract. Other backends advertise different <code>extras</code>/<code>rate</code>/<code>streaming</code> (<code>pocket_tts</code> is <code>streaming:true</code>); capabilities is built per-backend, never copied from this example.</p>
+    <p class="banner"><strong>Note:</strong> <code>streaming:false</code> means <strong>no sub-segment streaming</strong> — segment-level streaming still happens (R4 emits each Kokoro <code>\n+</code> segment as it completes). So the client's sentence-chunking on non-streaming backends is about choosing sentence boundaries <em>within a commit</em>, not a substitute for the server's per-segment delivery.</p>
+  </div>
+
+  <div class="card">
+    <h3>Backend Protocol</h3>
+    <pre><code>@dataclass
+class AudioEvent:
+    kind: str   # &quot;delta&quot; | &quot;completed&quot;
+    pcm: bytes  # int16-LE mono; empty on &quot;completed&quot;
+
+class TTSStream(Protocol):
+    async def feed(self, text: str) -&gt; None: ...
+    async def end(self) -&gt; None: ...
+    def events(self) -&gt; AsyncGenerator[AudioEvent, None]: ...   # async def + yield
+    async def cancel(self) -&gt; None: ...
+
+class TTSBackend(Protocol):
+    backend_name: str
+    model: str | None
+    sample_rate: int
+    def capabilities(self) -&gt; dict: ...
+    async def start(self) -&gt; None: ...
+    async def open_stream(self, *, voice, language, extras) -&gt; TTSStream: ...
+    async def close(self) -&gt; None: ...</code></pre>
+    <p><code>extras</code> (validated against <code>capabilities[&quot;extras&quot;]</code>) splats into <code>model.generate(**extras)</code>. The validated <code>extras</code> keys MUST be disjoint from the fixed <code>generate</code> params the backend already passes (<code>text</code>, <code>voice</code>, <code>language</code>/<code>lang_code</code>) — otherwise <code>**extras</code> raises <code>TypeError</code> at the call site. Because <code>generate</code> accepts <code>**kwargs</code>, an <em>unfiltered</em> extra is silently swallowed (or <code>del</code>'d) rather than rejected, so per-backend <code>extras</code> validation is what keeps the advertised contract honest.</p>
+  </div>
+
+  <div class="card">
+    <h3>Streaming Bridge (<code>backends/_stream_util.py</code>)</h3>
+    <p>The single shared daemon-thread→<code>asyncio.Queue</code> bridge every streaming-capable backend uses (Kokoro + <code>voxtral_tts</code> + <code>pocket_tts</code>), so "backend-agnostic" is enforced, not aspirational. The interface (Phase 1 deliverable; Phase 0 ships a stdlib-only stub):</p>
+    <pre><code>async def stream_generate(
+    gen_factory: Callable[[], Iterator[GenerationResult]],
+    # builds the blocking generate() generator
+    *,
+    loop: asyncio.AbstractEventLoop,
+    metal_lock: threading.Lock,   # process-wide; held for the WHOLE generator-drain (see R3)
+    cancel: threading.Event,      # set by TTSStream.cancel(); breaks the generator out
+    maxsize: int,                 # bounded async queue; producer blocks/cooperates when full
+) -&gt; AsyncIterator[bytes]: ...   # yields int16-LE PCM per chunk; EOF sentinel ends iteration</code></pre>
+    <p>A daemon thread acquires <code>metal_lock</code>, runs <code>gen_factory()</code>, converts each yielded <code>GenerationResult.audio</code> (clipped and mapped per R3) to int16-LE PCM, and performs a producer-side blocking/cooperative put into the bounded async queue. <code>call_soon_threadsafe</code> alone is <strong>not</strong> sufficient because it schedules and returns without applying backpressure. The concrete stdlib shape can be <code>asyncio.run_coroutine_threadsafe(queue.put(pcm), loop).result(timeout=...)</code> with cancel/error handling, or an equivalent thread-safe queue plus async wrapper, but the invariant is fixed: a full bridge blocks or cancels the producer, never drops chunks or schedules unbounded callbacks.</p>
+    <p><code>cancel</code> breaks the generator out (releasing the lock so it is not pinned by a cancelled response). <strong>EOF is enqueued on generator exhaustion in a <code>finally</code></strong>, NOT keyed off <code>.is_final_chunk</code> (Kokoro never sets that field — it is advisory only).</p>
+    <p>Kokoro yields per-segment; <code>voxtral_tts</code>/<code>pocket_tts</code> yield intra-segment chunks — both feed the same queue and nothing downstream changes. This is the one boundary <code>_thread_util</code> does <strong>not</strong> cross (it marshals a single Future, not a per-chunk queue).</p>
+  </div>
+</section>

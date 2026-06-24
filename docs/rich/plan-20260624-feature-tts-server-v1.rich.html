@@ -1,0 +1,1534 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="plan-view-rich-source-sha256" content="2fd5981eb8b092b10a7f32ceec69a84d0ea21f5f82d291025bdd8dc10064903f">
+<meta name="plan-view-rich-strategy" content="sections">
+<meta name="plan-view-rich-section-count" content="15">
+<title>Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first) — rich view</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+<style>
+/* base.css — shared variables, typography, layout, and chip/tab scaffolding.
+ * Loaded once per page. Widget files assume these variables and primitive
+ * classes exist; they should NOT redeclare them.
+ *
+ * Conventions:
+ *   --bg, --bg-elev, --bg-card, --bg-deep   surfaces (deepest → flattest)
+ *   --fg, --fg-dim, --fg-muted              text (strong → faint)
+ *   --border, --border-hi                   hairlines
+ *   --accent + named hues                   semantic colour
+ *
+ * Light + dark are colour-scheme driven; consumers do not need a theme toggle.
+ */
+
+:root {
+  --bg: #0f1115; --bg-elev: #161a22; --bg-card: #1c2230; --bg-deep: #0a0c11;
+  --fg: #e6e9ef; --fg-dim: #9aa3b2; --fg-muted: #6b7280;
+  --border: #2a313d; --border-hi: #3a4250;
+  --accent: #7c9eff;
+  --green: #4ade80; --amber: #fbbf24; --blue: #60a5fa;
+  --red: #f87171; --grey: #9ca3af; --purple: #c084fc;
+  --teal: #5eead4; --pink: #f472b6;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa; --bg-elev: #ffffff; --bg-card: #ffffff; --bg-deep: #f3f4f6;
+    --fg: #111827; --fg-dim: #4b5563; --fg-muted: #9ca3af;
+    --border: #e5e7eb; --border-hi: #d1d5db;
+    --accent: #2563eb;
+    --green: #16a34a; --amber: #d97706; --blue: #2563eb;
+    --red: #dc2626; --grey: #6b7280; --purple: #9333ea;
+    --teal: #0d9488; --pink: #db2777;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px; line-height: 1.6;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em;
+  background: var(--bg-card); padding: 1px 5px; border-radius: 3px;
+}
+
+/* ────────────── Layout primitives ────────────── */
+
+main.page { max-width: 1200px; margin: 0 auto; padding: 32px 40px; }
+
+.banner {
+  background: linear-gradient(135deg, rgba(124,158,255,0.10), rgba(94,234,212,0.06));
+  border-bottom: 1px solid var(--border); padding: 32px 40px;
+}
+.banner .crumb { font-size: 12px; color: var(--fg-dim); margin-bottom: 8px; }
+.banner h1 { margin: 0 0 8px; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+.banner .tagline { color: var(--fg-dim); font-size: 14px; max-width: 800px; }
+
+.card {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px;
+}
+.card.deep { background: var(--bg-deep); }
+
+.section { margin: 24px 0; }
+.section h2 {
+  font-size: 18px; font-weight: 600; margin: 0 0 16px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.section h3 { font-size: 15px; font-weight: 600; margin: 24px 0 12px; }
+.section h4 {
+  font-size: 13px; font-weight: 600; margin: 18px 0 8px;
+  color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em;
+}
+
+/* ────────────── Chips / pills ────────────── */
+
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  border: 1px solid transparent;
+}
+.chip.green { background: rgba(74,222,128,0.12); color: var(--green); border-color: rgba(74,222,128,0.30); }
+.chip.amber { background: rgba(251,191,36,0.12); color: var(--amber); border-color: rgba(251,191,36,0.30); }
+.chip.blue  { background: rgba(96,165,250,0.12); color: var(--blue);  border-color: rgba(96,165,250,0.30); }
+.chip.red   { background: rgba(248,113,113,0.12); color: var(--red);   border-color: rgba(248,113,113,0.30); }
+.chip.purple{ background: rgba(192,132,252,0.12); color: var(--purple);border-color: rgba(192,132,252,0.30); }
+.chip.teal  { background: rgba(94,234,212,0.12); color: var(--teal);  border-color: rgba(94,234,212,0.30); }
+.chip.pink  { background: rgba(244,114,182,0.12); color: var(--pink);  border-color: rgba(244,114,182,0.30); }
+.chip.grey  { background: rgba(156,163,175,0.10); color: var(--grey);  border-color: rgba(156,163,175,0.25); }
+
+/* ────────────── Sticky-nav scaffold ────────────── */
+
+nav.sticky-nav {
+  background: var(--bg-elev); border-bottom: 1px solid var(--border);
+  padding: 0 32px; position: sticky; top: 0; z-index: 10;
+  display: flex; gap: 4px; overflow-x: auto;
+  backdrop-filter: blur(10px);
+}
+
+/* ────────────── Tab scaffold (radio + :checked, no JS) ──────────────
+ *
+ * Markup contract (see tabs.html):
+ *   <div class="tabs">
+ *     <input type="radio" name="tabs-{id}" id="tab-{id}-{slot}" class="tab-radio" [checked]>
+ *     <label for="tab-{id}-{slot}" class="tab-label">Label</label>
+ *     ...repeat radio + label for each tab...
+ *     <div class="tab-panel" data-slot="{slot}">…content…</div>
+ *     ...repeat panel...
+ *   </div>
+ *
+ * Panels are hidden by default; the sibling `:checked` radio drives the
+ * matching panel visible via attribute selector + general-sibling combinator.
+ */
+
+.tabs { display: block; }
+.tabs .tab-radio { position: absolute; opacity: 0; pointer-events: none; }
+.tabs .tab-label {
+  display: inline-block; padding: 12px 16px; font-size: 13.5px; font-weight: 500;
+  color: var(--fg-dim); cursor: pointer; border-bottom: 2px solid transparent;
+  transition: color 0.1s, border-color 0.1s; white-space: nowrap;
+}
+.tabs .tab-label:hover { color: var(--fg); }
+.tabs .tab-bar {
+  display: flex; gap: 4px; overflow-x: auto;
+  border-bottom: 1px solid var(--border); margin-bottom: 16px;
+}
+.tabs .tab-panel { display: none; }
+
+/* Each radio activates its sibling label and matching panel. The pattern
+ * relies on consumers giving radio id="tab-{id}-{slot}" and panel
+ * data-slot="{slot}". See tabs.html for the full template. */
+.tabs .tab-radio:checked + .tab-label {
+  color: var(--accent); border-bottom-color: var(--accent);
+}
+
+/* Progress / meta */
+.progress-bar {
+  flex: 1; max-width: 320px; height: 8px; background: var(--bg-card);
+  border-radius: 4px; overflow: hidden; border: 1px solid var(--border);
+}
+.progress-bar .fill { height: 100%; background: var(--green); transition: width 0.3s; }
+
+footer.page-footer {
+  text-align: center; padding: 32px 40px; color: var(--fg-muted);
+  font-size: 11px; border-top: 1px solid var(--border); margin-top: 48px;
+}
+
+body { max-width: 1200px; margin: 0 auto; padding: 32px 24px 80px; }
+header.plan-hero { padding: 24px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+header.plan-hero h1 { margin: 8px 0 12px; }
+header.plan-hero .meta { color: var(--fg-muted); font-size: 14px; }
+.tab-bar { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+footer.plan-foot { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--fg-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<!-- plan-view-rich-backlink -->
+<div class="rich-backlink" style="font-size:13px;margin:0 0 16px;"><a href="index.html">← Plan View</a> · <a href="plan-20260624-feature-tts-server-v1.html">deterministic view</a></div>
+<header class="plan-hero">
+  <div class="meta">plan-view · rich · 20260624-feature-tts-server-v1</div>
+  <h1>Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)</h1>
+  <div class="meta"><span class="chip blue">Planned</span> · Source sha <code>2fd5981eb8b0</code> · 15 sections (assembled from fragments)</div>
+</header>
+
+<div class="tabs" data-tabs-id="plan-20260624-feature-tts-server-v1">
+  <style>
+    /* Scoped tab visibility via :has() — works regardless of the radio's
+       depth in the DOM (radios may live inside a .tab-bar wrapper while
+       panels live outside it; sibling `~` selectors don't work across
+       that boundary, but `:has()` does). Requires :has() support
+       (Chrome/Safari/Firefox 2023+). */
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"] .tab-panel { display: none; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-preamble:checked) .tab-panel[data-slot="preamble"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-objective:checked) .tab-panel[data-slot="objective"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-context:checked) .tab-panel[data-slot="context"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-locked-design-decisions:checked) .tab-panel[data-slot="locked-design-decisions"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-requirements:checked) .tab-panel[data-slot="requirements"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-implementation-checklist:checked) .tab-panel[data-slot="implementation-checklist"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-technical-specifications:checked) .tab-panel[data-slot="technical-specifications"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-architecture-call-flow:checked) .tab-panel[data-slot="architecture-call-flow"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-testing-notes:checked) .tab-panel[data-slot="testing-notes"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-acceptance-criteria:checked) .tab-panel[data-slot="acceptance-criteria"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason:checked) .tab-panel[data-slot="decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-conduct-readiness:checked) .tab-panel[data-slot="conduct-readiness"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-companion-plan:checked) .tab-panel[data-slot="companion-plan"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-progress:checked) .tab-panel[data-slot="progress"] { display: block; }
+    .tabs[data-tabs-id="plan-20260624-feature-tts-server-v1"]:has(#tab-plan-20260624-feature-tts-server-v1-findings:checked) .tab-panel[data-slot="findings"] { display: block; }
+    /* Each rule is generated as (<id>/<slot> filled per tab):
+       .tabs[data-tabs-id="<id>"]:has(#tab-<id>-<slot>:checked) .tab-panel[data-slot="<slot>"] { display: block; }
+    */
+  </style>
+
+  <div class="tab-bar">
+    <input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-preamble" class="tab-radio" checked>
+<label for="tab-plan-20260624-feature-tts-server-v1-preamble" class="tab-label">(preamble)</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-objective" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-objective" class="tab-label">Objective</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-context" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-context" class="tab-label">Context</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-locked-design-decisions" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-locked-design-decisions" class="tab-label">Locked design decisions</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-requirements" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-requirements" class="tab-label">Requirements</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-implementation-checklist" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-implementation-checklist" class="tab-label">Implementation Checklist</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-technical-specifications" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-technical-specifications" class="tab-label">Technical Specifications</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-architecture-call-flow" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-architecture-call-flow" class="tab-label">Architecture &amp; Call Flow</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-testing-notes" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-testing-notes" class="tab-label">Testing Notes</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-acceptance-criteria" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-acceptance-criteria" class="tab-label">Acceptance Criteria</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason" class="tab-label">Decided defaults (locked so `/conduct` doesn&#x27;t fork; revisit only if a phase surfaces a reason)</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-conduct-readiness" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-conduct-readiness" class="tab-label">Conduct Readiness</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-companion-plan" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-companion-plan" class="tab-label">Companion plan</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-progress" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-progress" class="tab-label">Progress</label>
+<input type="radio" name="tabs-plan-20260624-feature-tts-server-v1" id="tab-plan-20260624-feature-tts-server-v1-findings" class="tab-radio">
+<label for="tab-plan-20260624-feature-tts-server-v1-findings" class="tab-label">Findings</label>
+  </div>
+
+  <div class="tab-panel" data-slot="preamble">
+<!-- plan-view-rich-section-sha256: a8537e0d1c53c40012779040d38fe8850684f0b2d26519dd4e42574238a24a9d -->
+<section class="section">
+  <div class="card">
+    <h3>pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+      <span class="chip chip--neutral">Status: Planned</span>
+      <span class="chip chip--high">Priority: High</span>
+      <span class="chip chip--neutral">Component: tts-server</span>
+      <span class="chip chip--neutral">Assigned: Varun Singh</span>
+      <span class="chip chip--neutral">Created: 2026-06-24</span>
+    </div>
+    <p>Design locked on paper; no code yet. mlx-audio API claims verified against installed <strong>0.4.4</strong> via <code>scripts/verify_mlx_tts_api.py</code> — including the runtime <code>--load</code> path and <code>scripts/prosody_check.py</code>, <strong>executed 2026-06-24 on arm64/vr000m-manganese, mlx-audio 0.4.4</strong>. Runtime facts (rate, audio range, voice count, prosody numbers) are <em>measured</em>, not inferred. Pin <code>mlx-audio==0.4.4</code> — API drifted from 0.3.0 (see R8).</p>
+    <p><strong>Unblocks:</strong> gamealerts TTS-server migration</p>
+    <p><strong>Branch strategy:</strong> <code>main</code> (founding work) → feature branches per phase</p>
+  </div>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="objective">
+<!-- plan-view-rich-section-sha256: cd6ba404470a9f69706103b7ed104eefda33bc30b30a2fa08c2c9b8a1c2e5dd4 -->
+<section class="section" aria-labelledby="objective-heading">
+  <h3 id="objective-heading">Objective</h3>
+  <p>
+    Build a standalone, open-source <strong>local websocket TTS server</strong> that takes
+    <strong>text in and streams audio out</strong>, supporting multiple <strong>mlx-audio</strong>
+    models behind one wire protocol. It mirrors the sibling
+    <code>pipecat-local-stt-server</code> (same transport, protocol philosophy, backend
+    abstraction, packaging) so the two are operationally identical. First consumer is
+    gamealerts (see its companion plan
+    <code>gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md</code>),
+    but the server is app-agnostic.
+  </p>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="context">
+<!-- plan-view-rich-section-sha256: 3fbb4944cc60a2ffd6b2af2a79e7e9161a744c4770ebc94b81f4d7aee29d6de5 -->
+<section class="section" id="section-context">
+  <h3>Context</h3>
+  <ul>
+    <li>
+      <strong>Why a server:</strong> today <em>gamealerts</em> loads Kokoro <strong>in-process</strong> (in a subprocess),
+      coupling heavy mlx/torch deps to the app and re-loading the model on every restart.
+      This server replaces that subprocess. The STT side already solved this with a shared
+      local server (<code>stt_server</code>, websockets over a Unix socket, lazy-imported per-model
+      backends). This project does the TTS-side mirror.
+    </li>
+    <li>
+      <strong>gamealerts client contract</strong> (asserted from the companion plan — confirm against
+      <code>gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md</code> before Phase&nbsp;4
+      integration; the two load-bearing claims to verify are (i) the client resamples driven
+      <em>solely</em> by <code>hello.audio.rate</code>, and (ii) a server-side mid-response stall starves playback):
+      the client owns the output device, resampling, and buffering; the server owes it exactly two things.
+      <ol>
+        <li>
+          <strong>An exact, stable advertised rate.</strong> <code>MacAudioSurface</code> plays through the selected
+          device (often a 48&thinsp;kHz Focusrite Scarlett USB interface) and resamples model-rate →
+          device-rate driven entirely by <code>hello.audio.rate</code>. A past &ldquo;croaky&rdquo; bug was a rate/buffer
+          mismatch on that USB device; a wrong/variable advertised rate makes the client resample
+          at the wrong ratio → pitch/speed distortion. Format stays int16-LE mono at that rate.
+        </li>
+        <li>
+          <strong>A steady in-response stream.</strong> That croak was a playback-buffer underrun; in-process
+          the audio was always immediately available, but over a socket a server-side stall is a
+          new way to starve the client&rsquo;s playback buffer. Don&rsquo;t stall mid-response. These map to
+          R1 (rate) and R4 (rate + steady streaming).
+        </li>
+      </ol>
+    </li>
+    <li>
+      <strong>Template:</strong> <code>pipecat-local-stt-server</code> v0.3.2 is the authoritative reference —
+      <code>protocol.py</code> (OpenAI-Realtime-inspired event subset), <code>backend.py</code>
+      (<code>TranscriptionBackend</code>/<code>BackendStream</code> Protocols + <code>EchoBackend</code>), lazy-extra
+      backends, <code>python -m stt_server {serve,status}</code>, optional bearer auth, send-queue
+      high-water limits.
+    </li>
+    <li>
+      <strong>mlx-audio API</strong> (verified against installed mlx-audio 0.4.4 via
+      <code>scripts/verify_mlx_tts_api.py</code>, not docs — pin in R8):
+      <code>mlx_audio.tts.utils.load(model_path, lazy=False, strict=True, **kwargs)</code> (signature confirmed)
+      returns a model whose <code>model.generate(text, ...)</code> is a <strong>generator that <code>yield</code>s
+      <code>GenerationResult</code>s</strong> (Kokoro splits on <code>\n+</code>, one per segment).
+      <code>GenerationResult</code> fields are:
+      <ul>
+        <li><code>.audio</code> — float32 <code>mx.array</code>, <strong>1-D mono</strong> (confirmed via
+          <code>verify_mlx_tts_api.py --load</code> 2026-06-24: shape <code>(32400,)</code>, range
+          <code>[-0.199, 0.225]</code>, peak ±0.22; in [−1,1] on this sample but <strong>not</strong> a
+          decoder-guaranteed bound, so clip before scaling — see R3)</li>
+        <li><code>.samples</code>, <code>.sample_rate</code>, <code>.segment_idx</code>, <code>.token_count</code>,
+          <code>.audio_duration</code>, <code>.real_time_factor</code>, <code>.prompt</code>,
+          <code>.audio_samples</code>, <code>.processing_time_seconds</code>, <code>.peak_memory_usage</code></li>
+        <li>
+          <code>.is_streaming_chunk</code> / <code>.is_final_chunk</code> — field <em>presence</em> verified as of 0.4.4
+          via <code>dataclasses.fields</code> (absent in 0.3.0); but <strong>Kokoro never <em>sets</em>
+          <code>.is_final_chunk</code></strong> — <code>kokoro.py:345-367</code> yields
+          <code>GenerationResult(...)</code> with the field defaulting <code>False</code>, confirmed 2026-06-24.
+          So the drain loop fires <code>response.audio.done</code> on <strong>generator exhaustion</strong>,
+          treating <code>.is_final_chunk</code> as advisory only; <code>.segment_idx</code> is the per-segment index.
+        </li>
+      </ul>
+      There is no <code>generate_audio(...)</code> wrapper on <code>tts.utils</code> — we use the generator directly.
+      <br>
+      <strong>Per-model <code>generate()</code> kwargs are disjoint</strong> (see R7): each backend advertises its
+      own effective set — there is no global one. <strong>Version-sensitive:</strong> the API drifted
+      between 0.3.0 and 0.4.4 (the streaming-chunk fields appeared; <code>voxtral_tts</code> was added;
+      <code>pocket_tts</code> dropped dead kwargs) — re-run <code>scripts/verify_mlx_tts_api.py</code> before any
+      mlx-audio bump.
+    </li>
+  </ul>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="locked-design-decisions">
+<!-- plan-view-rich-section-sha256: 140ea56b161162a8fbd18b48cd1a4fb614d019fcd546a46dfdc7eb76b2271d02 -->
+<div class="section">
+  <h2>Locked design decisions</h2>
+
+  <ol style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:14px;">
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D1</span>
+      <div>
+        <strong>Text in, audio out. Playback stays in the client.</strong>
+        The server never touches an audio device.
+        (<code>gamealerts</code> keeps its <code>MacAudioSurface</code> playback, ducking, barge-in.)
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D2</span>
+      <div>
+        <strong>Local mlx-audio only for v1. No cloud fronting. No voice cloning.</strong>
+        Voice cloning is handled by the separate <code>vr000m/qwen3-tts-clone-and-speak</code> repo; the server
+        stays purely text-in/audio-out with no <code>ref_audio</code> upload channel.
+        <br>
+        <span style="color:var(--fg-dim);font-size:13px;">
+          Note: <code>pocket_tts</code> and <code>dia generate()</code> accept a <code>ref_audio</code>
+          param — backends <strong>must</strong> leave it unwired to honour this decision.
+          No nemotron/Riva (NVIDIA, no mlx ports).
+        </span>
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D3</span>
+      <div>
+        <strong>Transport: WebSockets over a Unix domain socket by default</strong>
+        (also <code>ws://host:port</code>, full URI).
+        Endpoint precedence: <code>URI &gt; socket &gt; host+port</code>.
+        <code>TTS_WS_*</code> env vars mirror <code>STT_WS_*</code>.
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D4</span>
+      <div>
+        <strong>Uniform backend path:</strong> every backend uses <code>load()</code> + in-memory
+        <code>model.generate()</code>; convert <code>result.audio</code> float32 → int16 PCM16-LE.
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D5</span>
+      <div>
+        <strong>Re-chunk in the session layer, not the backend.</strong>
+        Backends yield native chunks; the session slices to fixed <strong>20 ms</strong> wire frames so
+        barge-in latency is bounded regardless of a model's <code>streaming_interval</code>.
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D6</span>
+      <div>
+        <strong>The client segments; the commit is the unit of work.</strong>
+        <code>server.hello</code> <code>capabilities</code> carries <code>streaming: bool</code> and an
+        <code>ideal_words</code> hint; the <em>client</em> uses these to split long text into commits (R7),
+        and the server synthesizes whatever each <code>input_text.commit</code> delivers.
+        The commit is also the unit of GPU-lock holding and cross-connection fairness (R4 / Architecture &amp; Call Flow).
+        The server does <strong>not</strong> expose its queue depth and does <strong>not</strong> require
+        clients to infer load from latency/TTFB — overload is signalled explicitly via backpressure
+        (<code>R1 ErrorCode.BUSY</code>).
+        <br><br>
+        <span class="chip amber" style="margin-bottom:6px;">Never split mid-sentence</span>
+        <br>
+        <span style="color:var(--fg-dim);font-size:13px;">
+          <code>ideal_words</code> is a soft target the client rounds up to the next sentence boundary;
+          a half-sentence commit makes the model apply sentence-final prosody mid-phrase.
+          Measured on Kokoro (<code>scripts/prosody_check.py</code>, run 2026-06-24 on
+          arm64/vr000m-manganese, mlx-audio 0.4.4): splitting
+          "The quick brown fox jumps over the lazy dog." at a non-boundary ran
+          <strong>+22.3% longer</strong> (3975 ms vs 3250 ms) and injected a
+          <strong>389 ms terminal pause</strong> after "fox" — audibly wrong.
+        </span>
+      </div>
+    </li>
+
+  </ol>
+</div>
+
+</div>
+<div class="tab-panel" data-slot="requirements">
+<!-- plan-view-rich-section-sha256: 70f264bceae9c823ef20e050cfddd4d07d8bad998b63ae2526b16b9adb7ac378 -->
+<section class="section">
+  <h2>Requirements</h2>
+
+  <section class="searchable-table" data-table-id="requirements">
+    <style>
+      .searchable-table .search-bar {
+        display: flex; gap: 10px; margin: 16px 0; align-items: center; flex-wrap: wrap;
+      }
+      .searchable-table .search-bar input {
+        flex: 1; min-width: 200px; padding: 8px 12px; background: var(--bg-elev);
+        border: 1px solid var(--border); border-radius: 6px; color: var(--fg);
+        font-family: inherit; font-size: 13px;
+      }
+      .searchable-table .search-bar input:focus { outline: none; border-color: var(--accent); }
+      .searchable-table .filter-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+      .searchable-table .filter-chips button {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        color: var(--fg-dim); padding: 5px 12px; border-radius: 999px;
+        cursor: pointer; font-family: inherit; font-size: 12px; transition: all 0.1s;
+      }
+      .searchable-table .filter-chips button:hover { color: var(--fg); border-color: var(--border-hi); }
+      .searchable-table .filter-chips button.active {
+        background: var(--accent); color: white; border-color: var(--accent);
+      }
+      .searchable-table table.data {
+        width: 100%; border-collapse: collapse; font-size: 12.5px;
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px;
+        overflow: hidden;
+      }
+      .searchable-table table.data th,
+      .searchable-table table.data td {
+        text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      .searchable-table table.data th {
+        color: var(--fg-dim); font-weight: 600; font-size: 11.5px;
+        background: var(--bg-deep); text-transform: uppercase; letter-spacing: 0.04em;
+      }
+      .searchable-table table.data tr:last-child td { border-bottom: none; }
+      .searchable-table table.data tr.hidden { display: none; }
+      .searchable-table table.data code { background: var(--bg-card); }
+      .req-id {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-weight: 700; font-size: 12px; white-space: nowrap;
+      }
+      .req-file {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11px; color: var(--fg-dim); white-space: nowrap;
+      }
+      .req-desc p { margin: 0 0 6px; }
+      .req-desc p:last-child { margin-bottom: 0; }
+      .req-desc ul { margin: 4px 0 4px 18px; padding: 0; }
+      .req-desc ul li { margin-bottom: 3px; }
+      .must { color: var(--red); font-weight: 600; }
+      .note { color: var(--amber); font-weight: 500; }
+    </style>
+
+    <div class="search-bar">
+      <input type="search" class="st-search" placeholder="Search requirements…">
+      <div class="filter-chips">
+        <button class="active" data-value="all">all</button>
+        <button data-value="R1">R1</button>
+        <button data-value="R2">R2</button>
+        <button data-value="R3">R3</button>
+        <button data-value="R4">R4</button>
+        <button data-value="R5">R5</button>
+        <button data-value="R6">R6</button>
+        <button data-value="R7">R7</button>
+        <button data-value="R8">R8</button>
+        <button data-value="R9">R9</button>
+      </div>
+    </div>
+
+    <table class="data">
+      <thead>
+        <tr>
+          <th style="width:48px">ID</th>
+          <th style="width:160px">Module</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+
+        <tr data-req="R1">
+          <td><span class="req-id chip blue">R1</span></td>
+          <td><code class="req-file">protocol.py</code></td>
+          <td class="req-desc">
+            <p><strong>Protocol</strong> — <code>PROTOCOL_VERSION="0.1"</code>, pcm16 mono, per-backend rate. Full event set per Technical Specifications; <code>ErrorCode</code> enum mirroring stt.</p>
+            <ul>
+              <li><code>hello.audio.rate</code> is the true model rate (Kokoro 24000, confirmed via <code>--load</code> 2026-06-24). <span class="must">MUST</span> be read at connect with no warmup dependency.</li>
+              <li>Every <code>response.audio.delta</code> for the session <span class="must">MUST</span> be int16-LE mono at exactly that rate — no per-utterance drift. Client resamples model-rate → device-rate off this single advertised value.</li>
+              <li><code>audio_format</code> is strict: only the advertised pcm16-at-<code>hello.audio.rate</code> is accepted; any other value in <code>session.update</code> is rejected with <code>error {code: UNSUPPORTED_FORMAT}</code>.</li>
+              <li><code>input_text.commit</code> has no <code>audio_format</code> field in v1; if a client sends one it is a protocol error, not format negotiation.</li>
+              <li><code>ErrorCode</code> adds <span class="note">BUSY</span> (WebSocket analog of HTTP 429): <code>error</code> event carries <code>retry_after_ms</code> when a commit is rejected for synthesis-backlog backpressure (see R4).</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R2">
+          <td><span class="req-id chip blue">R2</span></td>
+          <td><code class="req-file">backend.py</code></td>
+          <td class="req-desc">
+            <p><strong>Backend abstraction</strong> — <code>TTSBackend</code> + <code>TTSStream</code> Protocols plus a dependency-free <code>ToneBackend</code> (sine) reference for tests.</p>
+            <ul>
+              <li><code>ToneBackend</code> <span class="must">MUST</span> emit <strong>multiple segments with a configurable per-segment delay</strong> to drive the per-segment <code>events()</code> streaming contract (R4) and the 20 ms re-chunker — it is the <em>streaming</em> reference, not a one-shot echo.</li>
+              <li><code>ToneBackend</code> and the shared float→pcm16 converter are <strong>stdlib-only runtime code</strong> (<code>math</code>/<code>array</code>/<code>struct</code>). <code>numpy</code> may stay in the dev group for verification scripts but <span class="must">MUST NOT</span> be required by runtime modules or lean tests.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R3">
+          <td><span class="req-id chip blue">R3</span></td>
+          <td><code class="req-file">backends/kokoro.py</code></td>
+          <td class="req-desc">
+            <p><strong>Kokoro backend</strong> — mlx-audio load/generate with float→pcm16 conversion.</p>
+            <ul>
+              <li>Clip samples to [-1, 1]; map asymmetrically: negative → ×32768, non-negative → ×32767, so <code>-1.0 → -32768</code> and <code>+1.0 → +32767</code>.</li>
+              <li>Run the <code>generate()</code> generator in a dedicated thread. Metal is not concurrent-safe: use a <strong>Lock-pair + in-flight-drain</strong> pattern holding the process-wide Metal lock around the <strong>entire generator drain</strong> (many yields). Lock + per-chunk queue live in <code>backends/_stream_util.py</code>.</li>
+              <li><code>cancel()</code> <span class="must">MUST</span> break the generator so a cancelled response does not pin the lock.</li>
+              <li><code>sample_rate</code> is <strong>24000</strong>, readable as <code>model.sample_rate</code> immediately after <code>load()</code> — no warmup-generate needed. Warmup at <code>start()</code> is still worthwhile for Metal JIT, but decouple from rate discovery.</li>
+              <li>Lazy-import <code>mlx_audio</code> inside <code>start()</code>/<code>_get_model</code> — never at module load (<em>lean-base invariant</em>).</li>
+              <li><span class="note">Dependency note:</span> importing Kokoro pulls <code>misaki</code> (G2P) → <code>num2words</code>, <code>spacy</code>, <code>en_core_web_sm</code>, and <code>torch</code>. Keep behind the <code>kokoro</code> extra.</li>
+              <li>Kokoro yields per-segment (<code>split_pattern=r"\n+"</code>); effective streaming granularity is per-segment even though it advertises <code>streaming:false</code>.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R4">
+          <td><span class="req-id chip blue">R4</span></td>
+          <td><code class="req-file">server.py</code></td>
+          <td class="req-desc">
+            <p><strong>Server/session</strong> — handshake (<code>server.hello</code>), per-session text buffer, commit→synthesize, 20 ms re-chunker, <code>response.cancel</code> (barge-in), send-queue high-water close, resource limits.</p>
+            <ul>
+              <li><strong>Exact, stable emitted rate:</strong> every frame <span class="must">MUST</span> match the advertised <code>hello.audio.rate</code> (per R1).</li>
+              <li><strong>Steady in-response streaming:</strong> once <code>response.created</code> fires, feed the client buffer continuously. Do <span class="must">NOT</span> block the send loop on synthesis between chunks; do <span class="must">NOT</span> emit one large burst then a long gap. For Kokoro, emit each segment's audio as it completes.</li>
+              <li><code>open_stream</code>'s <code>end()</code> <span class="must">MUST NOT</span> block until full synthesis while <code>events()</code> replays a stored result — that buffer-then-flush shape is the anti-pattern here.</li>
+              <li><strong>Multi-connection isolation:</strong> each connection gets its own <code>_SessionState</code> (text buffer, config, <code>response_id</code> space) — <span class="must">no shared mutable session state</span>. What IS shared: a single model + process-wide Metal lock.</li>
+              <li><strong>Commit = unit of GPU-lock holding:</strong> server admits commits into per-connection queues; a single dispatcher selects connections round-robin at commit boundaries; only the selected commit's worker may acquire the Metal lock.</li>
+              <li><strong>Backpressure (two layers):</strong>
+                <ul>
+                  <li>(1) Per-connection outbound send-queue high-water <em>close</em> (slow audio reader).</li>
+                  <li>(2) Global synthesis backlog admission control: when the bounded synthesis queue is full the server <span class="must">MUST</span> reject the commit with <code>error {code: BUSY, retry_after_ms}</code>.</li>
+                  <li>Per-connection in-flight cap ≤K queued commits. <strong>v1 sets K=1</strong> — one active-or-queued response per connection — making <code>response.cancel</code> optional <code>response_id</code> unambiguous.</li>
+                  <li>Client retry policy: hold text, retry after <code>retry_after_ms</code> with capped backoff + jitter, give up after 5 retries.</li>
+                </ul>
+              </li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R5">
+          <td><span class="req-id chip blue">R5</span></td>
+          <td><code class="req-file">client.py</code></td>
+          <td class="req-desc">
+            <p><strong>Client</strong> — async <code>TTSClient</code> with transport-generic API (no app labels/frame types — the pipecat adapter lives in <code>examples/</code>).</p>
+            <p>Methods: <code>connect() → hello</code>, <code>update()</code>, <code>append()</code>, <code>commit()</code>, <code>cancel()</code>, <code>events()</code>, <code>status()</code>, <code>close()</code>.</p>
+          </td>
+        </tr>
+
+        <tr data-req="R6">
+          <td><span class="req-id chip blue">R6</span></td>
+          <td><code class="req-file">__main__.py</code></td>
+          <td class="req-desc">
+            <p><strong>CLI</strong> — mirroring stt.</p>
+            <ul>
+              <li><code>python -m tts_server serve --backend kokoro --model … --socket-path …</code> (logs resolved backend+model at startup).</li>
+              <li><code>status</code> health probe: connect → hello → status → print backend/model/rate/queue depth.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R7">
+          <td><span class="req-id chip blue">R7</span></td>
+          <td><code class="req-file">protocol.py</code></td>
+          <td class="req-desc">
+            <p><strong>Capabilities for client chunking</strong> — <code>capabilities</code> <span class="must">MUST</span> expose: <code>streaming</code>, <code>ideal_words</code>, <code>text_formats</code>, <code>languages</code>, <code>extras</code>, <code>max_text_chars</code>.</p>
+            <ul>
+              <li><code>ideal_words</code> is a <em>soft</em> chunk-size target; the client rounds up to the next sentence boundary (never split mid-sentence — decision #6).</li>
+              <li><code>max_text_chars</code> is the <em>hard</em> server cap (reject beyond it).</li>
+              <li>For <code>streaming:false</code> backends the client <span class="must">MUST</span> chunk at sentences.</li>
+              <li>Unknown <code>extras</code> keys are dropped (debug-logged), never errored.</li>
+              <li><code>extras</code> per backend (verified via <code>scripts/verify_mlx_tts_api.py</code> against mlx-audio 0.4.4):
+                <ul>
+                  <li>Kokoro → <code>{speed}</code> only</li>
+                  <li>voxtral_tts → <code>{temperature, top_k, top_p}</code></li>
+                  <li>pocket_tts → <code>{temperature}</code></li>
+                  <li>dia → <code>{temperature, top_p}</code></li>
+                </ul>
+              </li>
+              <li>A backend <span class="must">MUST</span> drop, not forward, any kwarg the model ignores — the advertised <code>extras</code> never lies to the client.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R8">
+          <td><span class="req-id chip blue">R8</span></td>
+          <td><code class="req-file">pyproject.toml</code></td>
+          <td class="req-desc">
+            <p><strong>Packaging</strong> — package <code>pipecat-local-tts-server</code>, import <code>tts_server</code>.</p>
+            <ul>
+              <li>Lean base = <code>websockets</code> only.</li>
+              <li>Extras: <code>client</code>, <code>kokoro</code> (+ later <code>voxtral_tts</code>, <code>pocket_tts</code>, <code>dia</code>/<code>chatterbox</code>). All backends lazy-import heavy deps.</li>
+              <li><span class="must">Pin</span> <code>mlx-audio==0.4.4</code> in backend extras — TTS API drifted between 0.3.0 and 0.4.4. Re-run <code>scripts/verify_mlx_tts_api.py</code> before widening the pin.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R9">
+          <td><span class="req-id chip blue">R9</span></td>
+          <td><code class="req-file">server.py</code></td>
+          <td class="req-desc">
+            <p><strong>Auth (optional)</strong> — bearer token, server-side <code>PIPECAT_TTS_AUTH_TOKEN</code>, client-side <code>TTS_WS_TOKEN</code>, cleartext-remote guard. Mirror stt exactly.</p>
+          </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+    <script>
+    (function() {
+      var root = document.querySelector('.searchable-table[data-table-id="requirements"]');
+      if (!root) return;
+      var search = root.querySelector('.st-search');
+      var chips  = root.querySelector('.filter-chips');
+      var rows   = root.querySelectorAll('tbody tr');
+      var q = '';
+      var f = 'all';
+
+      function apply() {
+        rows.forEach(function(row) {
+          var text = row.textContent.toLowerCase();
+          var queryMatch = !q || text.indexOf(q) !== -1;
+          var filterMatch = true;
+          if (f !== 'all') {
+            filterMatch = (row.getAttribute('data-req') || '') === f;
+          }
+          row.classList.toggle('hidden', !(queryMatch && filterMatch));
+        });
+      }
+
+      if (search) {
+        search.addEventListener('input', function(e) {
+          q = e.target.value.toLowerCase();
+          apply();
+        });
+      }
+      if (chips) {
+        chips.querySelectorAll('button').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            chips.querySelectorAll('button').forEach(function(b) {
+              b.classList.toggle('active', b === btn);
+            });
+            f = btn.dataset.value;
+            apply();
+          });
+        });
+      }
+    })();
+    </script>
+  </section>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="implementation-checklist">
+<!-- plan-view-rich-section-sha256: 18fed9993e37cbcbc89f881b178192eb89a0e7efe5ef955bd02acc699b856927 -->
+<section class="section" id="implementation-checklist">
+  <h2>Implementation Checklist</h2>
+
+  <style scoped>
+    .phase-block { margin-bottom: 2rem; }
+    .phase-block h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border, #e2e8f0); padding-bottom: 0.35rem; color: var(--heading, #1a202c); }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.45rem 0; border-bottom: 1px solid var(--border-subtle, #f0f4f8); font-size: 0.875rem; line-height: 1.55; }
+    .checklist li:last-child { border-bottom: none; }
+    .check-glyph { flex-shrink: 0; width: 1.25rem; height: 1.25rem; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; margin-top: 0.1rem; }
+    .check-done { background: #c6f6d5; color: #276749; }
+    .check-todo { background: #e2e8f0; color: #718096; }
+    code { background: var(--code-bg, #f7fafc); border: 1px solid var(--border, #e2e8f0); border-radius: 3px; padding: 0.1em 0.35em; font-size: 0.82em; font-family: ui-monospace, 'Cascadia Code', monospace; }
+    .phase-chip { display: inline-block; font-size: 0.7rem; font-weight: 700; border-radius: 99px; padding: 0.15em 0.65em; margin-right: 0.5rem; vertical-align: middle; }
+    .chip-0 { background: #e9d8fd; color: #553c9a; }
+    .chip-1 { background: #bee3f8; color: #2a4365; }
+    .chip-2 { background: #fefcbf; color: #744210; }
+    .chip-3 { background: #fed7d7; color: #742a2a; }
+    .chip-4 { background: #c6f6d5; color: #276749; }
+    .chip-5 { background: #e2e8f0; color: #4a5568; }
+  </style>
+
+  <!-- Phase 0 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-0">Phase 0</span>Scaffold</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>pyproject.toml</code> (uv-build), package layout <code>tts_server/{__init__,__main__,protocol,backend,client,server,env}.py</code> + <code>backends/</code> (incl. <code>backends/_stream_util.py</code> shipped as a stdlib-only stub in Phase 0 — the daemon-thread→<code>asyncio.Queue</code> bridge logic lands in Phase 1 — so the import-safety test stays green; see Architecture &amp; Call Flow), extras <code>client</code>/<code>kokoro</code> (pin <code>mlx-audio==0.4.4</code>), lean base. Runtime package code stays stdlib + websockets only outside backend extras; <code>numpy</code> is dev-only for verification scripts/tests that explicitly opt into it, not a dependency of <code>ToneBackend</code> or the shared pcm16 converter.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>CI: stand up the <strong>two-job split now</strong> (structure mirrors stt's <code>.github/workflows/test.yml</code>): a <strong>lean job</strong> that syncs <strong>only <code>--extra client</code></strong> (never <code>kokoro</code> — keeps torch out of "lean") and runs an <strong>explicit allow-list of lean test files</strong>, <strong>plus a ruff step</strong>; a <strong>full macOS/Apple-Silicon job</strong> that syncs all declared extras and runs everything that is not explicitly network/model-gated. Phase 2's mlx-gated tests are simply not on the lean allow-list — no runtime skip-marker reliance. <strong>The Phase-0 allow-list contains only the import-safety test</strong>; Phases 1, 2, and 3 each <strong>extend the allow-list in the same commit</strong> that adds their lean tests. Before relying on the full macOS job as acceptance evidence, add a Phase-0 CI verification note or separate smoke step proving the runner can <code>uv sync</code> the intended TTS extras; if Kokoro model download/weights/network are unavailable in CI, mark Kokoro synth tests as manual or gated and document that in the workflow.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Phase-0 <strong>import-safety test</strong> asserts only that base install (no mlx) <code>import tts_server</code> succeeds. (Constructing <code>ToneBackend</code> moves to Phase 1, where it first exists — a Phase-0 commit must stay green.)</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 1 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-1">Phase 1</span>Protocol + Tone end-to-end (no model)</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>protocol.py</code> events/constants/<code>ErrorCode</code>.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>backend.py</code> Protocols + <code>ToneBackend</code> (deterministic sine of N ms); <code>backends/_stream_util.py</code> (daemon thread + bounded queue bridge with producer-side blocking/cooperative put + EOF sentinel + cancel) so Kokoro and the streaming backends share one bridge.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>server.py</code> session loop, handshake, append/commit, 20 ms re-chunker, cancel. <strong>Per-connection <code>_SessionState</code> isolation is built here</strong> (no shared mutable session state — mirrors stt); endpoint resolution plus the cleartext-remote warning/guard land here so the Phase-1 endpoint tests pass. Only auth enforcement, resource-limit caps, and synthesis backpressure caps are deferred to Phase 3.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>client.py</code> async client.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Extend the lean CI allow-list</strong> with the Phase-1 test files added below.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Move here:</strong> the import-safety test that constructs <code>ToneBackend</code> with no mlx (lean CI).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Tests (all lean-CI on <code>ToneBackend</code>, no mlx): tone end-to-end; cancel mid-stream <strong>asserting no <code>response.audio.delta</code> for that <code>response_id</code> after <code>response.cancelled</code>, acknowledged within one segment-delay</strong>; protocol round-trip <strong>asserting <code>hello.protocol_version=="0.1"</code> and per-<code>ErrorCode</code> error paths</strong> (unknown event, invalid JSON, empty-buffer commit, bad extras); <strong>endpoint precedence</strong> (URI&gt;socket&gt;host+port) + cleartext-remote guard; <strong><code>session.update</code>→<code>updated</code> and <code>input_text.clear</code>→<code>cleared</code></strong> round-trips; <strong><code>response.failed</code></strong> via a raising <code>ToneBackend</code> (carries <code>{code,message}</code>, session stays usable); <strong>capabilities</strong> shape + <strong>unknown-extras dropped not errored</strong> + an extra colliding with a fixed param (<code>voice</code>/<code>language</code>) rejected before the <code>**extras</code> call; <strong><code>seq</code> monotonicity</strong> — <code>seq</code> starts at 0, increments by 1 with no gaps across a multi-segment utterance, and resets per new <code>response_id</code> (the client reassembles ordered PCM off <code>seq</code>; a gap silently corrupts audio); <strong>standalone <code>PROTOCOL_VERSION=="0.1"</code> trip-wire</strong> (a constant-pin test separate from the handshake round-trip — mirrors stt; catches bumps the round-trip would not); <strong><code>session.update.audio_format</code> reject</strong> — any value other than the advertised pcm16-at-model-rate → <code>error {code: UNSUPPORTED_FORMAT}</code>; <strong>unknown <code>input_text.commit.audio_format</code> reject</strong> — because commit has no format field in v1, this is an invalid/unknown-field protocol error rather than format negotiation; <strong><code>text_format</code> reject</strong> — a non-<code>plain</code> <code>text_format</code> (e.g. <code>ssml</code>) is rejected (only <code>plain</code> advertised); <strong><code>session.cancel</code> vs <code>session.close</code></strong> — distinct semantics (close = drain, cancel = discard) and both distinct from <code>response.cancel</code>.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 2 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-2">Phase 2</span>Kokoro backend</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>backends/kokoro.py</code>: load/generate, float→pcm16, thread executor; rate from <code>model.sample_rate</code> (warmup is JIT-only, decoupled from rate discovery — see R3).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>capabilities()</code> → <code>streaming:false</code>, chunk-size hints, voices count, languages; advertised <code>extras</code> == Kokoro's effective set <code>{speed}</code>.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Tests (gated on mlx / Apple Silicon, not on the lean allow-list): synthesize "GOAL!" → non-empty PCM16 at advertised rate; <strong>assert <code>hello.audio.rate</code> is populated from <code>model.sample_rate</code> after <code>load()</code> with no <code>generate()</code> having run</strong> (R3's pre-warmup invariant); assert Kokoro <code>capabilities()["extras"] == ["speed"]</code>, advertised voice/language shape, unsupported kwargs excluded, and at least one non-default ISO language maps to the expected Kokoro <code>lang_code</code> before <code>generate()</code>; run a long single-segment cancellation probe and record the measured <code>response.cancel</code> acknowledgement/no-more-delta latency.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Clip-invariant unit test (lean-CI, no mlx):</strong> the float→int16 converter is a standalone stdlib helper importable without <code>mlx_audio</code> or <code>numpy</code>; feed it ±1.5 and assert it <strong>saturates</strong> to <code>+32767</code>/<code>−32768</code>, not wraps (R3 — the [-1,1] range is observed, not guaranteed). Add this test file to the lean allow-list.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Kokoro lazy-import lean test:</strong> import or backend-registry-resolve <code>tts_server.backends.kokoro</code> with the <code>kokoro</code> extra absent and assert module import succeeds without importing <code>mlx_audio</code>; actual model startup remains in the mlx-gated suite.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 3 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-3">Phase 3</span>Ops parity with stt</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>status</code> subcommand; startup model logging.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Optional bearer auth; resource limits + send-queue high-water.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Backpressure caps</strong> (per-connection <code>_SessionState</code> isolation already built in Phase 1): global synthesis-queue cap + per-connection in-flight cap → reject excess <code>commit</code> with <code>error {code: BUSY, retry_after_ms}</code> (not enqueued).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Tests (mirror stt, lean-CI on <code>ToneBackend</code>): <code>status</code> round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; <strong>auth</strong> — token-required reject, token-absent TCP startup warning, UDS no-warn, and client <code>TTS_WS_TOKEN</code> vs server <code>PIPECAT_TTS_AUTH_TOKEN</code> precedence (client must NOT fall back to the server token); <strong>resource limits</strong> — stalled-reader trips send-queue high-water → connection closed (not unbounded), and <code>max_text_chars</code> over-limit rejection; <strong>backpressure + isolation</strong> (see Testing Notes) — <code>BUSY</code>/<code>retry_after_ms</code> on a full synthesis queue (assert <code>retry_after_ms</code> is a <strong>positive, bounded integer</strong> — not zero/absurd, else the client hot-loops), per-connection in-flight cap, <strong>cancel frees an in-flight slot</strong> (fill to K, <code>response.cancel</code> one, assert a new <code>commit</code> is accepted — guards a barge-in-heavy client from self-DoSing into permanent <code>BUSY</code>), and the 2-connection no-intermix / round-robin-fairness assertions.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 4 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-4">Phase 4</span>Reference adapter + docs</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>examples/pipecat_tts_service.py</code> (reference <code>InterruptibleTTSService</code> wrapper). The lightweight <code>examples/reference_client.py</code> (stdlib + <code>websockets</code>, no pipecat dependency) already exists as a testing oracle; the pipecat-framework adapter is the additional Phase-4 deliverable.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>README.md</code>; <strong><code>docs/protocol.md</code> already authored</strong> (2026-06-24) — Phase 4 verifies it matches the shipped <code>protocol.py</code> and updates the Kokoro-only capabilities/extras table (Phase 5 revisits it when the other backends land). <code>python -m tts_server status</code> usage.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 5 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-5">Phase 5</span>More backends (later)</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Streaming backend</strong> = <code>backends/voxtral_tts.py</code> (verified present in mlx-audio 0.4.4; it was NOT in 0.3.0). <code>voxtral_tts.generate(text, voice, temperature, top_k, top_p, max_tokens, verbose, stream, streaming_interval)</code> has native <code>stream</code>/<code>streaming_interval</code> and <strong>no <code>ref_audio</code></strong> — so it's the cleanest streaming backend (exercises the no-split client path with no cloning concern). extras <code>{temperature, top_k, top_p}</code>. <strong><code>kyutai</code> is still not an mlx-audio TTS family</strong>; <code>moss_tts*</code> exists but is unrelated to Kyutai/Moshi.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>backends/pocket_tts.py</code> — also native streaming, but exposes <code>ref_audio</code> (leave unwired per decision 2); <strong>imports cleanly in 0.4.4</strong> (re-verified 2026-06-24 — the earlier "needs <code>requests</code>" note was stale/wrong). <code>backends/dia.py</code> (multi-speaker <strong>dialogue</strong> model — <code>[S1]</code>/<code>[S2]</code> tags, <code>extras</code> <code>{temperature, top_p}</code>, <code>ref_audio</code> unwired; its <code>voice</code>/text semantics differ from single-voice backends).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Test (when these backends land): assert each backend's advertised <code>capabilities["extras"]</code> <strong>excludes <code>ref_audio</code></strong> and that a client-supplied <code>ref_audio</code> cannot be passed through — the negative guard for locked decision #2.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Packaging/CI update in the same commit as each new backend: add the corresponding <code>pyproject.toml</code> optional dependency extra, update the full macOS/all-extras sync job to install it, and keep lean CI free of those heavy deps.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Update the Phase-4 README/protocol-doc capabilities &amp; extras table</strong> for the new backends (they were Kokoro-only when first written).</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="technical-specifications">
+<!-- plan-view-rich-section-sha256: 3db746d820fe4dd5ea8a86806c1a3e5e6d6f656f635d15da442201fd3e35ec96 -->
+<section class="section" id="technical-specifications">
+  <h2>Technical Specifications</h2>
+
+  <div class="card">
+    <h3>Wire Events</h3>
+    <p>The full wire contract is written up in <code>docs/protocol.md</code> (authored 2026-06-24, ahead of implementation). Phase 1 implements <code>protocol.py</code> against that doc; the lightweight stdlib+<code>websockets</code> test client <code>examples/reference_client.py</code> speaks it and has been smoke-tested against a mock server (handshake → append → commit → 3 pcm16 deltas reassembled by <code>seq</code> → done → valid 24 kHz mono WAV). The summary below is the source of truth that <code>docs/protocol.md</code> expands; keep the two in sync.</p>
+
+    <h4>Client → Server</h4>
+    <p>
+      <span class="chip">session.update</span> <code>{voice?, model?, language?, audio_format?, extras?}</code> ·
+      <span class="chip">input_text.append</span> <code>{text, text_format?}</code> ·
+      <span class="chip">input_text.commit</span> <code>{voice?, language?, extras?}</code> ·
+      <span class="chip">input_text.clear</span> ·
+      <span class="chip">response.cancel</span> <code>{response_id?}</code> ·
+      <span class="chip">session.cancel</span> ·
+      <span class="chip">session.close</span> ·
+      <span class="chip">server.status</span>
+    </p>
+
+    <h4>Server → Client</h4>
+    <p>
+      <span class="chip">server.hello</span> <code>{protocol_version, backend:{name,model}, audio:{format,rate,channels}, capabilities}</code> ·
+      <span class="chip">session.created</span> / <span class="chip">session.updated</span> ·
+      <span class="chip">input_text.committed</span> <code>{response_id}</code> ·
+      <span class="chip">input_text.cleared</span> ·
+      <span class="chip">response.created</span> <code>{response_id}</code> ·
+      <span class="chip">response.audio.delta</span> <code>{response_id, seq, audio(base64 pcm16)}</code> ·
+      <span class="chip">response.audio.done</span> <code>{response_id, duration_ms}</code> ·
+      <span class="chip">response.cancelled</span> / <span class="chip">response.failed</span> <code>{response_id, error?}</code> ·
+      <span class="chip">server.status</span> ·
+      <span class="chip">error</span> <code>{code, message, retry_after_ms?}</code>
+      <em style="font-size:0.85em">(<code>retry_after_ms</code> present when <code>code==BUSY</code> — synthesis-backlog backpressure, R4)</em>
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Capabilities (<code>server.hello</code>) — Kokoro Example, Verified Fields Annotated</h3>
+    <pre><code>{ &quot;streaming&quot;: false, &quot;binary_audio&quot;: false,
+  // rate is NOT here — canonical rate is hello.audio.rate (24000, VERIFIED); R1 client reads that
+  &quot;text_formats&quot;: [&quot;plain&quot;],
+  // ssml/ipa UNVERIFIED for Kokoro — plain confirmed; drop until checked
+  &quot;languages&quot;: [&quot;en&quot;,&quot;ja&quot;,&quot;zh&quot;,&quot;fr&quot;,&quot;es&quot;,&quot;it&quot;,&quot;pt&quot;,&quot;hi&quot;],
+  // VERIFIED as voice-prefix/lang_code mapping only via --load 2026-06-24:
+  // a:20,b:8→en, e:3→es, f:1→fr, h:4→hi, i:2→it, j:5→ja, p:3→pt, z:8→zh
+  // full non-English long-text behaviour needs the Phase-2 language probe
+  &quot;voice_count&quot;: 54,
+  // VERIFIED via --load 2026-06-24 (54 distinct voices in mlx-community/Kokoro-82M-bf16)
+  &quot;extras&quot;: [&quot;speed&quot;],
+  // Kokoro effective set ONLY; temperature/instruct/cfg_scale/ddpm_steps are NOT Kokoro params
+  &quot;ideal_words&quot;: 40, &quot;max_text_chars&quot;: 2000
+  // ideal_words: soft target, client rounds UP to next sentence boundary
+  // max_text_chars: hard server cap. Values are chosen defaults (not model facts).
+}</code></pre>
+    <p>Kokoro's <code>language</code> maps to a single-letter <code>lang_code</code> (<code>a</code>/<code>b</code>=en, <code>e</code>=es, <code>f</code>=fr, <code>h</code>=hi, <code>i</code>=it, <code>j</code>=ja, <code>p</code>=pt, <code>z</code>=zh) — the backend must translate the ISO <code>language</code> to the letter. Treat this as a verified mapping, not proof that every non-English language has equivalent long-text G2P/chunking behaviour; Phase 2 must probe short synth and long/newline-split cases before the language list becomes a supported client contract. Other backends advertise different <code>extras</code>/<code>rate</code>/<code>streaming</code> (<code>pocket_tts</code> is <code>streaming:true</code>); capabilities is built per-backend, never copied from this example.</p>
+    <p class="banner"><strong>Note:</strong> <code>streaming:false</code> means <strong>no sub-segment streaming</strong> — segment-level streaming still happens (R4 emits each Kokoro <code>\n+</code> segment as it completes). So the client's sentence-chunking on non-streaming backends is about choosing sentence boundaries <em>within a commit</em>, not a substitute for the server's per-segment delivery.</p>
+  </div>
+
+  <div class="card">
+    <h3>Backend Protocol</h3>
+    <pre><code>@dataclass
+class AudioEvent:
+    kind: str   # &quot;delta&quot; | &quot;completed&quot;
+    pcm: bytes  # int16-LE mono; empty on &quot;completed&quot;
+
+class TTSStream(Protocol):
+    async def feed(self, text: str) -&gt; None: ...
+    async def end(self) -&gt; None: ...
+    def events(self) -&gt; AsyncGenerator[AudioEvent, None]: ...   # async def + yield
+    async def cancel(self) -&gt; None: ...
+
+class TTSBackend(Protocol):
+    backend_name: str
+    model: str | None
+    sample_rate: int
+    def capabilities(self) -&gt; dict: ...
+    async def start(self) -&gt; None: ...
+    async def open_stream(self, *, voice, language, extras) -&gt; TTSStream: ...
+    async def close(self) -&gt; None: ...</code></pre>
+    <p><code>extras</code> (validated against <code>capabilities[&quot;extras&quot;]</code>) splats into <code>model.generate(**extras)</code>. The validated <code>extras</code> keys MUST be disjoint from the fixed <code>generate</code> params the backend already passes (<code>text</code>, <code>voice</code>, <code>language</code>/<code>lang_code</code>) — otherwise <code>**extras</code> raises <code>TypeError</code> at the call site. Because <code>generate</code> accepts <code>**kwargs</code>, an <em>unfiltered</em> extra is silently swallowed (or <code>del</code>'d) rather than rejected, so per-backend <code>extras</code> validation is what keeps the advertised contract honest.</p>
+  </div>
+
+  <div class="card">
+    <h3>Streaming Bridge (<code>backends/_stream_util.py</code>)</h3>
+    <p>The single shared daemon-thread→<code>asyncio.Queue</code> bridge every streaming-capable backend uses (Kokoro + <code>voxtral_tts</code> + <code>pocket_tts</code>), so "backend-agnostic" is enforced, not aspirational. The interface (Phase 1 deliverable; Phase 0 ships a stdlib-only stub):</p>
+    <pre><code>async def stream_generate(
+    gen_factory: Callable[[], Iterator[GenerationResult]],
+    # builds the blocking generate() generator
+    *,
+    loop: asyncio.AbstractEventLoop,
+    metal_lock: threading.Lock,   # process-wide; held for the WHOLE generator-drain (see R3)
+    cancel: threading.Event,      # set by TTSStream.cancel(); breaks the generator out
+    maxsize: int,                 # bounded async queue; producer blocks/cooperates when full
+) -&gt; AsyncIterator[bytes]: ...   # yields int16-LE PCM per chunk; EOF sentinel ends iteration</code></pre>
+    <p>A daemon thread acquires <code>metal_lock</code>, runs <code>gen_factory()</code>, converts each yielded <code>GenerationResult.audio</code> (clipped and mapped per R3) to int16-LE PCM, and performs a producer-side blocking/cooperative put into the bounded async queue. <code>call_soon_threadsafe</code> alone is <strong>not</strong> sufficient because it schedules and returns without applying backpressure. The concrete stdlib shape can be <code>asyncio.run_coroutine_threadsafe(queue.put(pcm), loop).result(timeout=...)</code> with cancel/error handling, or an equivalent thread-safe queue plus async wrapper, but the invariant is fixed: a full bridge blocks or cancels the producer, never drops chunks or schedules unbounded callbacks.</p>
+    <p><code>cancel</code> breaks the generator out (releasing the lock so it is not pinned by a cancelled response). <strong>EOF is enqueued on generator exhaustion in a <code>finally</code></strong>, NOT keyed off <code>.is_final_chunk</code> (Kokoro never sets that field — it is advisory only).</p>
+    <p>Kokoro yields per-segment; <code>voxtral_tts</code>/<code>pocket_tts</code> yield intra-segment chunks — both feed the same queue and nothing downstream changes. This is the one boundary <code>_thread_util</code> does <strong>not</strong> cross (it marshals a single Future, not a per-chunk queue).</p>
+  </div>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="architecture-call-flow">
+<!-- plan-view-rich-section-sha256: 34c5f305021a12eef4c7711b8298ef661d8bb3fd4446d2d7f1c7cd998f1410a7 -->
+<section class="section" id="architecture-call-flow">
+  <h2>Architecture &amp; Call Flow</h2>
+
+  <p style="color:var(--fg-dim);margin-bottom:20px;">
+    Five independently-executing components and the context that crosses each boundary.
+    This is the contract for the streaming lifecycle.
+    <strong style="color:var(--amber);">This seam is net-new, not an STT mirror</strong> —
+    STT's <em>commit-then-drain</em> shape is the anti-pattern here; the TTS drain loop is
+    built from scratch on <code>backends/_stream_util.py</code>.
+  </p>
+
+  <!-- ── Pipeline diagram ── -->
+  <section class="card fsm" style="margin-bottom:24px;overflow-x:auto;">
+    <h3 style="margin-top:0;">Streaming pipeline (steady-state)</h3>
+    <svg viewBox="0 0 920 260" xmlns="http://www.w3.org/2000/svg"
+         style="width:100%;min-width:700px;height:auto;display:block;font-family:ui-monospace,monospace;">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#9aa3b2"/>
+        </marker>
+        <marker id="arr-back" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#60a5fa"/>
+        </marker>
+        <marker id="arr-seg" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- ── Row 1: forward data flow ── -->
+
+      <!-- Client -->
+      <rect x="10" y="60" width="140" height="70" rx="10"
+            fill="rgba(96,165,250,0.12)" stroke="#60a5fa" stroke-width="2"/>
+      <text x="80" y="91" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="700">Client</text>
+      <text x="80" y="110" text-anchor="middle" fill="#9aa3b2" font-size="10">WebSocket</text>
+      <text x="80" y="123" text-anchor="middle" fill="#9aa3b2" font-size="10">input_text.*</text>
+
+      <!-- Arrow client → session -->
+      <line x1="150" y1="95" x2="210" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="180" y="87" text-anchor="middle" fill="#9aa3b2" font-size="9.5">WS →</text>
+
+      <!-- Session loop -->
+      <rect x="210" y="40" width="170" height="110" rx="10"
+            fill="rgba(251,191,36,0.10)" stroke="#fbbf24" stroke-width="2"/>
+      <text x="295" y="68" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">Session loop</text>
+      <text x="295" y="85" text-anchor="middle" fill="#9aa3b2" font-size="10">server.py</text>
+      <text x="295" y="101" text-anchor="middle" fill="#9aa3b2" font-size="10">recv loop (always live)</text>
+      <text x="295" y="116" text-anchor="middle" fill="#9aa3b2" font-size="10">drain task (tracked)</text>
+      <text x="295" y="131" text-anchor="middle" fill="#9aa3b2" font-size="10">20 ms re-chunker</text>
+
+      <!-- Arrow session → TTSStream -->
+      <line x1="380" y1="95" x2="440" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="410" y="87" text-anchor="middle" fill="#9aa3b2" font-size="9.5">feed/end</text>
+
+      <!-- TTSStream -->
+      <rect x="440" y="55" width="150" height="80" rx="10"
+            fill="rgba(94,234,212,0.10)" stroke="#5eead4" stroke-width="2"/>
+      <text x="515" y="84" text-anchor="middle" fill="#5eead4" font-size="13" font-weight="700">TTSStream</text>
+      <text x="515" y="101" text-anchor="middle" fill="#9aa3b2" font-size="10">open_stream()</text>
+      <text x="515" y="116" text-anchor="middle" fill="#9aa3b2" font-size="10">events() → AudioEvent</text>
+
+      <!-- Arrow TTSStream → Daemon worker -->
+      <line x1="590" y1="95" x2="650" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="620" y="87" text-anchor="middle" fill="#9aa3b2" font-size="9.5">queue put</text>
+
+      <!-- Daemon worker -->
+      <rect x="650" y="40" width="160" height="110" rx="10"
+            fill="rgba(192,132,252,0.10)" stroke="#c084fc" stroke-width="2"/>
+      <text x="730" y="67" text-anchor="middle" fill="#c084fc" font-size="13" font-weight="700">Daemon worker</text>
+      <text x="730" y="84" text-anchor="middle" fill="#9aa3b2" font-size="10">thread (per commit)</text>
+      <text x="730" y="100" text-anchor="middle" fill="#9aa3b2" font-size="10">metal_lock serializes</text>
+      <text x="730" y="116" text-anchor="middle" fill="#9aa3b2" font-size="10">model.generate() yields</text>
+      <text x="730" y="131" text-anchor="middle" fill="#9aa3b2" font-size="10">GenerationResult/segment</text>
+
+      <!-- Arrow worker → scheduler -->
+      <line x1="810" y1="95" x2="870" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Scheduler -->
+      <rect x="870" y="60" width="40" height="70" rx="8"
+            fill="rgba(248,113,113,0.10)" stroke="#f87171" stroke-width="2"/>
+      <text x="890" y="91" text-anchor="middle" fill="#f87171" font-size="9" font-weight="700"
+            transform="rotate(-90,890,91)" dy="0">scheduler</text>
+
+      <!-- ── Row 2: return path (response.audio.*) ── -->
+      <!-- Return arrow: session → client -->
+      <path d="M 295 150 C 295 210, 80 210, 80 130"
+            stroke="#60a5fa" stroke-width="1.5" fill="none" stroke-dasharray="5,3"
+            marker-end="url(#arr-back)"/>
+      <text x="175" y="220" text-anchor="middle" fill="#60a5fa" font-size="10">response.audio.delta</text>
+      <text x="175" y="234" text-anchor="middle" fill="#60a5fa" font-size="10">response.audio.done</text>
+
+      <!-- bridge label between worker and TTSStream -->
+      <text x="515" y="155" text-anchor="middle" fill="#9aa3b2" font-size="10">bounded bridge queue</text>
+      <text x="515" y="168" text-anchor="middle" fill="#9aa3b2" font-size="10">(_stream_util.py)</text>
+      <line x1="440" y1="148" x2="590" y2="148" stroke="#5eead4" stroke-width="1" stroke-dasharray="4,3"/>
+
+    </svg>
+
+    <!-- Legend -->
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-size:11.5px;color:var(--fg-dim);">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#60a5fa;"></span>Client (WS)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#fbbf24;"></span>Session loop (async)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#5eead4;"></span>TTSStream (per utterance)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#c084fc;"></span>Daemon worker thread (Metal)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#f87171;"></span>Global synthesis scheduler
+      </div>
+    </div>
+  </section>
+
+  <!-- ASCII source as pre fallback -->
+  <details style="margin-bottom:24px;">
+    <summary style="cursor:pointer;color:var(--fg-dim);font-size:12px;padding:4px 0;">Show ASCII source diagram</summary>
+    <pre style="background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:14px;
+                font-size:12px;overflow-x:auto;margin-top:8px;color:var(--fg-dim);line-height:1.5;">client ──ws──&gt; session loop (server.py) ──&gt; TTSStream (backend) ──&gt; daemon worker thread
+  ▲                  │  ▲                         │  ▲                    │ (Metal, serialized)
+  │                  │  │                         │  │                    │ model.generate() yields
+  │ response.audio.* │  │ 20 ms re-chunker        │  │ bounded bridge     │ GenerationResult per
+  └──────────────────┘  └─────────────────────────┘  └── blocking/cooperative put ── segment (\n+)</pre>
+  </details>
+
+  <!-- ── Components ── -->
+  <h3 class="section-h3" style="font-size:15px;font-weight:600;margin:0 0 12px;">Components &amp; Triggers</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;margin-bottom:24px;">
+
+    <div class="card" style="border-left:3px solid #60a5fa;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip blue">Client</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Drives the session: <code>session.update</code> → <code>input_text.append</code> →
+        <code>input_text.commit</code>. Owns device, resampling, buffering. Reads
+        <code>hello.audio.rate</code> once — the only rate on the wire.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #fbbf24;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip amber">Session loop</span>
+        <code style="font-size:11px;color:var(--fg-muted);">server.py</code>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <strong>recv loop</strong> stays live for the whole connection so
+        <code>response.cancel</code> / <code>session.*</code> are always serviceable.
+        On <code>commit</code>: allocates <code>response_id</code>, emits
+        <code>response.created</code>, admits work into the global synthesis scheduler,
+        opens a backend stream, and runs the <strong>drain loop as a tracked task</strong>
+        (not inline — mirrors <code>asyncio.create_task(self._run_decode(...))</code>,
+        <code>stt_server/server.py:568</code>). Outbound WS writes serialized through one
+        writer/queue.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #5eead4;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip teal">TTSStream</span>
+        <code style="font-size:11px;color:var(--fg-muted);">open_stream()</code>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Adapts one utterance. <code>feed(text)</code> / <code>end()</code> enqueue work;
+        <code>events()</code> is an <strong>async generator yielding <code>AudioEvent</code>s
+        as segments land</strong> — it does NOT wait for full synthesis.
+        <code>cancel()</code> stops the worker. <code>end()</code> must return before the
+        first segment completes.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #c084fc;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip purple">Daemon worker thread</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Runs the blocking <code>model.generate(...)</code> generator. Metal is not
+        concurrency-safe — a process-wide lock serializes calls. Each yielded
+        <code>GenerationResult.audio</code> (float32 mono → int16-LE PCM) is pushed onto the
+        bounded bridge with producer-side backpressure.
+        <strong style="color:var(--amber);">EOF comes from generator exhaustion</strong>
+        (enqueued in a <code>finally</code>), NOT from <code>.is_final_chunk</code> —
+        Kokoro never sets that field (<code>kokoro.py:345–367</code>); treating it as EOF
+        would hang forever.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #fbbf24;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip amber">20 ms re-chunker</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Lives in the session/drain layer. Slices native segment PCM into fixed 20 ms frames at
+        <code>backend.sample_rate</code>. <strong>Tail policy:</strong> final frame of a response
+        MAY be short — no silence padding (would inject audible gaps). Re-frames the full
+        per-response PCM stream, not each segment independently; only the response's last frame
+        is short. <code>response.audio.done.duration_ms</code> computed from the original total
+        sample count.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #f87171;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip red">_stream_util.py</span>
+        <span class="chip grey">shared module</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Dedicated per-chunk queue module. Used by Kokoro and all streaming backends
+        (<code>voxtral_tts</code>, <code>pocket_tts</code>) so "backend-agnostic" is real and
+        backends cannot drift. This is the boundary <code>_thread_util</code> does not cross
+        (it marshals one Future per call; streaming needs the per-chunk queue).
+      </p>
+    </div>
+
+  </div>
+
+  <!-- ── Drain loop ── -->
+  <h3 style="font-size:15px;font-weight:600;margin:0 0 12px;">Synthesis Drain Loop (steady-stream contract R4)</h3>
+  <div class="card" style="margin-bottom:24px;">
+    <ol style="margin:0;padding-left:20px;font-size:13px;line-height:2;color:var(--fg-dim);">
+      <li><code>commit</code> → emit <code>response.created {response_id}</code></li>
+      <li><code>await stream.feed(text)</code>; <code>await stream.end()</code>
+          — <strong style="color:var(--green);">non-blocking</strong>: signals end-of-input
+          and kicks off the worker; must NOT block until synthesis completes.</li>
+      <li><code>async for ev in stream.events():</code> — for each segment that lands,
+          push PCM through the 20 ms re-chunker and emit
+          <code>response.audio.delta {response_id, seq, audio}</code> <em>as it arrives</em>.
+          First audio ships after the <em>first segment</em>, not the whole utterance.</li>
+      <li>On <strong>generator exhaustion</strong> (not <code>.is_final_chunk</code>) →
+          flush any short tail frame → emit
+          <code>response.audio.done {response_id, duration_ms}</code>
+          (<code>duration_ms</code> from the original sample count).</li>
+    </ol>
+  </div>
+
+  <!-- ── Key constraints ── -->
+  <h3 style="font-size:15px;font-weight:600;margin:0 0 12px;">Key Constraints &amp; Edge Cases</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:24px;">
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip blue">R1 — Rate</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <code>hello.audio.rate</code> is read from <code>model.sample_rate</code> at connect
+        (pre-warmup, confirmed via <code>--load</code> 2026-06-24). The re-chunker never
+        resamples. <strong>Ordering edge:</strong> backend's <code>start()</code>/model-load
+        MUST complete before the first <code>server.hello</code> is sent —
+        connect→load→hello, a dependency edge STT does not have.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip amber">Cancel / Barge-in (R4)</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <code>response.cancel {response_id}</code> → session sets cancel flag, calls
+        <code>stream.cancel()</code> (best-effort at next generator yield/segment boundary),
+        drains/clears queue, emits <code>response.cancelled {response_id}</code>. No further
+        <code>delta</code> after <code>cancelled</code>. Promptness for long single-segment
+        utterances is an <strong style="color:var(--amber);">assumption to verify in Phase 2</strong>.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip red">Backpressure (3 queues)</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <strong>(1) Outbound</strong> — if client stops reading, the per-connection send queue
+        hits its high-water mark and the connection is <em>closed</em> (not buffered).
+        <strong>(2) Inbound</strong> — global synthesis backlog; when full, new
+        <code>commit</code> is <em>rejected</em> with
+        <code>error {code: BUSY, retry_after_ms}</code>; per-connection cap ≤K.
+        <strong>(3) Scheduler</strong> — owns fairness and lock acquisition; round-robins
+        admitted commits across non-empty per-connection queues before worker creation.
+        Independent daemon threads must NOT race directly for <code>metal_lock</code>.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip teal">Multi-connection isolation</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Each connection has its own <code>_SessionState</code> — no shared mutable state,
+        no cross-connection text/audio pollution. Model + Metal lock are shared; the
+        <strong>commit is the unit of scheduler selection and lock-holding</strong>.
+        Per-commit <code>ideal_words</code> sizing (decision #6) bounds head-of-line blocking
+        so a long commit on connection A delays connection B's first audio by at most
+        ~one already-selected commit.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip purple">Topology note</span>
+        <span class="chip grey">voxtral / pocket</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Only <code>voxtral_tts</code> / <code>pocket_tts</code> add a sub-segment streaming
+        layer (native <code>stream</code> / <code>streaming_interval</code>); for them the
+        worker yields intra-segment chunks into the same queue. The session loop, re-chunker,
+        and send path are <strong>backend-agnostic</strong> — nothing downstream of the queue
+        changes.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="testing-notes">
+<!-- plan-view-rich-section-sha256: 3f1682c210161b164e4b595e45b90bfcadd8348c560393e9fc714bff0e505a2e -->
+<section class="section" id="testing-notes">
+  <h3>Testing Notes</h3>
+  <ul>
+    <li>
+      <code>ToneBackend</code> makes Phase-1 fully deterministic with <strong>no mlx dependency</strong> — protocol,
+      re-chunking, cancel, and the lean-base import-safety test all run in plain CI.
+    </li>
+    <li>
+      Kokoro tests are marked/skipped when mlx or Apple Silicon is absent.
+    </li>
+    <li>
+      Assert the 20 ms re-chunker emits uniform frame sizes from both a single-chunk
+      (non-streaming) and multi-chunk (simulated streaming) backend.
+      <strong>Tail policy:</strong> feed a total PCM length that is <strong>not</strong> a multiple of 20 ms
+      and assert every frame except the <strong>last</strong> is exactly 20 ms, the last MAY be short,
+      <strong>no silence padding</strong> is added, and <code>response.audio.done.duration_ms</code> equals
+      the original-sample-count duration (not <code>frames × 20 ms</code>).
+    </li>
+    <li>
+      <strong>EOF without <code>.is_final_chunk</code>:</strong> with a <code>ToneBackend</code> that yields all
+      chunks with <code>is_final_chunk=False</code> (the Kokoro shape — Kokoro never sets it), assert
+      <code>response.audio.done</code> still fires on generator exhaustion (regression guard against
+      keying EOF off the flag).
+    </li>
+    <li>
+      <strong>Cancel during active synthesis:</strong> assert <code>response.cancel</code> is acknowledged
+      <em>while a response is mid-synthesis</em> (the recv loop is not blocked by the drain task) —
+      drive a slow/delayed <code>ToneBackend</code>, send <code>cancel</code> before synthesis completes, and
+      assert <code>response.cancelled</code> arrives promptly with no further <code>delta</code>.
+    </li>
+    <li>
+      <strong>Rate-exactness:</strong> assert every <code>response.audio.delta</code> frame's implied rate
+      matches <code>hello.audio.rate</code> and is constant across a multi-segment utterance (a
+      <code>ToneBackend</code> with a fixed rate makes this deterministic in plain CI).
+    </li>
+    <li>
+      <strong>Steady streaming / no jitter starvation:</strong> with a <code>ToneBackend</code> whose segments
+      complete with an injected delay, assert first audio arrives before the whole utterance is synthesized
+      (time-to-first-frame &lt;&lt; total synth time) and that the send loop is not blocked between segments —
+      i.e. <code>events()</code> yields per segment, it does not buffer the full utterance then flush.
+      Also assert an <strong>inter-<code>delta</code> gap bound</strong> with a deterministic fixture: configure
+      <code>ToneBackend</code> for at least 3 segments with <code>segment_delay_ms=120</code>; after the first
+      <code>delta</code>, the max gap between consecutive <code>response.audio.delta</code>s for that response must
+      be <code>&lt;= segment_delay_ms + 50ms</code> on the test loop, and the test must fail if the backend
+      buffers all segments then flushes. This is the "no burst-then-gap" half of the steady-stream contract
+      and the actual underrun/croak cause (a passing first-audio test does not by itself catch a mid-stream gap).
+    </li>
+    <li>
+      <strong>Multi-connection isolation &amp; fairness:</strong> with two concurrent connections on a delayed
+      <code>ToneBackend</code>, assert (a) their <code>response.audio.delta</code> streams <strong>never intermix</strong>
+      (each <code>response_id</code> belongs to exactly one connection; bytes are not interleaved across sessions)
+      and (b) a long commit on connection A delays connection B's <strong>first audio</strong> by at most one
+      already-selected commit (the scheduler dispatches round-robin at commit granularity), not by A's full
+      utterance or by whichever daemon thread wins the OS lock race.
+    </li>
+    <li>
+      <strong>Backpressure:</strong> drive the global synthesis queue past its cap and assert the next
+      <code>commit</code> gets <code>error {code: BUSY, retry_after_ms}</code> and is <strong>not</strong> synthesized;
+      assert a per-connection in-flight cap rejects a connection's (K+1)th queued commit while others still get
+      served. Fill the backend→session bridge queue and assert the producer blocks or exits via cancel/error rather
+      than dropping chunks or scheduling unbounded callbacks. (Distinct from the send-queue high-water <em>close</em>
+      test under R4.)
+    </li>
+  </ul>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="acceptance-criteria">
+<!-- plan-view-rich-section-sha256: f46b8838cc34ed80cf38513c4c6e35ae60d685e508641505371c2b2751440ff0 -->
+<section class="section" id="acceptance-criteria">
+  <h2>Acceptance Criteria</h2>
+  <ul class="ac-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.75rem;">
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span><code>python -m tts_server serve --backend kokoro</code> serves; <code>status</code> prints backend/model/rate.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span>A client synthesizes text → non-empty PCM16 frames at the advertised rate; <code>response.cancel</code> stops the deterministic Tone path promptly and produces no further deltas after <code>response.cancelled</code>. Kokoro long-segment cancellation latency is measured in Phase 2 and either meets the barge-in target or is documented as yield-boundary best effort with client chunking.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span><strong>Rate contract:</strong> every emitted frame is int16-LE mono at exactly <code>hello.audio.rate</code>, constant across the whole utterance (no per-utterance drift).</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span><strong>Steady-stream contract:</strong> for a multi-segment utterance, first audio reaches the client before full synthesis completes, and audio is delivered continuously (no burst-then-gap — asserted via the inter-<code>delta</code> gap bound in Testing Notes) so the client playback buffer never starves.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span>Base install (no <code>kokoro</code> extra) imports and runs the Tone path; no mlx at import time.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span>Lean/base runtime code does not import dev-only <code>numpy</code>; Kokoro module import stays lazy with <code>mlx_audio</code> absent.</span>
+    </li>
+
+  </ul>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason">
+<!-- plan-view-rich-section-sha256: 79187fdc2eeff6aa4b66dfde77f3b4755e307d45763592d510da858f71db90e8 -->
+<section class="section">
+  <h3>Decided defaults (locked so <code>/conduct</code> doesn&#39;t fork; revisit only if a phase surfaces a reason)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Concern</th>
+        <th>Decision</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Audio framing</td>
+        <td><strong>base64-in-JSON</strong> for v1 (advertise <code>binary_audio:false</code>; binary is a later optimization)</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>Event naming</td>
+        <td><strong><code>response.audio.*</code></strong> (OpenAI-Realtime-aligned)</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Wire frame size</td>
+        <td><strong>20 ms</strong></td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Voices</td>
+        <td><strong>count in hello, full list via <code>status</code></strong></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Repo</td>
+        <td>Dev on <code>vr000m/pipecat-local-tts-server</code>; PR to <code>pipecat-ai/</code> upstream later</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="conduct-readiness">
+<!-- plan-view-rich-section-sha256: b7c80f8bf07a6010b805fa4bbc0ca805eb91929764649acde7b6143a623e7259 -->
+<section class="section" id="conduct-readiness">
+  <h2>Conduct Readiness</h2>
+  <p>Closest of the two to conduct-ready.</p>
+
+  <div class="card" style="margin-bottom:1.25rem;">
+    <h3 style="margin-top:0;margin-bottom:.75rem;">Readiness Gates</h3>
+    <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.6rem;">
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Reviewed via <code>/review-plan</code> (2026-06-24):</strong> 28 findings across five lenses, all folded in — runtime mlx-audio facts confirmed via <code>--load</code> + <code>prosody_check.py</code>, the streaming seam reframed as net-new (not an STT mirror), <code>_stream_util</code> interface specified, and protocol-detail test gaps (<code>seq</code>, clip invariant, <code>audio_format</code>, <code>session.cancel/close</code>) added.</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Codex adversarial pass (2026-06-24):</strong> 5 more findings added, including 2 Critical verified against source — drain loop must run in a <strong>tracked task</strong> (not inline in recv loop, else cancel can't be serviced — <code>server.py:568</code>); EOF must come from <strong>generator exhaustion</strong> (Kokoro never sets <code>.is_final_chunk</code> — <code>kokoro.py:345–367</code>).</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Second <code>/review-plan</code> pass (2026-06-24):</strong> 14 more issues found and folded in — Phase-1/3 cleartext sequencing, exact <code>audio_format</code> ownership, asymmetric PCM16 mapping, stdlib-only Tone/pcm16 runtime, full-extra CI verification, Kokoro cancel/language verification, scheduler-owned fairness, bridge backpressure, Phase-5 packaging/CI, and concrete steady-stream gap tests.</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Phases 0–5 drafted</strong> with per-phase acceptance tightened in review (mlx-gated Kokoro tests vs lean CI split; numpy in the <code>dev</code> group; per-phase allow-list extension).</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>No external blocker</strong> — can be conducted first; the gamealerts plan depends on its Phases 0–2.</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-warn,#f59e0b);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">⟳</span>
+        <span><strong>Re-run <code>/review-plan</code></strong> after the second-pass edits above — its review marker is the final <code>/conduct</code> readiness signal.</span>
+      </li>
+    </ul>
+  </div>
+
+  <div class="card" style="margin-bottom:1.25rem;">
+    <h3 style="margin-top:0;margin-bottom:.75rem;">Autonomous Conduct Notes</h3>
+    <p style="margin-top:0;">This plan is structured to be conducted end-to-end with no human-in-the-loop gate through Phase 3:</p>
+    <ul style="padding-left:1.4rem;margin:0;display:flex;flex-direction:column;gap:.5rem;">
+      <li><strong>Branching/commits:</strong> one feature branch per phase off <code>main</code>; each phase ends at a green commit. The <em>lean CI job must pass at every commit</em> — that is the per-phase done-check alongside each phase's acceptance bullets.</li>
+      <li><strong>No open decisions block Phases 0–3.</strong> All forks are locked in <em>Decided defaults</em> and <em>Locked design decisions</em>. The one deferred item ("division of labour … settled with gamealerts") is a Phase-4 integration nicety, not a Phase 0–3 dependency; v1 has a safe default (newline-join one commit).</li>
+      <li><strong>Phase 2 is the only environment-gated phase:</strong> Kokoro synth tests need Apple Silicon + model weights/network. They are <em>off the lean allow-list</em> (no runtime skip-markers). Phase 0's CI note requires proving the full job can <code>uv sync</code> the extras, or marking Kokoro tests manual-or-gated if the runner lacks model access. A conductor without Apple Silicon can complete Phases 0/1/3 (all lean, <code>ToneBackend</code>-only) and leave Phase 2's mlx-gated tests to the full job.</li>
+      <li><strong>Contracts are pre-authored:</strong> <code>docs/protocol.md</code> is the wire spec Phase 1 implements against; <code>examples/reference_client.py</code> is a runnable oracle (validated against a mock) for manual end-to-end checks once the server is up — so the conductor implements to a written contract rather than re-deriving it.</li>
+    </ul>
+  </div>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="companion-plan">
+<!-- plan-view-rich-section-sha256: 093761f2b4a351966a63f07f877c9ef613d906dfd42f52fb73d4a73201f2fd48 -->
+<section class="section" id="companion-plan">
+  <h2>Companion plan</h2>
+  <p>
+    gamealerts client/integration work:
+    <a href="gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md"><code>gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md</code></a>.
+  </p>
+</section>
+
+</div>
+<div class="tab-panel" data-slot="progress">
+<!-- plan-view-rich-section-sha256: 68df76e5d7a9b8a727fa80892621c5b7a3b364fe668b9ea6cc1c39bfd89d046b -->
+<h3>Progress</h3>
+<p class="muted">No progress recorded yet.</p>
+
+</div>
+<div class="tab-panel" data-slot="findings">
+<!-- plan-view-rich-section-sha256: 59f3d6cddf87054068d8d390daf3349e4d7930169bc63f7f5c3acc74f474a926 -->
+<h3>Findings</h3>
+<p class="muted">No findings recorded yet.</p>
+
+</div>
+</div>
+
+
+<footer class="plan-foot">
+  Rich view · assembled from 15 section fragments · source sha <code>2fd5981eb8b0</code>.
+  Source of truth: <code>20260624-feature-tts-server-v1.md</code>.
+</footer>
+</body>
+</html>

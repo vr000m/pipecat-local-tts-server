@@ -1,0 +1,169 @@
+<!-- plan-view-rich-section-sha256: 18fed9993e37cbcbc89f881b178192eb89a0e7efe5ef955bd02acc699b856927 -->
+<section class="section" id="implementation-checklist">
+  <h2>Implementation Checklist</h2>
+
+  <style scoped>
+    .phase-block { margin-bottom: 2rem; }
+    .phase-block h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border, #e2e8f0); padding-bottom: 0.35rem; color: var(--heading, #1a202c); }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.45rem 0; border-bottom: 1px solid var(--border-subtle, #f0f4f8); font-size: 0.875rem; line-height: 1.55; }
+    .checklist li:last-child { border-bottom: none; }
+    .check-glyph { flex-shrink: 0; width: 1.25rem; height: 1.25rem; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; margin-top: 0.1rem; }
+    .check-done { background: #c6f6d5; color: #276749; }
+    .check-todo { background: #e2e8f0; color: #718096; }
+    code { background: var(--code-bg, #f7fafc); border: 1px solid var(--border, #e2e8f0); border-radius: 3px; padding: 0.1em 0.35em; font-size: 0.82em; font-family: ui-monospace, 'Cascadia Code', monospace; }
+    .phase-chip { display: inline-block; font-size: 0.7rem; font-weight: 700; border-radius: 99px; padding: 0.15em 0.65em; margin-right: 0.5rem; vertical-align: middle; }
+    .chip-0 { background: #e9d8fd; color: #553c9a; }
+    .chip-1 { background: #bee3f8; color: #2a4365; }
+    .chip-2 { background: #fefcbf; color: #744210; }
+    .chip-3 { background: #fed7d7; color: #742a2a; }
+    .chip-4 { background: #c6f6d5; color: #276749; }
+    .chip-5 { background: #e2e8f0; color: #4a5568; }
+  </style>
+
+  <!-- Phase 0 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-0">Phase 0</span>Scaffold</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>pyproject.toml</code> (uv-build), package layout <code>tts_server/{__init__,__main__,protocol,backend,client,server,env}.py</code> + <code>backends/</code> (incl. <code>backends/_stream_util.py</code> shipped as a stdlib-only stub in Phase 0 — the daemon-thread→<code>asyncio.Queue</code> bridge logic lands in Phase 1 — so the import-safety test stays green; see Architecture &amp; Call Flow), extras <code>client</code>/<code>kokoro</code> (pin <code>mlx-audio==0.4.4</code>), lean base. Runtime package code stays stdlib + websockets only outside backend extras; <code>numpy</code> is dev-only for verification scripts/tests that explicitly opt into it, not a dependency of <code>ToneBackend</code> or the shared pcm16 converter.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>CI: stand up the <strong>two-job split now</strong> (structure mirrors stt's <code>.github/workflows/test.yml</code>): a <strong>lean job</strong> that syncs <strong>only <code>--extra client</code></strong> (never <code>kokoro</code> — keeps torch out of "lean") and runs an <strong>explicit allow-list of lean test files</strong>, <strong>plus a ruff step</strong>; a <strong>full macOS/Apple-Silicon job</strong> that syncs all declared extras and runs everything that is not explicitly network/model-gated. Phase 2's mlx-gated tests are simply not on the lean allow-list — no runtime skip-marker reliance. <strong>The Phase-0 allow-list contains only the import-safety test</strong>; Phases 1, 2, and 3 each <strong>extend the allow-list in the same commit</strong> that adds their lean tests. Before relying on the full macOS job as acceptance evidence, add a Phase-0 CI verification note or separate smoke step proving the runner can <code>uv sync</code> the intended TTS extras; if Kokoro model download/weights/network are unavailable in CI, mark Kokoro synth tests as manual or gated and document that in the workflow.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Phase-0 <strong>import-safety test</strong> asserts only that base install (no mlx) <code>import tts_server</code> succeeds. (Constructing <code>ToneBackend</code> moves to Phase 1, where it first exists — a Phase-0 commit must stay green.)</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 1 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-1">Phase 1</span>Protocol + Tone end-to-end (no model)</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>protocol.py</code> events/constants/<code>ErrorCode</code>.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>backend.py</code> Protocols + <code>ToneBackend</code> (deterministic sine of N ms); <code>backends/_stream_util.py</code> (daemon thread + bounded queue bridge with producer-side blocking/cooperative put + EOF sentinel + cancel) so Kokoro and the streaming backends share one bridge.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>server.py</code> session loop, handshake, append/commit, 20 ms re-chunker, cancel. <strong>Per-connection <code>_SessionState</code> isolation is built here</strong> (no shared mutable session state — mirrors stt); endpoint resolution plus the cleartext-remote warning/guard land here so the Phase-1 endpoint tests pass. Only auth enforcement, resource-limit caps, and synthesis backpressure caps are deferred to Phase 3.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>client.py</code> async client.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Extend the lean CI allow-list</strong> with the Phase-1 test files added below.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Move here:</strong> the import-safety test that constructs <code>ToneBackend</code> with no mlx (lean CI).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Tests (all lean-CI on <code>ToneBackend</code>, no mlx): tone end-to-end; cancel mid-stream <strong>asserting no <code>response.audio.delta</code> for that <code>response_id</code> after <code>response.cancelled</code>, acknowledged within one segment-delay</strong>; protocol round-trip <strong>asserting <code>hello.protocol_version=="0.1"</code> and per-<code>ErrorCode</code> error paths</strong> (unknown event, invalid JSON, empty-buffer commit, bad extras); <strong>endpoint precedence</strong> (URI&gt;socket&gt;host+port) + cleartext-remote guard; <strong><code>session.update</code>→<code>updated</code> and <code>input_text.clear</code>→<code>cleared</code></strong> round-trips; <strong><code>response.failed</code></strong> via a raising <code>ToneBackend</code> (carries <code>{code,message}</code>, session stays usable); <strong>capabilities</strong> shape + <strong>unknown-extras dropped not errored</strong> + an extra colliding with a fixed param (<code>voice</code>/<code>language</code>) rejected before the <code>**extras</code> call; <strong><code>seq</code> monotonicity</strong> — <code>seq</code> starts at 0, increments by 1 with no gaps across a multi-segment utterance, and resets per new <code>response_id</code> (the client reassembles ordered PCM off <code>seq</code>; a gap silently corrupts audio); <strong>standalone <code>PROTOCOL_VERSION=="0.1"</code> trip-wire</strong> (a constant-pin test separate from the handshake round-trip — mirrors stt; catches bumps the round-trip would not); <strong><code>session.update.audio_format</code> reject</strong> — any value other than the advertised pcm16-at-model-rate → <code>error {code: UNSUPPORTED_FORMAT}</code>; <strong>unknown <code>input_text.commit.audio_format</code> reject</strong> — because commit has no format field in v1, this is an invalid/unknown-field protocol error rather than format negotiation; <strong><code>text_format</code> reject</strong> — a non-<code>plain</code> <code>text_format</code> (e.g. <code>ssml</code>) is rejected (only <code>plain</code> advertised); <strong><code>session.cancel</code> vs <code>session.close</code></strong> — distinct semantics (close = drain, cancel = discard) and both distinct from <code>response.cancel</code>.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 2 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-2">Phase 2</span>Kokoro backend</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>backends/kokoro.py</code>: load/generate, float→pcm16, thread executor; rate from <code>model.sample_rate</code> (warmup is JIT-only, decoupled from rate discovery — see R3).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>capabilities()</code> → <code>streaming:false</code>, chunk-size hints, voices count, languages; advertised <code>extras</code> == Kokoro's effective set <code>{speed}</code>.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Tests (gated on mlx / Apple Silicon, not on the lean allow-list): synthesize "GOAL!" → non-empty PCM16 at advertised rate; <strong>assert <code>hello.audio.rate</code> is populated from <code>model.sample_rate</code> after <code>load()</code> with no <code>generate()</code> having run</strong> (R3's pre-warmup invariant); assert Kokoro <code>capabilities()["extras"] == ["speed"]</code>, advertised voice/language shape, unsupported kwargs excluded, and at least one non-default ISO language maps to the expected Kokoro <code>lang_code</code> before <code>generate()</code>; run a long single-segment cancellation probe and record the measured <code>response.cancel</code> acknowledgement/no-more-delta latency.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Clip-invariant unit test (lean-CI, no mlx):</strong> the float→int16 converter is a standalone stdlib helper importable without <code>mlx_audio</code> or <code>numpy</code>; feed it ±1.5 and assert it <strong>saturates</strong> to <code>+32767</code>/<code>−32768</code>, not wraps (R3 — the [-1,1] range is observed, not guaranteed). Add this test file to the lean allow-list.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Kokoro lazy-import lean test:</strong> import or backend-registry-resolve <code>tts_server.backends.kokoro</code> with the <code>kokoro</code> extra absent and assert module import succeeds without importing <code>mlx_audio</code>; actual model startup remains in the mlx-gated suite.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 3 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-3">Phase 3</span>Ops parity with stt</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>status</code> subcommand; startup model logging.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Optional bearer auth; resource limits + send-queue high-water.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Backpressure caps</strong> (per-connection <code>_SessionState</code> isolation already built in Phase 1): global synthesis-queue cap + per-connection in-flight cap → reject excess <code>commit</code> with <code>error {code: BUSY, retry_after_ms}</code> (not enqueued).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Tests (mirror stt, lean-CI on <code>ToneBackend</code>): <code>status</code> round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; <strong>auth</strong> — token-required reject, token-absent TCP startup warning, UDS no-warn, and client <code>TTS_WS_TOKEN</code> vs server <code>PIPECAT_TTS_AUTH_TOKEN</code> precedence (client must NOT fall back to the server token); <strong>resource limits</strong> — stalled-reader trips send-queue high-water → connection closed (not unbounded), and <code>max_text_chars</code> over-limit rejection; <strong>backpressure + isolation</strong> (see Testing Notes) — <code>BUSY</code>/<code>retry_after_ms</code> on a full synthesis queue (assert <code>retry_after_ms</code> is a <strong>positive, bounded integer</strong> — not zero/absurd, else the client hot-loops), per-connection in-flight cap, <strong>cancel frees an in-flight slot</strong> (fill to K, <code>response.cancel</code> one, assert a new <code>commit</code> is accepted — guards a barge-in-heavy client from self-DoSing into permanent <code>BUSY</code>), and the 2-connection no-intermix / round-robin-fairness assertions.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 4 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-4">Phase 4</span>Reference adapter + docs</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>examples/pipecat_tts_service.py</code> (reference <code>InterruptibleTTSService</code> wrapper). The lightweight <code>examples/reference_client.py</code> (stdlib + <code>websockets</code>, no pipecat dependency) already exists as a testing oracle; the pipecat-framework adapter is the additional Phase-4 deliverable.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>README.md</code>; <strong><code>docs/protocol.md</code> already authored</strong> (2026-06-24) — Phase 4 verifies it matches the shipped <code>protocol.py</code> and updates the Kokoro-only capabilities/extras table (Phase 5 revisits it when the other backends land). <code>python -m tts_server status</code> usage.</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Phase 5 -->
+  <div class="phase-block">
+    <h3><span class="phase-chip chip-5">Phase 5</span>More backends (later)</h3>
+    <ul class="checklist">
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Streaming backend</strong> = <code>backends/voxtral_tts.py</code> (verified present in mlx-audio 0.4.4; it was NOT in 0.3.0). <code>voxtral_tts.generate(text, voice, temperature, top_k, top_p, max_tokens, verbose, stream, streaming_interval)</code> has native <code>stream</code>/<code>streaming_interval</code> and <strong>no <code>ref_audio</code></strong> — so it's the cleanest streaming backend (exercises the no-split client path with no cloning concern). extras <code>{temperature, top_k, top_p}</code>. <strong><code>kyutai</code> is still not an mlx-audio TTS family</strong>; <code>moss_tts*</code> exists but is unrelated to Kyutai/Moshi.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><code>backends/pocket_tts.py</code> — also native streaming, but exposes <code>ref_audio</code> (leave unwired per decision 2); <strong>imports cleanly in 0.4.4</strong> (re-verified 2026-06-24 — the earlier "needs <code>requests</code>" note was stale/wrong). <code>backends/dia.py</code> (multi-speaker <strong>dialogue</strong> model — <code>[S1]</code>/<code>[S2]</code> tags, <code>extras</code> <code>{temperature, top_p}</code>, <code>ref_audio</code> unwired; its <code>voice</code>/text semantics differ from single-voice backends).</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Test (when these backends land): assert each backend's advertised <code>capabilities["extras"]</code> <strong>excludes <code>ref_audio</code></strong> and that a client-supplied <code>ref_audio</code> cannot be passed through — the negative guard for locked decision #2.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span>Packaging/CI update in the same commit as each new backend: add the corresponding <code>pyproject.toml</code> optional dependency extra, update the full macOS/all-extras sync job to install it, and keep lean CI free of those heavy deps.</span>
+      </li>
+      <li>
+        <span class="check-glyph check-todo">☐</span>
+        <span><strong>Update the Phase-4 README/protocol-doc capabilities &amp; extras table</strong> for the new backends (they were Kokoro-only when first written).</span>
+      </li>
+    </ul>
+  </div>
+</section>

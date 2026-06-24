@@ -1,0 +1,159 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-06-24T09:46:29.084877Z",
+  "git_head": "aaeedc57d00929b4013938574e8544fe5efb339f",
+  "widget_catalogue": "/Users/vr000m/.claude/plugins/cache/skein/skein/0.2.4/skills/plan-view/_widgets",
+  "fragments_dir": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments",
+  "entries": [
+    {
+      "slug": "20260624-feature-tts-server-v1",
+      "strategy": "sections",
+      "title": "Task: pipecat-local-tts-server \u2014 v1 local websocket TTS server (Kokoro-first)",
+      "aggregate_status": "partial",
+      "source_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/dev_plans/20260624-feature-tts-server-v1.md",
+      "source_md_sha": "2fd5981eb8b092b10a7f32ceec69a84d0ea21f5f82d291025bdd8dc10064903f",
+      "output_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/plan-20260624-feature-tts-server-v1.rich.html",
+      "fragments_dir": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments",
+      "widget_catalogue": "/Users/vr000m/.claude/plugins/cache/skein/skein/0.2.4/skills/plan-view/_widgets/README.md",
+      "bucket": "planned",
+      "existing_rich_sha": null,
+      "sections": [
+        {
+          "section_id": "preamble",
+          "title": "(preamble)",
+          "section_md_sha": "a8537e0d1c53c40012779040d38fe8850684f0b2d26519dd4e42574238a24a9d",
+          "markdown_excerpt": "# Task: pipecat-local-tts-server \u2014 v1 local websocket TTS server (Kokoro-first)\n\n**Status**: Planned \u2014 design locked on paper; no code yet. mlx-audio API claims\nverified against installed **0.4.4** vi",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__preamble.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "objective",
+          "title": "Objective",
+          "section_md_sha": "cd6ba404470a9f69706103b7ed104eefda33bc30b30a2fa08c2c9b8a1c2e5dd4",
+          "markdown_excerpt": "## Objective\n\nBuild a standalone, open-source **local websocket TTS server** that takes **text in\nand streams audio out**, supporting multiple **mlx-audio** models behind one wire\nprotocol. It mirrors",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__objective.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "context",
+          "title": "Context",
+          "section_md_sha": "3fbb4944cc60a2ffd6b2af2a79e7e9161a744c4770ebc94b81f4d7aee29d6de5",
+          "markdown_excerpt": "## Context\n\n- **Why a server:** today gamealerts loads Kokoro **in-process** (in a subprocess),\n  coupling heavy mlx/torch deps to the app and re-loading the model on every restart.\n  This server repl",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__context.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "locked-design-decisions",
+          "title": "Locked design decisions",
+          "section_md_sha": "140ea56b161162a8fbd18b48cd1a4fb614d019fcd546a46dfdc7eb76b2271d02",
+          "markdown_excerpt": "## Locked design decisions\n\n1. **Text in, audio out. Playback stays in the client** \u2014 the server never touches an\n   audio device. (gamealerts keeps its `MacAudioSurface` playback, ducking, barge-in.)",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__locked-design-decisions.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "requirements",
+          "title": "Requirements",
+          "section_md_sha": "70f264bceae9c823ef20e050cfddd4d07d8bad998b63ae2526b16b9adb7ac378",
+          "markdown_excerpt": "## Requirements\n\n- **R1 \u2014 Protocol** (`protocol.py`): `PROTOCOL_VERSION=\"0.1\"`, pcm16 mono, per-backend\n  rate. Event set per Technical Specifications. `ErrorCode` enum mirroring stt.\n  **Rate is a co",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__requirements.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "implementation-checklist",
+          "title": "Implementation Checklist",
+          "section_md_sha": "18fed9993e37cbcbc89f881b178192eb89a0e7efe5ef955bd02acc699b856927",
+          "markdown_excerpt": "## Implementation Checklist\n\n### Phase 0 \u2014 Scaffold\n- [ ] `pyproject.toml` (uv-build), package layout `tts_server/{__init__,__main__,protocol,backend,client,server,env}.py` + `backends/` (incl. `backe",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__implementation-checklist.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "technical-specifications",
+          "title": "Technical Specifications",
+          "section_md_sha": "3db746d820fe4dd5ea8a86806c1a3e5e6d6f656f635d15da442201fd3e35ec96",
+          "markdown_excerpt": "## Technical Specifications\n\n### Wire events\n> The full wire contract is written up in **`docs/protocol.md`** (authored 2026-06-24, ahead\n> of implementation). Phase 1 implements `protocol.py` against",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__technical-specifications.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "architecture-call-flow",
+          "title": "Architecture & Call Flow",
+          "section_md_sha": "34c5f305021a12eef4c7711b8298ef661d8bb3fd4446d2d7f1c7cd998f1410a7",
+          "markdown_excerpt": "## Architecture & Call Flow\n\nFive independently-executing components and the context that crosses each boundary. This\nsection is the contract for the streaming lifecycle. **This seam is net-new, not a",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__architecture-call-flow.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "testing-notes",
+          "title": "Testing Notes",
+          "section_md_sha": "3f1682c210161b164e4b595e45b90bfcadd8348c560393e9fc714bff0e505a2e",
+          "markdown_excerpt": "## Testing Notes\n- `ToneBackend` makes Phase-1 fully deterministic with **no mlx dependency** \u2014 protocol,\n  re-chunking, cancel, and the lean-base import-safety test all run in plain CI.\n- Kokoro test",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__testing-notes.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "acceptance-criteria",
+          "title": "Acceptance Criteria",
+          "section_md_sha": "f46b8838cc34ed80cf38513c4c6e35ae60d685e508641505371c2b2751440ff0",
+          "markdown_excerpt": "## Acceptance Criteria\n- `python -m tts_server serve --backend kokoro` serves; `status` prints backend/model/rate.\n- A client synthesizes text \u2192 non-empty PCM16 frames at the advertised rate; `respons",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__acceptance-criteria.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason",
+          "title": "Decided defaults (locked so `/conduct` doesn't fork; revisit only if a phase surfaces a reason)",
+          "section_md_sha": "79187fdc2eeff6aa4b66dfde77f3b4755e307d45763592d510da858f71db90e8",
+          "markdown_excerpt": "## Decided defaults (locked so `/conduct` doesn't fork; revisit only if a phase surfaces a reason)\n1. Audio framing: **base64-in-JSON** for v1 (advertise `binary_audio:false`; binary is a later optimi",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__decided-defaults-locked-so-conduct-doesn-t-fork-revisit-only-if-a-phase-surfaces-a-reason.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "conduct-readiness",
+          "title": "Conduct Readiness",
+          "section_md_sha": "b7c80f8bf07a6010b805fa4bbc0ca805eb91929764649acde7b6143a623e7259",
+          "markdown_excerpt": "## Conduct Readiness\nClosest of the two to conduct-ready:\n1. **Reviewed** via `/review-plan` (2026-06-24): 28 findings across five lenses, all folded in\n   \u2014 runtime mlx-audio facts confirmed via `--l",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__conduct-readiness.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "companion-plan",
+          "title": "Companion plan",
+          "section_md_sha": "093761f2b4a351966a63f07f877c9ef613d906dfd42f52fb73d4a73201f2fd48",
+          "markdown_excerpt": "## Companion plan\ngamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.\n\n<!-- reviewed: 2026-06-24 @ 01247d4a4906b5570c28030d86a9f0c2e427ab",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__companion-plan.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "progress",
+          "title": "Progress",
+          "section_md_sha": "68df76e5d7a9b8a727fa80892621c5b7a3b364fe668b9ea6cc1c39bfd89d046b",
+          "markdown_excerpt": "## Progress\n\n",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__progress.html",
+          "status": "pending",
+          "existing_section_sha": null
+        },
+        {
+          "section_id": "findings",
+          "title": "Findings",
+          "section_md_sha": "59f3d6cddf87054068d8d390daf3349e4d7930169bc63f7f5c3acc74f474a926",
+          "markdown_excerpt": "## Findings\n",
+          "fragment_path": "/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/rich/_fragments/20260624-feature-tts-server-v1__findings.html",
+          "status": "pending",
+          "existing_section_sha": null
+        }
+      ]
+    }
+  ]
+}

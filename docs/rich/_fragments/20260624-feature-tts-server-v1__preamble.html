@@ -1,0 +1,16 @@
+<!-- plan-view-rich-section-sha256: a8537e0d1c53c40012779040d38fe8850684f0b2d26519dd4e42574238a24a9d -->
+<section class="section">
+  <div class="card">
+    <h3>pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+      <span class="chip chip--neutral">Status: Planned</span>
+      <span class="chip chip--high">Priority: High</span>
+      <span class="chip chip--neutral">Component: tts-server</span>
+      <span class="chip chip--neutral">Assigned: Varun Singh</span>
+      <span class="chip chip--neutral">Created: 2026-06-24</span>
+    </div>
+    <p>Design locked on paper; no code yet. mlx-audio API claims verified against installed <strong>0.4.4</strong> via <code>scripts/verify_mlx_tts_api.py</code> — including the runtime <code>--load</code> path and <code>scripts/prosody_check.py</code>, <strong>executed 2026-06-24 on arm64/vr000m-manganese, mlx-audio 0.4.4</strong>. Runtime facts (rate, audio range, voice count, prosody numbers) are <em>measured</em>, not inferred. Pin <code>mlx-audio==0.4.4</code> — API drifted from 0.3.0 (see R8).</p>
+    <p><strong>Unblocks:</strong> gamealerts TTS-server migration</p>
+    <p><strong>Branch strategy:</strong> <code>main</code> (founding work) → feature branches per phase</p>
+  </div>
+</section>

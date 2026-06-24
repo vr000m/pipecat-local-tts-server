@@ -1,0 +1,66 @@
+<!-- plan-view-rich-section-sha256: 3f1682c210161b164e4b595e45b90bfcadd8348c560393e9fc714bff0e505a2e -->
+<section class="section" id="testing-notes">
+  <h3>Testing Notes</h3>
+  <ul>
+    <li>
+      <code>ToneBackend</code> makes Phase-1 fully deterministic with <strong>no mlx dependency</strong> — protocol,
+      re-chunking, cancel, and the lean-base import-safety test all run in plain CI.
+    </li>
+    <li>
+      Kokoro tests are marked/skipped when mlx or Apple Silicon is absent.
+    </li>
+    <li>
+      Assert the 20 ms re-chunker emits uniform frame sizes from both a single-chunk
+      (non-streaming) and multi-chunk (simulated streaming) backend.
+      <strong>Tail policy:</strong> feed a total PCM length that is <strong>not</strong> a multiple of 20 ms
+      and assert every frame except the <strong>last</strong> is exactly 20 ms, the last MAY be short,
+      <strong>no silence padding</strong> is added, and <code>response.audio.done.duration_ms</code> equals
+      the original-sample-count duration (not <code>frames × 20 ms</code>).
+    </li>
+    <li>
+      <strong>EOF without <code>.is_final_chunk</code>:</strong> with a <code>ToneBackend</code> that yields all
+      chunks with <code>is_final_chunk=False</code> (the Kokoro shape — Kokoro never sets it), assert
+      <code>response.audio.done</code> still fires on generator exhaustion (regression guard against
+      keying EOF off the flag).
+    </li>
+    <li>
+      <strong>Cancel during active synthesis:</strong> assert <code>response.cancel</code> is acknowledged
+      <em>while a response is mid-synthesis</em> (the recv loop is not blocked by the drain task) —
+      drive a slow/delayed <code>ToneBackend</code>, send <code>cancel</code> before synthesis completes, and
+      assert <code>response.cancelled</code> arrives promptly with no further <code>delta</code>.
+    </li>
+    <li>
+      <strong>Rate-exactness:</strong> assert every <code>response.audio.delta</code> frame's implied rate
+      matches <code>hello.audio.rate</code> and is constant across a multi-segment utterance (a
+      <code>ToneBackend</code> with a fixed rate makes this deterministic in plain CI).
+    </li>
+    <li>
+      <strong>Steady streaming / no jitter starvation:</strong> with a <code>ToneBackend</code> whose segments
+      complete with an injected delay, assert first audio arrives before the whole utterance is synthesized
+      (time-to-first-frame &lt;&lt; total synth time) and that the send loop is not blocked between segments —
+      i.e. <code>events()</code> yields per segment, it does not buffer the full utterance then flush.
+      Also assert an <strong>inter-<code>delta</code> gap bound</strong> with a deterministic fixture: configure
+      <code>ToneBackend</code> for at least 3 segments with <code>segment_delay_ms=120</code>; after the first
+      <code>delta</code>, the max gap between consecutive <code>response.audio.delta</code>s for that response must
+      be <code>&lt;= segment_delay_ms + 50ms</code> on the test loop, and the test must fail if the backend
+      buffers all segments then flushes. This is the "no burst-then-gap" half of the steady-stream contract
+      and the actual underrun/croak cause (a passing first-audio test does not by itself catch a mid-stream gap).
+    </li>
+    <li>
+      <strong>Multi-connection isolation &amp; fairness:</strong> with two concurrent connections on a delayed
+      <code>ToneBackend</code>, assert (a) their <code>response.audio.delta</code> streams <strong>never intermix</strong>
+      (each <code>response_id</code> belongs to exactly one connection; bytes are not interleaved across sessions)
+      and (b) a long commit on connection A delays connection B's <strong>first audio</strong> by at most one
+      already-selected commit (the scheduler dispatches round-robin at commit granularity), not by A's full
+      utterance or by whichever daemon thread wins the OS lock race.
+    </li>
+    <li>
+      <strong>Backpressure:</strong> drive the global synthesis queue past its cap and assert the next
+      <code>commit</code> gets <code>error {code: BUSY, retry_after_ms}</code> and is <strong>not</strong> synthesized;
+      assert a per-connection in-flight cap rejects a connection's (K+1)th queued commit while others still get
+      served. Fill the backend→session bridge queue and assert the producer blocks or exits via cancel/error rather
+      than dropping chunks or scheduling unbounded callbacks. (Distinct from the send-queue high-water <em>close</em>
+      test under R4.)
+    </li>
+  </ul>
+</section>

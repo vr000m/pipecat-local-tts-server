@@ -1,0 +1,74 @@
+<!-- plan-view-rich-section-sha256: 3fbb4944cc60a2ffd6b2af2a79e7e9161a744c4770ebc94b81f4d7aee29d6de5 -->
+<section class="section" id="section-context">
+  <h3>Context</h3>
+  <ul>
+    <li>
+      <strong>Why a server:</strong> today <em>gamealerts</em> loads Kokoro <strong>in-process</strong> (in a subprocess),
+      coupling heavy mlx/torch deps to the app and re-loading the model on every restart.
+      This server replaces that subprocess. The STT side already solved this with a shared
+      local server (<code>stt_server</code>, websockets over a Unix socket, lazy-imported per-model
+      backends). This project does the TTS-side mirror.
+    </li>
+    <li>
+      <strong>gamealerts client contract</strong> (asserted from the companion plan — confirm against
+      <code>gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md</code> before Phase&nbsp;4
+      integration; the two load-bearing claims to verify are (i) the client resamples driven
+      <em>solely</em> by <code>hello.audio.rate</code>, and (ii) a server-side mid-response stall starves playback):
+      the client owns the output device, resampling, and buffering; the server owes it exactly two things.
+      <ol>
+        <li>
+          <strong>An exact, stable advertised rate.</strong> <code>MacAudioSurface</code> plays through the selected
+          device (often a 48&thinsp;kHz Focusrite Scarlett USB interface) and resamples model-rate →
+          device-rate driven entirely by <code>hello.audio.rate</code>. A past &ldquo;croaky&rdquo; bug was a rate/buffer
+          mismatch on that USB device; a wrong/variable advertised rate makes the client resample
+          at the wrong ratio → pitch/speed distortion. Format stays int16-LE mono at that rate.
+        </li>
+        <li>
+          <strong>A steady in-response stream.</strong> That croak was a playback-buffer underrun; in-process
+          the audio was always immediately available, but over a socket a server-side stall is a
+          new way to starve the client&rsquo;s playback buffer. Don&rsquo;t stall mid-response. These map to
+          R1 (rate) and R4 (rate + steady streaming).
+        </li>
+      </ol>
+    </li>
+    <li>
+      <strong>Template:</strong> <code>pipecat-local-stt-server</code> v0.3.2 is the authoritative reference —
+      <code>protocol.py</code> (OpenAI-Realtime-inspired event subset), <code>backend.py</code>
+      (<code>TranscriptionBackend</code>/<code>BackendStream</code> Protocols + <code>EchoBackend</code>), lazy-extra
+      backends, <code>python -m stt_server {serve,status}</code>, optional bearer auth, send-queue
+      high-water limits.
+    </li>
+    <li>
+      <strong>mlx-audio API</strong> (verified against installed mlx-audio 0.4.4 via
+      <code>scripts/verify_mlx_tts_api.py</code>, not docs — pin in R8):
+      <code>mlx_audio.tts.utils.load(model_path, lazy=False, strict=True, **kwargs)</code> (signature confirmed)
+      returns a model whose <code>model.generate(text, ...)</code> is a <strong>generator that <code>yield</code>s
+      <code>GenerationResult</code>s</strong> (Kokoro splits on <code>\n+</code>, one per segment).
+      <code>GenerationResult</code> fields are:
+      <ul>
+        <li><code>.audio</code> — float32 <code>mx.array</code>, <strong>1-D mono</strong> (confirmed via
+          <code>verify_mlx_tts_api.py --load</code> 2026-06-24: shape <code>(32400,)</code>, range
+          <code>[-0.199, 0.225]</code>, peak ±0.22; in [−1,1] on this sample but <strong>not</strong> a
+          decoder-guaranteed bound, so clip before scaling — see R3)</li>
+        <li><code>.samples</code>, <code>.sample_rate</code>, <code>.segment_idx</code>, <code>.token_count</code>,
+          <code>.audio_duration</code>, <code>.real_time_factor</code>, <code>.prompt</code>,
+          <code>.audio_samples</code>, <code>.processing_time_seconds</code>, <code>.peak_memory_usage</code></li>
+        <li>
+          <code>.is_streaming_chunk</code> / <code>.is_final_chunk</code> — field <em>presence</em> verified as of 0.4.4
+          via <code>dataclasses.fields</code> (absent in 0.3.0); but <strong>Kokoro never <em>sets</em>
+          <code>.is_final_chunk</code></strong> — <code>kokoro.py:345-367</code> yields
+          <code>GenerationResult(...)</code> with the field defaulting <code>False</code>, confirmed 2026-06-24.
+          So the drain loop fires <code>response.audio.done</code> on <strong>generator exhaustion</strong>,
+          treating <code>.is_final_chunk</code> as advisory only; <code>.segment_idx</code> is the per-segment index.
+        </li>
+      </ul>
+      There is no <code>generate_audio(...)</code> wrapper on <code>tts.utils</code> — we use the generator directly.
+      <br>
+      <strong>Per-model <code>generate()</code> kwargs are disjoint</strong> (see R7): each backend advertises its
+      own effective set — there is no global one. <strong>Version-sensitive:</strong> the API drifted
+      between 0.3.0 and 0.4.4 (the streaming-chunk fields appeared; <code>voxtral_tts</code> was added;
+      <code>pocket_tts</code> dropped dead kwargs) — re-run <code>scripts/verify_mlx_tts_api.py</code> before any
+      mlx-audio bump.
+    </li>
+  </ul>
+</section>

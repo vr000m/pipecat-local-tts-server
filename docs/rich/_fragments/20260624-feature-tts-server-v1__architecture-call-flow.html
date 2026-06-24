@@ -1,0 +1,319 @@
+<!-- plan-view-rich-section-sha256: 34c5f305021a12eef4c7711b8298ef661d8bb3fd4446d2d7f1c7cd998f1410a7 -->
+<section class="section" id="architecture-call-flow">
+  <h2>Architecture &amp; Call Flow</h2>
+
+  <p style="color:var(--fg-dim);margin-bottom:20px;">
+    Five independently-executing components and the context that crosses each boundary.
+    This is the contract for the streaming lifecycle.
+    <strong style="color:var(--amber);">This seam is net-new, not an STT mirror</strong> —
+    STT's <em>commit-then-drain</em> shape is the anti-pattern here; the TTS drain loop is
+    built from scratch on <code>backends/_stream_util.py</code>.
+  </p>
+
+  <!-- ── Pipeline diagram ── -->
+  <section class="card fsm" style="margin-bottom:24px;overflow-x:auto;">
+    <h3 style="margin-top:0;">Streaming pipeline (steady-state)</h3>
+    <svg viewBox="0 0 920 260" xmlns="http://www.w3.org/2000/svg"
+         style="width:100%;min-width:700px;height:auto;display:block;font-family:ui-monospace,monospace;">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#9aa3b2"/>
+        </marker>
+        <marker id="arr-back" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#60a5fa"/>
+        </marker>
+        <marker id="arr-seg" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- ── Row 1: forward data flow ── -->
+
+      <!-- Client -->
+      <rect x="10" y="60" width="140" height="70" rx="10"
+            fill="rgba(96,165,250,0.12)" stroke="#60a5fa" stroke-width="2"/>
+      <text x="80" y="91" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="700">Client</text>
+      <text x="80" y="110" text-anchor="middle" fill="#9aa3b2" font-size="10">WebSocket</text>
+      <text x="80" y="123" text-anchor="middle" fill="#9aa3b2" font-size="10">input_text.*</text>
+
+      <!-- Arrow client → session -->
+      <line x1="150" y1="95" x2="210" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="180" y="87" text-anchor="middle" fill="#9aa3b2" font-size="9.5">WS →</text>
+
+      <!-- Session loop -->
+      <rect x="210" y="40" width="170" height="110" rx="10"
+            fill="rgba(251,191,36,0.10)" stroke="#fbbf24" stroke-width="2"/>
+      <text x="295" y="68" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">Session loop</text>
+      <text x="295" y="85" text-anchor="middle" fill="#9aa3b2" font-size="10">server.py</text>
+      <text x="295" y="101" text-anchor="middle" fill="#9aa3b2" font-size="10">recv loop (always live)</text>
+      <text x="295" y="116" text-anchor="middle" fill="#9aa3b2" font-size="10">drain task (tracked)</text>
+      <text x="295" y="131" text-anchor="middle" fill="#9aa3b2" font-size="10">20 ms re-chunker</text>
+
+      <!-- Arrow session → TTSStream -->
+      <line x1="380" y1="95" x2="440" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="410" y="87" text-anchor="middle" fill="#9aa3b2" font-size="9.5">feed/end</text>
+
+      <!-- TTSStream -->
+      <rect x="440" y="55" width="150" height="80" rx="10"
+            fill="rgba(94,234,212,0.10)" stroke="#5eead4" stroke-width="2"/>
+      <text x="515" y="84" text-anchor="middle" fill="#5eead4" font-size="13" font-weight="700">TTSStream</text>
+      <text x="515" y="101" text-anchor="middle" fill="#9aa3b2" font-size="10">open_stream()</text>
+      <text x="515" y="116" text-anchor="middle" fill="#9aa3b2" font-size="10">events() → AudioEvent</text>
+
+      <!-- Arrow TTSStream → Daemon worker -->
+      <line x1="590" y1="95" x2="650" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="620" y="87" text-anchor="middle" fill="#9aa3b2" font-size="9.5">queue put</text>
+
+      <!-- Daemon worker -->
+      <rect x="650" y="40" width="160" height="110" rx="10"
+            fill="rgba(192,132,252,0.10)" stroke="#c084fc" stroke-width="2"/>
+      <text x="730" y="67" text-anchor="middle" fill="#c084fc" font-size="13" font-weight="700">Daemon worker</text>
+      <text x="730" y="84" text-anchor="middle" fill="#9aa3b2" font-size="10">thread (per commit)</text>
+      <text x="730" y="100" text-anchor="middle" fill="#9aa3b2" font-size="10">metal_lock serializes</text>
+      <text x="730" y="116" text-anchor="middle" fill="#9aa3b2" font-size="10">model.generate() yields</text>
+      <text x="730" y="131" text-anchor="middle" fill="#9aa3b2" font-size="10">GenerationResult/segment</text>
+
+      <!-- Arrow worker → scheduler -->
+      <line x1="810" y1="95" x2="870" y2="95" stroke="#9aa3b2" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Scheduler -->
+      <rect x="870" y="60" width="40" height="70" rx="8"
+            fill="rgba(248,113,113,0.10)" stroke="#f87171" stroke-width="2"/>
+      <text x="890" y="91" text-anchor="middle" fill="#f87171" font-size="9" font-weight="700"
+            transform="rotate(-90,890,91)" dy="0">scheduler</text>
+
+      <!-- ── Row 2: return path (response.audio.*) ── -->
+      <!-- Return arrow: session → client -->
+      <path d="M 295 150 C 295 210, 80 210, 80 130"
+            stroke="#60a5fa" stroke-width="1.5" fill="none" stroke-dasharray="5,3"
+            marker-end="url(#arr-back)"/>
+      <text x="175" y="220" text-anchor="middle" fill="#60a5fa" font-size="10">response.audio.delta</text>
+      <text x="175" y="234" text-anchor="middle" fill="#60a5fa" font-size="10">response.audio.done</text>
+
+      <!-- bridge label between worker and TTSStream -->
+      <text x="515" y="155" text-anchor="middle" fill="#9aa3b2" font-size="10">bounded bridge queue</text>
+      <text x="515" y="168" text-anchor="middle" fill="#9aa3b2" font-size="10">(_stream_util.py)</text>
+      <line x1="440" y1="148" x2="590" y2="148" stroke="#5eead4" stroke-width="1" stroke-dasharray="4,3"/>
+
+    </svg>
+
+    <!-- Legend -->
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-size:11.5px;color:var(--fg-dim);">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#60a5fa;"></span>Client (WS)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#fbbf24;"></span>Session loop (async)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#5eead4;"></span>TTSStream (per utterance)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#c084fc;"></span>Daemon worker thread (Metal)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="width:12px;height:12px;border-radius:3px;background:#f87171;"></span>Global synthesis scheduler
+      </div>
+    </div>
+  </section>
+
+  <!-- ASCII source as pre fallback -->
+  <details style="margin-bottom:24px;">
+    <summary style="cursor:pointer;color:var(--fg-dim);font-size:12px;padding:4px 0;">Show ASCII source diagram</summary>
+    <pre style="background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;padding:14px;
+                font-size:12px;overflow-x:auto;margin-top:8px;color:var(--fg-dim);line-height:1.5;">client ──ws──&gt; session loop (server.py) ──&gt; TTSStream (backend) ──&gt; daemon worker thread
+  ▲                  │  ▲                         │  ▲                    │ (Metal, serialized)
+  │                  │  │                         │  │                    │ model.generate() yields
+  │ response.audio.* │  │ 20 ms re-chunker        │  │ bounded bridge     │ GenerationResult per
+  └──────────────────┘  └─────────────────────────┘  └── blocking/cooperative put ── segment (\n+)</pre>
+  </details>
+
+  <!-- ── Components ── -->
+  <h3 class="section-h3" style="font-size:15px;font-weight:600;margin:0 0 12px;">Components &amp; Triggers</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;margin-bottom:24px;">
+
+    <div class="card" style="border-left:3px solid #60a5fa;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip blue">Client</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Drives the session: <code>session.update</code> → <code>input_text.append</code> →
+        <code>input_text.commit</code>. Owns device, resampling, buffering. Reads
+        <code>hello.audio.rate</code> once — the only rate on the wire.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #fbbf24;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip amber">Session loop</span>
+        <code style="font-size:11px;color:var(--fg-muted);">server.py</code>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <strong>recv loop</strong> stays live for the whole connection so
+        <code>response.cancel</code> / <code>session.*</code> are always serviceable.
+        On <code>commit</code>: allocates <code>response_id</code>, emits
+        <code>response.created</code>, admits work into the global synthesis scheduler,
+        opens a backend stream, and runs the <strong>drain loop as a tracked task</strong>
+        (not inline — mirrors <code>asyncio.create_task(self._run_decode(...))</code>,
+        <code>stt_server/server.py:568</code>). Outbound WS writes serialized through one
+        writer/queue.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #5eead4;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip teal">TTSStream</span>
+        <code style="font-size:11px;color:var(--fg-muted);">open_stream()</code>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Adapts one utterance. <code>feed(text)</code> / <code>end()</code> enqueue work;
+        <code>events()</code> is an <strong>async generator yielding <code>AudioEvent</code>s
+        as segments land</strong> — it does NOT wait for full synthesis.
+        <code>cancel()</code> stops the worker. <code>end()</code> must return before the
+        first segment completes.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #c084fc;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip purple">Daemon worker thread</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Runs the blocking <code>model.generate(...)</code> generator. Metal is not
+        concurrency-safe — a process-wide lock serializes calls. Each yielded
+        <code>GenerationResult.audio</code> (float32 mono → int16-LE PCM) is pushed onto the
+        bounded bridge with producer-side backpressure.
+        <strong style="color:var(--amber);">EOF comes from generator exhaustion</strong>
+        (enqueued in a <code>finally</code>), NOT from <code>.is_final_chunk</code> —
+        Kokoro never sets that field (<code>kokoro.py:345–367</code>); treating it as EOF
+        would hang forever.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #fbbf24;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip amber">20 ms re-chunker</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Lives in the session/drain layer. Slices native segment PCM into fixed 20 ms frames at
+        <code>backend.sample_rate</code>. <strong>Tail policy:</strong> final frame of a response
+        MAY be short — no silence padding (would inject audible gaps). Re-frames the full
+        per-response PCM stream, not each segment independently; only the response's last frame
+        is short. <code>response.audio.done.duration_ms</code> computed from the original total
+        sample count.
+      </p>
+    </div>
+
+    <div class="card" style="border-left:3px solid #f87171;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip red">_stream_util.py</span>
+        <span class="chip grey">shared module</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Dedicated per-chunk queue module. Used by Kokoro and all streaming backends
+        (<code>voxtral_tts</code>, <code>pocket_tts</code>) so "backend-agnostic" is real and
+        backends cannot drift. This is the boundary <code>_thread_util</code> does not cross
+        (it marshals one Future per call; streaming needs the per-chunk queue).
+      </p>
+    </div>
+
+  </div>
+
+  <!-- ── Drain loop ── -->
+  <h3 style="font-size:15px;font-weight:600;margin:0 0 12px;">Synthesis Drain Loop (steady-stream contract R4)</h3>
+  <div class="card" style="margin-bottom:24px;">
+    <ol style="margin:0;padding-left:20px;font-size:13px;line-height:2;color:var(--fg-dim);">
+      <li><code>commit</code> → emit <code>response.created {response_id}</code></li>
+      <li><code>await stream.feed(text)</code>; <code>await stream.end()</code>
+          — <strong style="color:var(--green);">non-blocking</strong>: signals end-of-input
+          and kicks off the worker; must NOT block until synthesis completes.</li>
+      <li><code>async for ev in stream.events():</code> — for each segment that lands,
+          push PCM through the 20 ms re-chunker and emit
+          <code>response.audio.delta {response_id, seq, audio}</code> <em>as it arrives</em>.
+          First audio ships after the <em>first segment</em>, not the whole utterance.</li>
+      <li>On <strong>generator exhaustion</strong> (not <code>.is_final_chunk</code>) →
+          flush any short tail frame → emit
+          <code>response.audio.done {response_id, duration_ms}</code>
+          (<code>duration_ms</code> from the original sample count).</li>
+    </ol>
+  </div>
+
+  <!-- ── Key constraints ── -->
+  <h3 style="font-size:15px;font-weight:600;margin:0 0 12px;">Key Constraints &amp; Edge Cases</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:24px;">
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip blue">R1 — Rate</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <code>hello.audio.rate</code> is read from <code>model.sample_rate</code> at connect
+        (pre-warmup, confirmed via <code>--load</code> 2026-06-24). The re-chunker never
+        resamples. <strong>Ordering edge:</strong> backend's <code>start()</code>/model-load
+        MUST complete before the first <code>server.hello</code> is sent —
+        connect→load→hello, a dependency edge STT does not have.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip amber">Cancel / Barge-in (R4)</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <code>response.cancel {response_id}</code> → session sets cancel flag, calls
+        <code>stream.cancel()</code> (best-effort at next generator yield/segment boundary),
+        drains/clears queue, emits <code>response.cancelled {response_id}</code>. No further
+        <code>delta</code> after <code>cancelled</code>. Promptness for long single-segment
+        utterances is an <strong style="color:var(--amber);">assumption to verify in Phase 2</strong>.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip red">Backpressure (3 queues)</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        <strong>(1) Outbound</strong> — if client stops reading, the per-connection send queue
+        hits its high-water mark and the connection is <em>closed</em> (not buffered).
+        <strong>(2) Inbound</strong> — global synthesis backlog; when full, new
+        <code>commit</code> is <em>rejected</em> with
+        <code>error {code: BUSY, retry_after_ms}</code>; per-connection cap ≤K.
+        <strong>(3) Scheduler</strong> — owns fairness and lock acquisition; round-robins
+        admitted commits across non-empty per-connection queues before worker creation.
+        Independent daemon threads must NOT race directly for <code>metal_lock</code>.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip teal">Multi-connection isolation</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Each connection has its own <code>_SessionState</code> — no shared mutable state,
+        no cross-connection text/audio pollution. Model + Metal lock are shared; the
+        <strong>commit is the unit of scheduler selection and lock-holding</strong>.
+        Per-commit <code>ideal_words</code> sizing (decision #6) bounds head-of-line blocking
+        so a long commit on connection A delays connection B's first audio by at most
+        ~one already-selected commit.
+      </p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="chip purple">Topology note</span>
+        <span class="chip grey">voxtral / pocket</span>
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--fg-dim);">
+        Only <code>voxtral_tts</code> / <code>pocket_tts</code> add a sub-segment streaming
+        layer (native <code>stream</code> / <code>streaming_interval</code>); for them the
+        worker yields intra-segment chunks into the same queue. The session loop, re-chunker,
+        and send path are <strong>backend-agnostic</strong> — nothing downstream of the queue
+        changes.
+      </p>
+    </div>
+
+  </div>
+</section>

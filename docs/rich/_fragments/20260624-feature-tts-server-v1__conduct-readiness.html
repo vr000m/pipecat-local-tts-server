@@ -1,0 +1,46 @@
+<!-- plan-view-rich-section-sha256: b7c80f8bf07a6010b805fa4bbc0ca805eb91929764649acde7b6143a623e7259 -->
+<section class="section" id="conduct-readiness">
+  <h2>Conduct Readiness</h2>
+  <p>Closest of the two to conduct-ready.</p>
+
+  <div class="card" style="margin-bottom:1.25rem;">
+    <h3 style="margin-top:0;margin-bottom:.75rem;">Readiness Gates</h3>
+    <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.6rem;">
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Reviewed via <code>/review-plan</code> (2026-06-24):</strong> 28 findings across five lenses, all folded in — runtime mlx-audio facts confirmed via <code>--load</code> + <code>prosody_check.py</code>, the streaming seam reframed as net-new (not an STT mirror), <code>_stream_util</code> interface specified, and protocol-detail test gaps (<code>seq</code>, clip invariant, <code>audio_format</code>, <code>session.cancel/close</code>) added.</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Codex adversarial pass (2026-06-24):</strong> 5 more findings added, including 2 Critical verified against source — drain loop must run in a <strong>tracked task</strong> (not inline in recv loop, else cancel can't be serviced — <code>server.py:568</code>); EOF must come from <strong>generator exhaustion</strong> (Kokoro never sets <code>.is_final_chunk</code> — <code>kokoro.py:345–367</code>).</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Second <code>/review-plan</code> pass (2026-06-24):</strong> 14 more issues found and folded in — Phase-1/3 cleartext sequencing, exact <code>audio_format</code> ownership, asymmetric PCM16 mapping, stdlib-only Tone/pcm16 runtime, full-extra CI verification, Kokoro cancel/language verification, scheduler-owned fairness, bridge backpressure, Phase-5 packaging/CI, and concrete steady-stream gap tests.</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>Phases 0–5 drafted</strong> with per-phase acceptance tightened in review (mlx-gated Kokoro tests vs lean CI split; numpy in the <code>dev</code> group; per-phase allow-list extension).</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-ok,#22c55e);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">✓</span>
+        <span><strong>No external blocker</strong> — can be conducted first; the gamealerts plan depends on its Phases 0–2.</span>
+      </li>
+      <li style="display:flex;align-items:flex-start;gap:.6rem;">
+        <span class="chip" style="background:var(--color-warn,#f59e0b);color:#fff;min-width:1.6rem;text-align:center;flex-shrink:0;">⟳</span>
+        <span><strong>Re-run <code>/review-plan</code></strong> after the second-pass edits above — its review marker is the final <code>/conduct</code> readiness signal.</span>
+      </li>
+    </ul>
+  </div>
+
+  <div class="card" style="margin-bottom:1.25rem;">
+    <h3 style="margin-top:0;margin-bottom:.75rem;">Autonomous Conduct Notes</h3>
+    <p style="margin-top:0;">This plan is structured to be conducted end-to-end with no human-in-the-loop gate through Phase 3:</p>
+    <ul style="padding-left:1.4rem;margin:0;display:flex;flex-direction:column;gap:.5rem;">
+      <li><strong>Branching/commits:</strong> one feature branch per phase off <code>main</code>; each phase ends at a green commit. The <em>lean CI job must pass at every commit</em> — that is the per-phase done-check alongside each phase's acceptance bullets.</li>
+      <li><strong>No open decisions block Phases 0–3.</strong> All forks are locked in <em>Decided defaults</em> and <em>Locked design decisions</em>. The one deferred item ("division of labour … settled with gamealerts") is a Phase-4 integration nicety, not a Phase 0–3 dependency; v1 has a safe default (newline-join one commit).</li>
+      <li><strong>Phase 2 is the only environment-gated phase:</strong> Kokoro synth tests need Apple Silicon + model weights/network. They are <em>off the lean allow-list</em> (no runtime skip-markers). Phase 0's CI note requires proving the full job can <code>uv sync</code> the extras, or marking Kokoro tests manual-or-gated if the runner lacks model access. A conductor without Apple Silicon can complete Phases 0/1/3 (all lean, <code>ToneBackend</code>-only) and leave Phase 2's mlx-gated tests to the full job.</li>
+      <li><strong>Contracts are pre-authored:</strong> <code>docs/protocol.md</code> is the wire spec Phase 1 implements against; <code>examples/reference_client.py</code> is a runnable oracle (validated against a mock) for manual end-to-end checks once the server is up — so the conductor implements to a written contract rather than re-deriving it.</li>
+    </ul>
+  </div>
+</section>

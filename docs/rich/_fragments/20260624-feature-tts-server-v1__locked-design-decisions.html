@@ -1,0 +1,85 @@
+<!-- plan-view-rich-section-sha256: 140ea56b161162a8fbd18b48cd1a4fb614d019fcd546a46dfdc7eb76b2271d02 -->
+<div class="section">
+  <h2>Locked design decisions</h2>
+
+  <ol style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:14px;">
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D1</span>
+      <div>
+        <strong>Text in, audio out. Playback stays in the client.</strong>
+        The server never touches an audio device.
+        (<code>gamealerts</code> keeps its <code>MacAudioSurface</code> playback, ducking, barge-in.)
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D2</span>
+      <div>
+        <strong>Local mlx-audio only for v1. No cloud fronting. No voice cloning.</strong>
+        Voice cloning is handled by the separate <code>vr000m/qwen3-tts-clone-and-speak</code> repo; the server
+        stays purely text-in/audio-out with no <code>ref_audio</code> upload channel.
+        <br>
+        <span style="color:var(--fg-dim);font-size:13px;">
+          Note: <code>pocket_tts</code> and <code>dia generate()</code> accept a <code>ref_audio</code>
+          param — backends <strong>must</strong> leave it unwired to honour this decision.
+          No nemotron/Riva (NVIDIA, no mlx ports).
+        </span>
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D3</span>
+      <div>
+        <strong>Transport: WebSockets over a Unix domain socket by default</strong>
+        (also <code>ws://host:port</code>, full URI).
+        Endpoint precedence: <code>URI &gt; socket &gt; host+port</code>.
+        <code>TTS_WS_*</code> env vars mirror <code>STT_WS_*</code>.
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D4</span>
+      <div>
+        <strong>Uniform backend path:</strong> every backend uses <code>load()</code> + in-memory
+        <code>model.generate()</code>; convert <code>result.audio</code> float32 → int16 PCM16-LE.
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D5</span>
+      <div>
+        <strong>Re-chunk in the session layer, not the backend.</strong>
+        Backends yield native chunks; the session slices to fixed <strong>20 ms</strong> wire frames so
+        barge-in latency is bounded regardless of a model's <code>streaming_interval</code>.
+      </div>
+    </li>
+
+    <li class="card" style="display:flex;gap:14px;align-items:flex-start;">
+      <span class="chip teal" style="flex-shrink:0;margin-top:2px;">D6</span>
+      <div>
+        <strong>The client segments; the commit is the unit of work.</strong>
+        <code>server.hello</code> <code>capabilities</code> carries <code>streaming: bool</code> and an
+        <code>ideal_words</code> hint; the <em>client</em> uses these to split long text into commits (R7),
+        and the server synthesizes whatever each <code>input_text.commit</code> delivers.
+        The commit is also the unit of GPU-lock holding and cross-connection fairness (R4 / Architecture &amp; Call Flow).
+        The server does <strong>not</strong> expose its queue depth and does <strong>not</strong> require
+        clients to infer load from latency/TTFB — overload is signalled explicitly via backpressure
+        (<code>R1 ErrorCode.BUSY</code>).
+        <br><br>
+        <span class="chip amber" style="margin-bottom:6px;">Never split mid-sentence</span>
+        <br>
+        <span style="color:var(--fg-dim);font-size:13px;">
+          <code>ideal_words</code> is a soft target the client rounds up to the next sentence boundary;
+          a half-sentence commit makes the model apply sentence-final prosody mid-phrase.
+          Measured on Kokoro (<code>scripts/prosody_check.py</code>, run 2026-06-24 on
+          arm64/vr000m-manganese, mlx-audio 0.4.4): splitting
+          "The quick brown fox jumps over the lazy dog." at a non-boundary ran
+          <strong>+22.3% longer</strong> (3975 ms vs 3250 ms) and injected a
+          <strong>389 ms terminal pause</strong> after "fox" — audibly wrong.
+        </span>
+      </div>
+    </li>
+
+  </ol>
+</div>

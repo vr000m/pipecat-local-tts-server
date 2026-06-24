@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="plan-view-source-sha256" content="877b7790e1e39c3f354d97cb4d4f18c3313ec8eba7f2c9b1e52d1037c8ef3481">
+<meta name="plan-view-source-path" content="/Users/vr000m/Code/pipecat-ai/pipecat-local-tts-server/docs/dev_plans">
+<meta name="plan-view-git-head" content="aaeedc57d00929b4013938574e8544fe5efb339f">
+<meta name="plan-view-generated-at" content="2026-06-24T09:46:29Z">
+<title>Plan View — ~/Code/pipecat-ai/pipecat-local-tts-server/docs/dev_plans</title>
+<style>
+:root {
+  --bg: #0f1115;
+  --bg-elev: #161a22;
+  --bg-card: #1c2230;
+  --fg: #e6e9ef;
+  --fg-dim: #9aa3b2;
+  --fg-muted: #6b7280;
+  --border: #2a313d;
+  --accent: #7c9eff;
+  --green: #4ade80;
+  --amber: #fbbf24;
+  --blue: #60a5fa;
+  --red: #f87171;
+  --grey: #9ca3af;
+  --purple: #c084fc;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa; --bg-elev: #ffffff; --bg-card: #ffffff;
+    --fg: #111827; --fg-dim: #4b5563; --fg-muted: #9ca3af;
+    --border: #e5e7eb; --accent: #2563eb;
+    --green: #16a34a; --amber: #d97706; --blue: #2563eb;
+    --red: #dc2626; --grey: #6b7280; --purple: #9333ea;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header {
+  padding: 24px 32px; border-bottom: 1px solid var(--border);
+  background: var(--bg-elev); position: sticky; top: 0; z-index: 10;
+  backdrop-filter: blur(10px);
+}
+header h1 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+header .meta { color: var(--fg-dim); font-size: 12px; }
+header .meta code { background: var(--bg-card); padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.summary { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+.summary .stat {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px; background: var(--bg-card);
+  border: 1px solid var(--border); font-size: 12px;
+  cursor: pointer; user-select: none; color: var(--fg);
+  font-family: inherit; transition: border-color 0.1s, background 0.1s;
+}
+.summary .stat:hover { border-color: var(--accent); }
+.summary .stat.active {
+  background: var(--accent); color: white; border-color: var(--accent);
+}
+.summary .stat.active .dot { box-shadow: 0 0 0 2px rgba(255,255,255,0.4); }
+.summary .reset {
+  background: transparent; border: 1px dashed var(--border); color: var(--fg-dim);
+  font-size: 11px; padding: 4px 10px; border-radius: 999px;
+  cursor: pointer; font-family: inherit; visibility: hidden;
+}
+.summary .reset.visible { visibility: visible; }
+.summary .reset:hover { color: var(--fg); border-color: var(--fg-dim); }
+.summary .stat .dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.green { background: var(--green); }
+.dot.amber { background: var(--amber); }
+.dot.blue  { background: var(--blue); }
+.dot.red   { background: var(--red); }
+.dot.grey  { background: var(--grey); }
+main { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+details.component {
+  margin-bottom: 16px; background: var(--bg-elev);
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+details.component > summary {
+  padding: 14px 18px; cursor: pointer; font-weight: 600;
+  display: flex; align-items: center; gap: 12px; user-select: none;
+}
+details.component > summary::-webkit-details-marker { display: none; }
+details.component > summary::before {
+  content: "▸"; transition: transform 0.15s; color: var(--fg-dim);
+}
+details.component[open] > summary::before { transform: rotate(90deg); }
+details.component .grid {
+  display: grid; gap: 12px; padding: 8px 18px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.card:hover { border-color: var(--accent); }
+.card .title {
+  font-weight: 500; line-height: 1.35; font-size: 13.5px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card .title a { color: var(--fg); }
+.card .meta-row {
+  display: flex; align-items: center; gap: 8px; font-size: 11.5px;
+  color: var(--fg-dim); flex-wrap: wrap;
+}
+.card .meta-row a.rich-link { color: var(--fg-muted); font-size: 11px; font-weight: 400;
+  white-space: nowrap; margin-left: auto; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+  border: 1px solid transparent;
+}
+.chip.green { background: rgba(74, 222, 128, 0.12); color: var(--green); border-color: rgba(74, 222, 128, 0.3); }
+.chip.amber { background: rgba(251, 191, 36, 0.12); color: var(--amber); border-color: rgba(251, 191, 36, 0.3); }
+.chip.blue  { background: rgba(96, 165, 250, 0.12); color: var(--blue);  border-color: rgba(96, 165, 250, 0.3); }
+.chip.red   { background: rgba(248, 113, 113, 0.12); color: var(--red);   border-color: rgba(248, 113, 113, 0.3); }
+.chip.grey  { background: rgba(156, 163, 175, 0.12); color: var(--grey);  border-color: rgba(156, 163, 175, 0.3); }
+.chip.bug   { background: rgba(248, 113, 113, 0.08); color: var(--red); border-color: rgba(248, 113, 113, 0.2); }
+.edges { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.edge {
+  font-size: 10.5px; color: var(--fg-muted); display: flex; align-items: center; gap: 4px;
+}
+.edge .label {
+  padding: 1px 5px; border-radius: 3px; font-weight: 500;
+  font-family: ui-monospace, monospace; font-size: 10px;
+}
+.edge .label.supersedes      { background: rgba(192, 132, 252, 0.15); color: var(--purple); }
+.edge .label.tracked-in      { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
+.edge .label.structural-fix-of { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+.edge .label.follows         { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+.edge .label.references      { background: rgba(156, 163, 175, 0.12); color: var(--grey); }
+.fixed-by {
+  background: rgba(74, 222, 128, 0.08); border-radius: 4px;
+  padding: 4px 6px; font-size: 11px; color: var(--green);
+  border-left: 2px solid var(--green);
+}
+footer {
+  padding: 24px 32px; color: var(--fg-muted); font-size: 11px;
+  border-top: 1px solid var(--border); margin-top: 32px; text-align: center;
+}
+footer code { font-family: ui-monospace, monospace; background: var(--bg-card); padding: 1px 6px; border-radius: 3px; }
+.warn {
+  background: rgba(251, 191, 36, 0.1); border-left: 3px solid var(--amber);
+  padding: 8px 12px; margin-bottom: 16px; border-radius: 4px; font-size: 12px;
+}
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, securityLevel: 'strict' });
+</script>
+</head>
+<body>
+<header>
+  <h1>Plan View — <code>~/Code/pipecat-ai/pipecat-local-tts-server/docs/dev_plans</code></h1>
+  <div class="meta">
+    1 plans · generated <code>2026-06-24 09:46 UTC</code> · git <code>aaeedc5</code>
+     · status from per-plan <code>**Status:**</code> headers
+  </div>
+  <div class="summary"><button class="stat" type="button" data-bucket="planned" title="Click to filter; click again to clear"><span class="dot blue"></span>1 Planned</button><button class="reset" type="button" title="Clear filters">clear</button></div>
+</header>
+<main>
+<details class="component" open><summary>tts-server (server <span style="font-weight:400;color:var(--fg-dim);font-size:12px;">(1 · 1 planned)</span></summary><div class="grid"><div class="card" data-bucket="planned"><div class="title"><a href="plan-20260624-feature-tts-server-v1.html">Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)</a></div><div class="meta-row"><span class="chip blue">Planned</span><span>2026-06-24</span><a class="rich-link" href="plan-20260624-feature-tts-server-v1.rich.html" title="rich view (generate with --rich)">rich →</a></div><div class="edges"><div class="edge"><span class="label references">references</span><a href="plan-20260624-feature-tts-server-client-integration.html">20260624-feature-tts-server-client-integration</a></div></div></div></div></details>
+<p id="empty-state" style="display:none;text-align:center;color:var(--fg-muted);padding:32px;">
+  No plans match the active filter.
+</p>
+</main>
+<script>
+(function() {
+  const buttons = document.querySelectorAll('.summary .stat');
+  const reset = document.querySelector('.summary .reset');
+  const cards = document.querySelectorAll('.card');
+  const components = document.querySelectorAll('details.component');
+  const empty = document.getElementById('empty-state');
+  const active = new Set();
+
+  function apply() {
+    let anyVisible = false;
+    cards.forEach(c => {
+      const match = active.size === 0 || active.has(c.dataset.bucket);
+      c.style.display = match ? '' : 'none';
+      if (match) anyVisible = true;
+    });
+    components.forEach(d => {
+      const hasVisible = [...d.querySelectorAll('.card')].some(c => c.style.display !== 'none');
+      d.style.display = hasVisible ? '' : 'none';
+    });
+    buttons.forEach(b => b.classList.toggle('active', active.has(b.dataset.bucket)));
+    reset.classList.toggle('visible', active.size > 0);
+    empty.style.display = anyVisible ? 'none' : 'block';
+  }
+
+  buttons.forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.bucket;
+      if (active.has(k)) active.delete(k); else active.add(k);
+      apply();
+    });
+  });
+  reset.addEventListener('click', () => { active.clear(); apply(); });
+})();
+</script>
+<footer>
+  Regenerate with <code>python3 /Users/vr000m/.claude/plugins/cache/skein/skein/0.2.4/skills/plan-view/generate.py ~/Code/pipecat-ai/pipecat-local-tts-server/docs/dev_plans</code> ·
+  source-of-truth lives in the <code>.md</code> files, not here ·
+  do not hand-edit
+</footer>
+</body>
+</html>

@@ -1,0 +1,262 @@
+<!-- plan-view-rich-section-sha256: 70f264bceae9c823ef20e050cfddd4d07d8bad998b63ae2526b16b9adb7ac378 -->
+<section class="section">
+  <h2>Requirements</h2>
+
+  <section class="searchable-table" data-table-id="requirements">
+    <style>
+      .searchable-table .search-bar {
+        display: flex; gap: 10px; margin: 16px 0; align-items: center; flex-wrap: wrap;
+      }
+      .searchable-table .search-bar input {
+        flex: 1; min-width: 200px; padding: 8px 12px; background: var(--bg-elev);
+        border: 1px solid var(--border); border-radius: 6px; color: var(--fg);
+        font-family: inherit; font-size: 13px;
+      }
+      .searchable-table .search-bar input:focus { outline: none; border-color: var(--accent); }
+      .searchable-table .filter-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+      .searchable-table .filter-chips button {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        color: var(--fg-dim); padding: 5px 12px; border-radius: 999px;
+        cursor: pointer; font-family: inherit; font-size: 12px; transition: all 0.1s;
+      }
+      .searchable-table .filter-chips button:hover { color: var(--fg); border-color: var(--border-hi); }
+      .searchable-table .filter-chips button.active {
+        background: var(--accent); color: white; border-color: var(--accent);
+      }
+      .searchable-table table.data {
+        width: 100%; border-collapse: collapse; font-size: 12.5px;
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px;
+        overflow: hidden;
+      }
+      .searchable-table table.data th,
+      .searchable-table table.data td {
+        text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      .searchable-table table.data th {
+        color: var(--fg-dim); font-weight: 600; font-size: 11.5px;
+        background: var(--bg-deep); text-transform: uppercase; letter-spacing: 0.04em;
+      }
+      .searchable-table table.data tr:last-child td { border-bottom: none; }
+      .searchable-table table.data tr.hidden { display: none; }
+      .searchable-table table.data code { background: var(--bg-card); }
+      .req-id {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-weight: 700; font-size: 12px; white-space: nowrap;
+      }
+      .req-file {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11px; color: var(--fg-dim); white-space: nowrap;
+      }
+      .req-desc p { margin: 0 0 6px; }
+      .req-desc p:last-child { margin-bottom: 0; }
+      .req-desc ul { margin: 4px 0 4px 18px; padding: 0; }
+      .req-desc ul li { margin-bottom: 3px; }
+      .must { color: var(--red); font-weight: 600; }
+      .note { color: var(--amber); font-weight: 500; }
+    </style>
+
+    <div class="search-bar">
+      <input type="search" class="st-search" placeholder="Search requirements…">
+      <div class="filter-chips">
+        <button class="active" data-value="all">all</button>
+        <button data-value="R1">R1</button>
+        <button data-value="R2">R2</button>
+        <button data-value="R3">R3</button>
+        <button data-value="R4">R4</button>
+        <button data-value="R5">R5</button>
+        <button data-value="R6">R6</button>
+        <button data-value="R7">R7</button>
+        <button data-value="R8">R8</button>
+        <button data-value="R9">R9</button>
+      </div>
+    </div>
+
+    <table class="data">
+      <thead>
+        <tr>
+          <th style="width:48px">ID</th>
+          <th style="width:160px">Module</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+
+        <tr data-req="R1">
+          <td><span class="req-id chip blue">R1</span></td>
+          <td><code class="req-file">protocol.py</code></td>
+          <td class="req-desc">
+            <p><strong>Protocol</strong> — <code>PROTOCOL_VERSION="0.1"</code>, pcm16 mono, per-backend rate. Full event set per Technical Specifications; <code>ErrorCode</code> enum mirroring stt.</p>
+            <ul>
+              <li><code>hello.audio.rate</code> is the true model rate (Kokoro 24000, confirmed via <code>--load</code> 2026-06-24). <span class="must">MUST</span> be read at connect with no warmup dependency.</li>
+              <li>Every <code>response.audio.delta</code> for the session <span class="must">MUST</span> be int16-LE mono at exactly that rate — no per-utterance drift. Client resamples model-rate → device-rate off this single advertised value.</li>
+              <li><code>audio_format</code> is strict: only the advertised pcm16-at-<code>hello.audio.rate</code> is accepted; any other value in <code>session.update</code> is rejected with <code>error {code: UNSUPPORTED_FORMAT}</code>.</li>
+              <li><code>input_text.commit</code> has no <code>audio_format</code> field in v1; if a client sends one it is a protocol error, not format negotiation.</li>
+              <li><code>ErrorCode</code> adds <span class="note">BUSY</span> (WebSocket analog of HTTP 429): <code>error</code> event carries <code>retry_after_ms</code> when a commit is rejected for synthesis-backlog backpressure (see R4).</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R2">
+          <td><span class="req-id chip blue">R2</span></td>
+          <td><code class="req-file">backend.py</code></td>
+          <td class="req-desc">
+            <p><strong>Backend abstraction</strong> — <code>TTSBackend</code> + <code>TTSStream</code> Protocols plus a dependency-free <code>ToneBackend</code> (sine) reference for tests.</p>
+            <ul>
+              <li><code>ToneBackend</code> <span class="must">MUST</span> emit <strong>multiple segments with a configurable per-segment delay</strong> to drive the per-segment <code>events()</code> streaming contract (R4) and the 20 ms re-chunker — it is the <em>streaming</em> reference, not a one-shot echo.</li>
+              <li><code>ToneBackend</code> and the shared float→pcm16 converter are <strong>stdlib-only runtime code</strong> (<code>math</code>/<code>array</code>/<code>struct</code>). <code>numpy</code> may stay in the dev group for verification scripts but <span class="must">MUST NOT</span> be required by runtime modules or lean tests.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R3">
+          <td><span class="req-id chip blue">R3</span></td>
+          <td><code class="req-file">backends/kokoro.py</code></td>
+          <td class="req-desc">
+            <p><strong>Kokoro backend</strong> — mlx-audio load/generate with float→pcm16 conversion.</p>
+            <ul>
+              <li>Clip samples to [-1, 1]; map asymmetrically: negative → ×32768, non-negative → ×32767, so <code>-1.0 → -32768</code> and <code>+1.0 → +32767</code>.</li>
+              <li>Run the <code>generate()</code> generator in a dedicated thread. Metal is not concurrent-safe: use a <strong>Lock-pair + in-flight-drain</strong> pattern holding the process-wide Metal lock around the <strong>entire generator drain</strong> (many yields). Lock + per-chunk queue live in <code>backends/_stream_util.py</code>.</li>
+              <li><code>cancel()</code> <span class="must">MUST</span> break the generator so a cancelled response does not pin the lock.</li>
+              <li><code>sample_rate</code> is <strong>24000</strong>, readable as <code>model.sample_rate</code> immediately after <code>load()</code> — no warmup-generate needed. Warmup at <code>start()</code> is still worthwhile for Metal JIT, but decouple from rate discovery.</li>
+              <li>Lazy-import <code>mlx_audio</code> inside <code>start()</code>/<code>_get_model</code> — never at module load (<em>lean-base invariant</em>).</li>
+              <li><span class="note">Dependency note:</span> importing Kokoro pulls <code>misaki</code> (G2P) → <code>num2words</code>, <code>spacy</code>, <code>en_core_web_sm</code>, and <code>torch</code>. Keep behind the <code>kokoro</code> extra.</li>
+              <li>Kokoro yields per-segment (<code>split_pattern=r"\n+"</code>); effective streaming granularity is per-segment even though it advertises <code>streaming:false</code>.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R4">
+          <td><span class="req-id chip blue">R4</span></td>
+          <td><code class="req-file">server.py</code></td>
+          <td class="req-desc">
+            <p><strong>Server/session</strong> — handshake (<code>server.hello</code>), per-session text buffer, commit→synthesize, 20 ms re-chunker, <code>response.cancel</code> (barge-in), send-queue high-water close, resource limits.</p>
+            <ul>
+              <li><strong>Exact, stable emitted rate:</strong> every frame <span class="must">MUST</span> match the advertised <code>hello.audio.rate</code> (per R1).</li>
+              <li><strong>Steady in-response streaming:</strong> once <code>response.created</code> fires, feed the client buffer continuously. Do <span class="must">NOT</span> block the send loop on synthesis between chunks; do <span class="must">NOT</span> emit one large burst then a long gap. For Kokoro, emit each segment's audio as it completes.</li>
+              <li><code>open_stream</code>'s <code>end()</code> <span class="must">MUST NOT</span> block until full synthesis while <code>events()</code> replays a stored result — that buffer-then-flush shape is the anti-pattern here.</li>
+              <li><strong>Multi-connection isolation:</strong> each connection gets its own <code>_SessionState</code> (text buffer, config, <code>response_id</code> space) — <span class="must">no shared mutable session state</span>. What IS shared: a single model + process-wide Metal lock.</li>
+              <li><strong>Commit = unit of GPU-lock holding:</strong> server admits commits into per-connection queues; a single dispatcher selects connections round-robin at commit boundaries; only the selected commit's worker may acquire the Metal lock.</li>
+              <li><strong>Backpressure (two layers):</strong>
+                <ul>
+                  <li>(1) Per-connection outbound send-queue high-water <em>close</em> (slow audio reader).</li>
+                  <li>(2) Global synthesis backlog admission control: when the bounded synthesis queue is full the server <span class="must">MUST</span> reject the commit with <code>error {code: BUSY, retry_after_ms}</code>.</li>
+                  <li>Per-connection in-flight cap ≤K queued commits. <strong>v1 sets K=1</strong> — one active-or-queued response per connection — making <code>response.cancel</code> optional <code>response_id</code> unambiguous.</li>
+                  <li>Client retry policy: hold text, retry after <code>retry_after_ms</code> with capped backoff + jitter, give up after 5 retries.</li>
+                </ul>
+              </li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R5">
+          <td><span class="req-id chip blue">R5</span></td>
+          <td><code class="req-file">client.py</code></td>
+          <td class="req-desc">
+            <p><strong>Client</strong> — async <code>TTSClient</code> with transport-generic API (no app labels/frame types — the pipecat adapter lives in <code>examples/</code>).</p>
+            <p>Methods: <code>connect() → hello</code>, <code>update()</code>, <code>append()</code>, <code>commit()</code>, <code>cancel()</code>, <code>events()</code>, <code>status()</code>, <code>close()</code>.</p>
+          </td>
+        </tr>
+
+        <tr data-req="R6">
+          <td><span class="req-id chip blue">R6</span></td>
+          <td><code class="req-file">__main__.py</code></td>
+          <td class="req-desc">
+            <p><strong>CLI</strong> — mirroring stt.</p>
+            <ul>
+              <li><code>python -m tts_server serve --backend kokoro --model … --socket-path …</code> (logs resolved backend+model at startup).</li>
+              <li><code>status</code> health probe: connect → hello → status → print backend/model/rate/queue depth.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R7">
+          <td><span class="req-id chip blue">R7</span></td>
+          <td><code class="req-file">protocol.py</code></td>
+          <td class="req-desc">
+            <p><strong>Capabilities for client chunking</strong> — <code>capabilities</code> <span class="must">MUST</span> expose: <code>streaming</code>, <code>ideal_words</code>, <code>text_formats</code>, <code>languages</code>, <code>extras</code>, <code>max_text_chars</code>.</p>
+            <ul>
+              <li><code>ideal_words</code> is a <em>soft</em> chunk-size target; the client rounds up to the next sentence boundary (never split mid-sentence — decision #6).</li>
+              <li><code>max_text_chars</code> is the <em>hard</em> server cap (reject beyond it).</li>
+              <li>For <code>streaming:false</code> backends the client <span class="must">MUST</span> chunk at sentences.</li>
+              <li>Unknown <code>extras</code> keys are dropped (debug-logged), never errored.</li>
+              <li><code>extras</code> per backend (verified via <code>scripts/verify_mlx_tts_api.py</code> against mlx-audio 0.4.4):
+                <ul>
+                  <li>Kokoro → <code>{speed}</code> only</li>
+                  <li>voxtral_tts → <code>{temperature, top_k, top_p}</code></li>
+                  <li>pocket_tts → <code>{temperature}</code></li>
+                  <li>dia → <code>{temperature, top_p}</code></li>
+                </ul>
+              </li>
+              <li>A backend <span class="must">MUST</span> drop, not forward, any kwarg the model ignores — the advertised <code>extras</code> never lies to the client.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R8">
+          <td><span class="req-id chip blue">R8</span></td>
+          <td><code class="req-file">pyproject.toml</code></td>
+          <td class="req-desc">
+            <p><strong>Packaging</strong> — package <code>pipecat-local-tts-server</code>, import <code>tts_server</code>.</p>
+            <ul>
+              <li>Lean base = <code>websockets</code> only.</li>
+              <li>Extras: <code>client</code>, <code>kokoro</code> (+ later <code>voxtral_tts</code>, <code>pocket_tts</code>, <code>dia</code>/<code>chatterbox</code>). All backends lazy-import heavy deps.</li>
+              <li><span class="must">Pin</span> <code>mlx-audio==0.4.4</code> in backend extras — TTS API drifted between 0.3.0 and 0.4.4. Re-run <code>scripts/verify_mlx_tts_api.py</code> before widening the pin.</li>
+            </ul>
+          </td>
+        </tr>
+
+        <tr data-req="R9">
+          <td><span class="req-id chip blue">R9</span></td>
+          <td><code class="req-file">server.py</code></td>
+          <td class="req-desc">
+            <p><strong>Auth (optional)</strong> — bearer token, server-side <code>PIPECAT_TTS_AUTH_TOKEN</code>, client-side <code>TTS_WS_TOKEN</code>, cleartext-remote guard. Mirror stt exactly.</p>
+          </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+    <script>
+    (function() {
+      var root = document.querySelector('.searchable-table[data-table-id="requirements"]');
+      if (!root) return;
+      var search = root.querySelector('.st-search');
+      var chips  = root.querySelector('.filter-chips');
+      var rows   = root.querySelectorAll('tbody tr');
+      var q = '';
+      var f = 'all';
+
+      function apply() {
+        rows.forEach(function(row) {
+          var text = row.textContent.toLowerCase();
+          var queryMatch = !q || text.indexOf(q) !== -1;
+          var filterMatch = true;
+          if (f !== 'all') {
+            filterMatch = (row.getAttribute('data-req') || '') === f;
+          }
+          row.classList.toggle('hidden', !(queryMatch && filterMatch));
+        });
+      }
+
+      if (search) {
+        search.addEventListener('input', function(e) {
+          q = e.target.value.toLowerCase();
+          apply();
+        });
+      }
+      if (chips) {
+        chips.querySelectorAll('button').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            chips.querySelectorAll('button').forEach(function(b) {
+              b.classList.toggle('active', b === btn);
+            });
+            f = btn.dataset.value;
+            apply();
+          });
+        });
+      }
+    })();
+    </script>
+  </section>
+</section>

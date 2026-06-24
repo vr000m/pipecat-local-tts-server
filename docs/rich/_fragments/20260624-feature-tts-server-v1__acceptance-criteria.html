@@ -1,0 +1,37 @@
+<!-- plan-view-rich-section-sha256: f46b8838cc34ed80cf38513c4c6e35ae60d685e508641505371c2b2751440ff0 -->
+<section class="section" id="acceptance-criteria">
+  <h2>Acceptance Criteria</h2>
+  <ul class="ac-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.75rem;">
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span><code>python -m tts_server serve --backend kokoro</code> serves; <code>status</code> prints backend/model/rate.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span>A client synthesizes text → non-empty PCM16 frames at the advertised rate; <code>response.cancel</code> stops the deterministic Tone path promptly and produces no further deltas after <code>response.cancelled</code>. Kokoro long-segment cancellation latency is measured in Phase 2 and either meets the barge-in target or is documented as yield-boundary best effort with client chunking.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span><strong>Rate contract:</strong> every emitted frame is int16-LE mono at exactly <code>hello.audio.rate</code>, constant across the whole utterance (no per-utterance drift).</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span><strong>Steady-stream contract:</strong> for a multi-segment utterance, first audio reaches the client before full synthesis completes, and audio is delivered continuously (no burst-then-gap — asserted via the inter-<code>delta</code> gap bound in Testing Notes) so the client playback buffer never starves.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span>Base install (no <code>kokoro</code> extra) imports and runs the Tone path; no mlx at import time.</span>
+    </li>
+
+    <li style="display:flex;align-items:flex-start;gap:0.6rem;">
+      <span class="chip" style="flex-shrink:0;min-width:1.6rem;text-align:center;">☐</span>
+      <span>Lean/base runtime code does not import dev-only <code>numpy</code>; Kokoro module import stays lazy with <code>mlx_audio</code> absent.</span>
+    </li>
+
+  </ul>
+</section>
