@@ -44,6 +44,7 @@ jobs:
             tests/test_streaming_and_cancel.py \
             tests/test_session_lifecycle.py \
             tests/test_capabilities_extras.py \
+            tests/test_config_validation.py \
             tests/test_endpoint_resolution.py \
             tests/test_server_cleartext_guard.py \
             tests/test_pcm16_clip.py \

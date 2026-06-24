@@ -200,3 +200,62 @@ async def test_pcm_reassembly_before_cancel_is_contiguous():
             assert len(base64.b64decode(first["audio"])) % 2 == 0
             await client.cancel()
             await next_event(client, "response.cancelled", timeout=2.0)
+
+
+async def test_bridge_enqueues_eof_without_dropping_tail_chunk():
+    """Regression (Codex review #1): on NORMAL generator exhaustion with a full
+    bridge queue and a slow consumer, EOF must be enqueued WITH backpressure —
+    never by dropping a buffered chunk, which would silently truncate the tail.
+
+    Drives the shared ``stream_generate`` bridge directly (the only place this
+    path lives — ToneBackend does not use the bridge). A tiny ``maxsize=1`` queue
+    plus a sleeping consumer keeps the queue full at EOF, which is exactly the
+    state where the old ``_put_eof`` dropped a buffered chunk.
+    """
+    import threading
+
+    from tts_server.backends._stream_util import stream_generate
+
+    class _FakeResult:
+        def __init__(self, audio: list[float]) -> None:
+            self.audio = audio
+
+    loop = asyncio.get_running_loop()
+    metal_lock = threading.Lock()
+    cancel = threading.Event()
+    n = 4
+    results = [_FakeResult([i / 10.0, i / 10.0]) for i in range(1, n + 1)]
+
+    received: list[bytes] = []
+    agen = stream_generate(
+        (lambda: iter(results)),
+        loop=loop,
+        metal_lock=metal_lock,
+        cancel=cancel,
+        maxsize=1,  # tiny queue: stays full between the slow consumer's reads
+    )
+    async for pcm in agen:
+        received.append(pcm)
+        await asyncio.sleep(0.02)  # slow consumer keeps the bounded queue full
+
+    assert len(received) == n, f"expected {n} chunks, got {len(received)} — tail dropped at EOF"
+    # The process-wide Metal lock must be released after the drain (not leaked).
+    assert metal_lock.acquire(blocking=False), "metal_lock leaked by the worker"
+    metal_lock.release()
+
+
+async def test_bare_cancel_on_idle_session_is_noop():
+    """Regression (Codex review #4): response.cancel with nothing active must NOT
+    emit a malformed response.cancelled with response_id: null — it is a no-op,
+    and the session stays healthy."""
+    backend = ToneBackend(segment_count=2, segment_ms=40, segment_delay_ms=0)
+    async with running_server(backend) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.cancel()  # nothing in flight
+            await client.status()
+            # First event after the bare cancel must be the status reply — not a
+            # (null-id) response.cancelled or an error.
+            ev = await next_event(
+                client, {"server.status", "response.cancelled", "error"}, timeout=2.0
+            )
+            assert ev["type"] == "server.status", f"bare cancel produced {ev['type']}: {ev}"

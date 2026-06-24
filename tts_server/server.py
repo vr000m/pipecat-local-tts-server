@@ -555,6 +555,24 @@ class TTSServer:
             validated[key] = value
         return validated, None
 
+    def _validate_language(self, language: Any) -> str | None:
+        """Reject a ``language`` not in the backend's advertised list.
+
+        Returns an error message, or ``None`` if the language is unset or
+        advertised. Backends map an accepted ISO code to their own code, but an
+        UN-advertised code must error here rather than silently degrade (e.g.
+        Kokoro's ``lang_code`` fallback would otherwise return English audio for
+        an unsupported language — a contract violation vs ``capabilities.languages``).
+        """
+        if language is None:
+            return None
+        if not isinstance(language, str):
+            return "language must be a string"
+        advertised = self._caps.get("languages") or []
+        if advertised and language.lower() not in {code.lower() for code in advertised}:
+            return f"unsupported language {language!r}; supported: {', '.join(advertised)}"
+        return None
+
     async def _on_session_update(
         self,
         ws: ServerConnection,
@@ -562,6 +580,21 @@ class TTSServer:
         msg: dict,
         client_event_id: str | None,
     ) -> None:
+        # Reject unknown top-level fields: a typo'd config key (e.g. ``pitch``)
+        # must not be silently ignored — the client would otherwise believe an
+        # unsupported setting was applied. (Mirrors commit's unknown-field rule.)
+        allowed = {"type", "event_id", "voice", "model", "language", "audio_format", "extras"}
+        unknown = sorted(k for k in msg if k not in allowed)
+        if unknown:
+            await self._error(
+                ws,
+                state,
+                P.ErrorCode.INVALID_CONFIG,
+                f"unknown session.update field(s): {', '.join(unknown)}",
+                client_event_id=client_event_id,
+            )
+            return
+
         # audio_format is strict: only the advertised pcm16-at-rate is accepted.
         # The field stays in the schema so a later binary-audio optimization has
         # a home, but v1 enforces a single format.
@@ -573,6 +606,13 @@ class TTSServer:
                 P.ErrorCode.UNSUPPORTED_FORMAT,
                 f"only {P.AUDIO_FORMAT!r} at {self._backend.sample_rate} Hz is supported",
                 client_event_id=client_event_id,
+            )
+            return
+
+        lang_err = self._validate_language(msg.get("language"))
+        if lang_err is not None:
+            await self._error(
+                ws, state, P.ErrorCode.INVALID_CONFIG, lang_err, client_event_id=client_event_id
             )
             return
 
@@ -659,6 +699,25 @@ class TTSServer:
                 P.ErrorCode.INVALID_CONFIG,
                 "input_text.commit has no audio_format field in v1",
                 client_event_id=client_event_id,
+            )
+            return
+        # Reject any other unknown top-level field for the same reason
+        # session.update does (a silently-ignored key misleads the client).
+        allowed = {"type", "event_id", "voice", "language", "extras"}
+        unknown = sorted(k for k in msg if k not in allowed)
+        if unknown:
+            await self._error(
+                ws,
+                state,
+                P.ErrorCode.INVALID_CONFIG,
+                f"unknown input_text.commit field(s): {', '.join(unknown)}",
+                client_event_id=client_event_id,
+            )
+            return
+        lang_err = self._validate_language(msg.get("language"))
+        if lang_err is not None:
+            await self._error(
+                ws, state, P.ErrorCode.INVALID_CONFIG, lang_err, client_event_id=client_event_id
             )
             return
         if not state.buffer:
@@ -912,16 +971,18 @@ class TTSServer:
     ) -> None:
         response = state.response
         target = msg.get("response_id")
+        # Only emit ``response.cancelled`` when an active response actually
+        # matches: either no id was given (K=1 ⇒ unambiguous) or the id names the
+        # in-flight response. If nothing matches (no active response, or a stale/
+        # mismatched id — e.g. a barge-in cancel that races a just-finished
+        # response), it is a NO-OP. The previous code acked with
+        # ``target or (... else None)``, which sent a malformed
+        # ``response.cancelled`` with ``response_id: null`` for a bare cancel on
+        # an idle session.
         if response is None or (target is not None and target != response.response_id):
-            # Nothing to cancel (or a stale id). Idempotent ack of the target.
-            await self._send(
-                ws,
-                state,
-                {
-                    "type": P.EVT_RESPONSE_CANCELLED,
-                    "event_id": _event_id(),
-                    "response_id": target or (response.response_id if response else None),
-                },
+            logger.debug(
+                "tts_server: response.cancel no-op (no active response matches target=%r)",
+                target,
             )
             return
         await self._cancel_response(response)

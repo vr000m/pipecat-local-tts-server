@@ -168,22 +168,30 @@ async def stream_generate(
             error_box["error"] = exc
             logger.exception("tts_server: synthesis worker failed")
         finally:
-            # EOF is ALWAYS enqueued on exhaustion/error/cancel — never keyed
-            # off ``.is_final_chunk``. The sentinel must never apply
-            # backpressure (teardown cannot block on a full queue), so it is
-            # scheduled on the loop. But a bare ``queue.put_nowait`` inside the
-            # callback raises ``QueueFull`` when the consumer broke out early
-            # (cancel) leaving a full queue — that surfaces as a spurious
-            # unhandled ``QueueFull`` in the loop. ``_put_eof`` drains one slot
-            # if needed (the consumer is gone, so dropped data is irrelevant)
-            # and swallows the residual full case, so EOF lands without noise.
-            try:
-                loop.call_soon_threadsafe(_put_eof, queue)
-            except RuntimeError:
-                # Event loop already closed (consumer fully torn down). The
-                # consumer is no longer reading, so there is nothing to signal.
-                pass
+            # GPU/Metal work is finished once the generator is drained or broke
+            # out; release the lock BEFORE the EOF enqueue so a slow consumer
+            # cannot extend the lock hold and stall other connections' synthesis.
             metal_lock.release()
+            # EOF is ALWAYS enqueued (exhaustion/error/cancel) — never keyed off
+            # ``.is_final_chunk``. The PATH matters:
+            #  - NORMAL exhaustion / worker error: the consumer is STILL draining,
+            #    so EOF goes in WITH backpressure (``_put_blocking``). A full queue
+            #    must WAIT for a slot — dropping a buffered chunk here would
+            #    silently truncate the tail of the audio.
+            #  - CANCEL (consumer has stopped reading): fall back to the
+            #    non-blocking ``_put_eof``, which drops one now-dead buffered item
+            #    if the queue is full so teardown can never block on a queue that
+            #    nobody is draining.
+            try:
+                if cancel.is_set() or not _put_blocking(_EOF):
+                    try:
+                        loop.call_soon_threadsafe(_put_eof, queue)
+                    except RuntimeError:
+                        # Loop already closed (consumer fully torn down) — there
+                        # is nothing left to signal.
+                        pass
+            except Exception:  # noqa: BLE001 - teardown must never raise out of the worker
+                logger.exception("tts_server: EOF enqueue failed during worker teardown")
 
     thread = threading.Thread(target=_worker, name="tts-synth", daemon=True)
     thread.start()

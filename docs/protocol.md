@@ -103,11 +103,11 @@ holding the lock for the duration of one commit.
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `session.update` | `{voice?, model?, language?, audio_format?, extras?}` | Set session config. `audio_format` (if present) MUST equal the advertised pcm16-at-rate; any other value → `error{code: unsupported_format}`. `extras` keys MUST be a subset of `capabilities.extras`; unknown keys are dropped (debug-logged), not errored. |
+| `session.update` | `{voice?, model?, language?, audio_format?, extras?}` | Set session config. **Unknown top-level fields → `error{code: invalid_config}`** (a typo'd key is not silently ignored). `audio_format` (if present) MUST equal the advertised pcm16-at-rate; any other value → `error{code: unsupported_format}`. `language` (if present) MUST be one of `capabilities.languages` → else `invalid_config`. `extras` keys MUST be a subset of `capabilities.extras`; unknown *extras* keys are dropped (debug-logged), not errored. |
 | `input_text.append` | `{text, text_format?}` | Append text to the session buffer. `text_format` defaults to `"plain"`; any non-advertised format (e.g. `"ssml"`) → error. |
-| `input_text.commit` | `{voice?, language?, extras?}` | Synthesize the buffered text as one response. **No `audio_format` field** — sending one is an unknown-field protocol error (`invalid_config`), not format negotiation. |
+| `input_text.commit` | `{voice?, language?, extras?}` | Synthesize the buffered text as one response. **No `audio_format` field** — sending one is an unknown-field protocol error (`invalid_config`); any other unknown top-level field is likewise `invalid_config`. `language` (if present) MUST be one of `capabilities.languages` → else `invalid_config`. |
 | `input_text.clear` | `{}` | Drop uncommitted buffered text. Replies `input_text.cleared`. |
-| `response.cancel` | `{response_id?}` | Cancel the active response (barge-in). With v1 `K=1` (one active/queued response per connection) `response_id` is optional and unambiguous. |
+| `response.cancel` | `{response_id?}` | Cancel the active response (barge-in). With v1 `K=1` (one active/queued response per connection) `response_id` is optional and unambiguous. If no active response matches (idle session, or a stale/mismatched `response_id` — e.g. a cancel that races a just-finished response), this is a **no-op**: no `response.cancelled` is emitted. |
 | `session.cancel` | `{}` | Discard the in-flight response and any queued work (discard semantics). Server replies `session.closed{reason: "client_cancel"}`, then closes the socket. |
 | `session.close` | `{}` | Graceful close: drain the in-flight response, then close. Server replies `session.closed{reason: "client_close"}`, then closes the socket. |
 | `server.status` | `{}` | Request a `server.status` snapshot. |
@@ -123,7 +123,7 @@ holding the lock for the duration of one commit.
 | `response.created` | `{response_id}` | A response has begun. |
 | `response.audio.delta` | `{response_id, seq, audio}` | One audio frame. `seq` starts at 0 and increments by 1 with no gaps per `response_id`. `audio` is base64 pcm16 (20 ms, last frame MAY be short). |
 | `response.audio.done` | `{response_id, duration_ms}` | Synthesis finished. `duration_ms` is from the original sample count (not `frames × 20 ms`). Fired on generator exhaustion. |
-| `response.cancelled` | `{response_id}` | The response was cancelled; no further `delta` for it. |
+| `response.cancelled` | `{response_id}` | The response was cancelled; no further `delta` for it. Emitted **only** when an active response was actually cancelled (see `response.cancel` in §4) — `response_id` is always a concrete id, never null. |
 | `response.failed` | `{response_id, error?}` | The response errored mid-synthesis; carries `{code, message}`. The session stays usable. |
 | `session.closed` | `{session_id, reason}` | Sent in reply to `session.cancel` (`reason: "client_cancel"`) or `session.close` (`reason: "client_close"`) immediately before the server closes the socket. |
 | `server.status` | `{backend:{name,model}, audio:{…}, …queue/voice info}` | Health/status snapshot. |
@@ -154,7 +154,7 @@ Built **per backend** — never copied across backends. Kokoro example (fields V
 | `streaming` | bool | `true` ⇒ the backend streams sub-segment audio; client MAY send larger commits. `false` ⇒ client SHOULD chunk at sentences (else slow generation *and* no audio until the segment finishes). Either way the server emits each native segment as it completes. |
 | `binary_audio` | bool | `false` for v1 (audio is base64-in-JSON). |
 | `text_formats` | string[] | Accepted `text_format` values. Only `"plain"` for Kokoro v1. |
-| `languages` | string[] | ISO codes the backend supports (backend maps ISO → its own code, e.g. Kokoro `lang_code`). |
+| `languages` | string[] | ISO codes the backend supports (backend maps ISO → its own code, e.g. Kokoro `lang_code`). A `language` outside this list is rejected with `invalid_config` — the server validates before synthesis; it is **not** silently coerced to a default. |
 | `voice_count` | int | Number of distinct voices. Full list via `server.status`. |
 | `extras` | string[] | Names of `generate()` kwargs the backend forwards. **Per-backend, real-and-effective only** (a kwarg the model ignores is dropped, never advertised). Kokoro→`["speed"]`; voxtral_tts→`["temperature","top_k","top_p"]`; pocket_tts→`["temperature"]`; dia→`["temperature","top_p"]`. `ref_audio` is **never** advertised (no voice cloning in v1). |
 | `ideal_words` | int | Soft per-commit size hint; client rounds **up to the next sentence boundary**. Not a hard limit. |
