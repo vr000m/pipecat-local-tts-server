@@ -827,21 +827,78 @@ Implementation Checklist (keeps the `<!-- reviewed -->` hash valid). Mirrors the
 - Smoke-tested 2026-06-24 (arm64): `just tts-list` correctly reports "no agents" with no server, and
   surfaces an ad-hoc tone server (`live: tone`) when one is running; `tts-status` prints the full status block.
 
-### Deferred — launchd lifecycle recipes (a future "Phase 6 — launchd ops parity" candidate)
-The stt justfile also carries `stt-install` / `stt-enable` / `stt-disable` / `stt-uninstall`, which
-delegate to `scripts/install_stt_agent.sh` + a plist renderer (`render_stt_plist.py`). The TTS repo
-has **neither**, so those recipes were omitted rather than written against non-existent files. To reach
-full ops parity later:
-- **Impl files:** `scripts/install_tts_agent.sh` (port of the stt installer; env-keyed
-  `PIPECAT_TTS_LABEL`/`PIPECAT_TTS_SOCKET`/`PIPECAT_TTS_BACKEND`), `scripts/render_tts_plist.py`
-  (RunAtLoad + KeepAlive plist), and the `tts-install/enable/disable/uninstall` recipes + a backend→
-  `(label, socket, backend-name)` `_resolve` map in `justfile`.
-- **Canonical map / drift guard:** add a README "Per-backend socket convention" table and a
-  `tests/test_justfile_recipes.py` that parses it and asserts the justfile `_resolve` map matches
-  (the stt repo's drift test is the model). Until that table exists the map stays single-entry
-  (`pipecat.tts-server` → `tts.sock`).
-- **Test command:** `uvx pytest tests/test_justfile_recipes.py -v` (point `la_dir`/`cache_dir` at a
-  temp `$HOME`, as the stt tests do).
-- **Decision needed before conducting:** whether `tone` gets its own canonical label/socket
-  (`pipecat.tts-server.tone` / `tone.sock`) or stays test-only. The README documents only `tts.sock`
-  today; do not invent a multi-socket convention without a backend that needs it.
+### Phase 6 — launchd ops parity + port-per-backend (PLANNED; not yet reviewed/conducted)
+Status: spec lives in the workspace (below the `<!-- reviewed -->` marker) so it does **not** claim
+review coverage it hasn't had and does not perturb the Phase 0–5 contract hash. **Before conducting:
+promote this into the Implementation Checklist and run `/review-plan` (refresh the marker) — same
+discipline applied to Phase 5.**
+
+**Goal.** Run each backend as its own launchd **user agent** bound to a canonical **loopback port**,
+with `just` wrappers for the full lifecycle (install/enable/disable/start/stop/uninstall) on top of
+the read-only `tts-list`/`tts-status` that already ship. Mirrors the sibling stt ops surface
+(`scripts/install_stt_agent.sh` + `render_stt_plist.py` + `stt-install/enable/disable/uninstall`),
+which the TTS repo deliberately omitted until an install path existed.
+
+**Substrate is already complete — Phase 6 is glue, not server changes.** VERIFIED 2026-06-24:
+- `serve` host+port binding works (`server.py:403-406` `ws_serve(host=…, port=…)`;
+  `ServerConfig` accepts `host+port` as a valid endpoint, `server.py:150`).
+- `status` is already port-capable (`_add_endpoint_flags(p_status, include_uri=True)`,
+  `__main__.py`), so `python -m tts_server status --host 127.0.0.1 --port 8765` works today.
+- `127.0.0.1` is loopback (`env.py:24`), so port binding does **not** trip the cleartext-remote
+  auth warning. No server code changes are needed.
+
+So the two example commands the convention targets work the moment the backend exists + is in the
+`--backend` choices tuple:
+```
+python -m tts_server serve --backend kokoro     --host 127.0.0.1 --port 8765
+python -m tts_server serve --backend pocket_tts --host 127.0.0.1 --port 8965   # after Phase 5b
+```
+(`pocket`, not `pocket_tts`, and the missing `--backend` choice are why the second line fails today.)
+
+**Canonical `backend → (label, host, port)` map** (chosen defaults; ports on `127.0.0.1`):
+
+| backend | label | port |
+|---|---|---|
+| tone | `pipecat.tts-server.tone` | 8665 |
+| kokoro | `pipecat.tts-server.kokoro` | 8765 |
+| voxtral_tts | `pipecat.tts-server.voxtral_tts` | 8865 |
+| pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
+| dia | `pipecat.tts-server.dia` | 9065 |
+
+The **Unix socket stays the default** for a single ad-hoc server / README quick-start
+(`pipecat.tts-server` → `tts.sock`); **ports are the multi-backend convention.** This **resolves the
+old open question** ("does `tone` get its own canonical label?"): with ports making multi-agent the
+norm, `tone` gets its own agent (a dependency-free smoke agent) at 8665.
+
+**Impl files**
+- `scripts/render_tts_plist.py` — emits a user-agent plist: `Label`, `ProgramArguments`
+  (`… python -m tts_server serve --backend B --host H --port P [--model M] [--auth-token-file F]`),
+  `RunAtLoad=true`, `KeepAlive=true`, `StandardOutPath`/`StandardErrorPath` under
+  `~/Library/Caches/pipecat-tts/logs/<label>.{out,err}`.
+- `scripts/install_tts_agent.sh` — port of the stt installer; env-keyed `PIPECAT_TTS_LABEL` /
+  `PIPECAT_TTS_BACKEND` / `PIPECAT_TTS_HOST` / `PIPECAT_TTS_PORT` / `PIPECAT_TTS_MODEL`; renders the
+  plist → `~/Library/LaunchAgents` → `launchctl bootstrap gui/$uid`.
+- `justfile` — a `_resolve <backend>` map yielding `(label, host, port)`, plus recipes
+  `tts-install/uninstall/enable/disable/start/stop <backend>` (lifecycle = `launchctl
+  bootstrap`/`bootout`, `enable`/`disable`, `kickstart -k`/`kill`, mirroring stt). Extend `tts-list`
+  and `tts-status` to be **port-aware** via the map (`status --host/--port`) — today both are
+  socket-only (`justfile:54,95`).
+
+**Auth note.** Loopback ports need no token. A non-loopback bind MUST set `PIPECAT_TTS_AUTH_TOKEN`
+via `--auth-token-file` in the plist (the cleartext-remote guard warns otherwise).
+
+**Drift guard.** Add a README "Per-backend port convention" table and
+`tests/test_justfile_recipes.py` asserting README table ↔ justfile `_resolve` map ↔
+`render_tts_plist.py` defaults agree (the stt repo's drift test is the model). Point
+`la_dir`/`cache_dir` at a temp `$HOME`, as the stt tests do.
+Test command: `uvx pytest tests/test_justfile_recipes.py -v`.
+
+**Sequencing — Phase 6 does NOT block on Phase 5.** It needs only the serve binding (exists) + a
+backend module. It can be conducted right after Phase 4 for `tone`/`kokoro`; each Phase 5 backend
+adds exactly one map row + one README row + one `--backend` choice when it lands. (Numbered 6 for
+ordering, but independent of 5.)
+
+**Acceptance.** `just tts-install kokoro` loads the agent; `RunAtLoad` brings it up on
+`127.0.0.1:8765`; `just tts-list` shows running + pid; `just tts-status kokoro` prints
+`backend=kokoro` + rate; `tts-stop`/`tts-disable`/`tts-uninstall` tear it down cleanly; the drift
+test is green; lean CI is unaffected (recipes/scripts are not python runtime).
