@@ -1,6 +1,7 @@
 # Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)
 
-**Status**: Planned — design locked on paper; no code yet
+**Status**: Planned — design locked on paper; no code yet. mlx-audio API claims
+verified against installed 0.3.0 via `scripts/verify_mlx_tts_api.py` (2026-06-24).
 **Component**: tts-server (server, protocol, backends, client)
 **Assigned to**: Varun Singh
 **Priority**: High (unblocks gamealerts TTS-server migration)
@@ -28,13 +29,21 @@ server is app-agnostic.
   (`TranscriptionBackend`/`BackendStream` Protocols + `EchoBackend`), lazy-extra
   backends, `python -m stt_server {serve,status}`, optional bearer auth, send-queue
   high-water limits.
-- **mlx-audio API (verified from docs):** one uniform path —
-  `mlx_audio.tts.utils.load(model_path, lazy=False, strict=True, **kwargs)` then an
-  in-memory `model.generate(text, voice=, lang_code=, speed=, temperature=, stream=,
-  streaming_interval=2.0, **kwargs)` yielding `GenerationResult` with `.audio`
-  (float32 mx.array), `.sample_rate`, `.is_streaming_chunk`, `.is_final_chunk`. The
-  high-level `generate_audio(...)` wrapper writes files — **we do NOT use it**; we use
-  the in-memory generator.
+- **mlx-audio API (verified against installed mlx-audio 0.3.0 via
+  `scripts/verify_mlx_tts_api.py`, not docs):** `mlx_audio.tts.utils.load(model_path,
+  lazy=False, strict=True, **kwargs)` (signature confirmed) returns a model whose
+  `model.generate(text, ...)` is a **generator that `yield`s one `GenerationResult`
+  per text segment** (Kokoro splits on `\n+`). `GenerationResult` fields are
+  `.audio` (float32 `mx.array`, **1-D mono**, values bounded in [-1, 1] — verified
+  Kokoro peak ±0.22, so `int16(audio * 32767)` is safe), `.sample_rate`,
+  `.segment_idx`, `.token_count`, `.audio_samples`, `.audio_duration`,
+  `.real_time_factor`, `.prompt`, `.samples`, `.processing_time_seconds`,
+  `.peak_memory_usage`. **There are NO `.is_streaming_chunk` / `.is_final_chunk`
+  fields** (the earlier claim was wrong); segment boundaries are signalled by
+  `.segment_idx`. There is no `generate_audio(...)` wrapper on `tts.utils` — we use
+  the generator directly. **Per-model `generate()` kwargs are disjoint** (see R7): a
+  kwarg valid for one model is silently swallowed by `**kwargs` (or even `del`'d) on
+  another, so each backend advertises its own effective set — there is no global one.
 
 ## Locked design decisions
 
@@ -42,8 +51,9 @@ server is app-agnostic.
    audio device. (gamealerts keeps its `MacAudioSurface` playback, ducking, barge-in.)
 2. **Local mlx-audio only for v1.** No cloud fronting. **No voice cloning** (handled by
    the separate `vr000m/qwen3-tts-clone-and-speak` repo) → the server stays purely
-   text-in/audio-out with no `ref_audio` upload channel. **No nemotron/Riva** (NVIDIA,
-   no mlx ports).
+   text-in/audio-out with no `ref_audio` upload channel. (Note: `pocket_tts` and `dia`
+   `generate()` accept a `ref_audio` param — backends MUST leave it unwired to honour
+   this decision.) **No nemotron/Riva** (NVIDIA, no mlx ports).
 3. **Transport:** websockets over a Unix domain socket by default (also ws://host:port,
    full URI). Endpoint precedence `URI > socket > host+port`, `TTS_WS_*` env vars
    mirroring `STT_WS_*`.
@@ -64,10 +74,21 @@ server is app-agnostic.
 - **R2 — Backend abstraction** (`backend.py`): `TTSBackend` + `TTSStream` Protocols +
   a dependency-free `ToneBackend` (sine) reference for tests (the `EchoBackend` analog).
 - **R3 — Kokoro backend** (`backends/kokoro.py`): mlx-audio load/generate, float→pcm16,
-  runs blocking generate in a dedicated thread (Metal is not concurrent-safe — reuse a
-  `_thread_util` serialization like stt), warmup-generate at `start()` to learn
-  `sample_rate` + JIT. Lazy-imports `mlx_audio` inside `start()`/`_get_model`, never at
-  module load ("lean-base invariant").
+  runs the generate generator in a dedicated thread (Metal is not concurrent-safe — reuse
+  the **Lock-pair + in-flight-drain** serialization pattern from the stt backends; note
+  `_thread_util.run_in_daemon_thread` itself only marshals *one* Future per call and does
+  not serialize). `sample_rate` is **24000** and is readable as `model.sample_rate`
+  (a config property) immediately after `load()` — **no warmup-generate needed to learn
+  it**; warmup at `start()` is still worthwhile to pay Metal JIT cost off the hot path,
+  but decouple it from rate discovery so the handshake can advertise the rate before the
+  first synth. Lazy-imports `mlx_audio` inside `start()`/`_get_model`, never at module
+  load ("lean-base invariant"). **Dependency note:** importing the Kokoro model pulls
+  `misaki` (G2P), whose `[en]` extra drags in `num2words`, `spacy`, an auto-downloaded
+  `en_core_web_sm`, **and `torch`** — so the `kokoro` extra is heavy (and re-introduces
+  torch, the very dep the server exists to keep out of the app; keep it behind the extra
+  and out of lean base). Kokoro yields per-segment (`split_pattern=r"\n+"`), so its
+  effective "streaming" granularity is per-segment even though it advertises
+  `streaming:false`.
 - **R4 — Server/session** (`server.py`): handshake (`server.hello`), per-session text
   buffer, commit→synthesize, the 20 ms re-chunker, `response.cancel` (barge-in),
   send-queue high-water close, resource limits.
@@ -80,9 +101,15 @@ server is app-agnostic.
 - **R7 — Capabilities for client chunking:** `capabilities` MUST expose `streaming`,
   `ideal_chunk_chars`, `max_chunk_chars`, `text_formats`, `languages`, `extras` (accepted
   model-kwarg names), `max_text_chars`. Unknown `extras` keys are dropped (debug-logged),
-  never errored.
+  never errored. **`extras` is per-backend and must list only kwargs that are real AND
+  effective for that model** (verified via `scripts/verify_mlx_tts_api.py`): Kokoro →
+  `{speed}` only (`temperature`/`instruct`/`cfg_scale`/`ddpm_steps` are NOT Kokoro
+  params); pocket_tts → `{temperature}` (it declares `speed`/`cfg_scale`/`ddpm_steps`
+  but `del`s them — no-ops — and is the only family with real `stream`/`streaming_interval`);
+  dia → `{temperature, top_p}`. A backend MUST drop, not forward, a kwarg the model
+  ignores, so the advertised `extras` never lies to the client.
 - **R8 — Packaging:** package `pipecat-local-tts-server`, import `tts_server`. Lean base =
-  `websockets` only. Extras: `client`, `kokoro` (+ later `voxtral`, `chatterbox`). Backends
+  `websockets` only. Extras: `client`, `kokoro` (+ later `pocket_tts`, `dia`/`chatterbox`). Backends
   lazy-import heavy deps.
 - **R9 — Auth (optional):** bearer token, server-side `PIPECAT_TTS_AUTH_TOKEN`, client-side
   `TTS_WS_TOKEN`, cleartext-remote guard — mirror stt exactly.
@@ -114,7 +141,16 @@ server is app-agnostic.
 - [ ] `README.md`, protocol doc; `python -m tts_server status` usage.
 
 ### Phase 5 — More backends (later)
-- [ ] `backends/voxtral.py` (streaming:true — exercises the no-split client path), `backends/chatterbox.py` (multilingual + emotion `extras`).
+- [ ] **Streaming backend** = `backends/pocket_tts.py`, NOT voxtral. **`voxtral` and
+  `kyutai` are not mlx-audio TTS families** (verified — `get_available_models()` lists
+  bark, chatterbox, chatterbox_turbo, dia, indextts, kokoro, llama, outetts, pocket_tts,
+  qwen3, qwen3_tts, sesame, soprano, spark, vibevoice, voxcpm). `pocket_tts` is the only
+  family with native `stream`/`streaming_interval` (`-> Iterable[GenerationResult]`) — it
+  exercises the no-split client path. Caveat: `pocket_tts` and `dia` expose a `ref_audio`
+  cloning param; per locked decision #2 the backend MUST NOT wire it up.
+- [ ] `backends/dia.py` (multi-speaker **dialogue** model — `[S1]`/`[S2]` tags, `extras`
+  `{temperature, top_p}`; its `voice`/text semantics differ from single-voice backends and
+  need explicit handling) and/or `backends/chatterbox.py`.
 
 ## Technical Specifications
 
@@ -129,13 +165,19 @@ server is app-agnostic.
 `response.audio.done {response_id,duration_ms}` · `response.cancelled`/`response.failed {response_id,error?}` ·
 `server.status` · `error {code,message}`.
 
-### capabilities (server.hello)
+### capabilities (server.hello) — Kokoro example, verified fields annotated
 ```jsonc
-{ "streaming": false, "binary_audio": false,
-  "text_formats": ["plain","ssml","ipa"], "languages": ["en","ja","zh","fr","es","it","pt","hi"],
-  "voice_count": 54, "extras": ["speed","temperature","instruct","cfg_scale","ddpm_steps"],
+{ "streaming": false, "binary_audio": false, "rate": 24000,   // rate 24000 VERIFIED
+  "text_formats": ["plain"],                                   // ssml/ipa UNVERIFIED for Kokoro — plain confirmed; drop until checked
+  "languages": ["en","ja","zh","fr","es","it","pt","hi"],     // VERIFIED from 54 voice prefixes (a/b→en, e→es, f→fr, h→hi, i→it, j→ja, p→pt, z→zh)
+  "voice_count": 54,                                           // VERIFIED (54 distinct voices in mlx-community/Kokoro-82M-bf16)
+  "extras": ["speed"],                                         // Kokoro effective set ONLY; temperature/instruct/cfg_scale/ddpm_steps are NOT Kokoro params
   "ideal_chunk_chars": 280, "max_chunk_chars": 500, "max_text_chars": 2000 }
 ```
+Note: Kokoro's `language` maps to a single-letter `lang_code` (`a`/`b`=en, `e`=es, `f`=fr,
+`h`=hi, `i`=it, `j`=ja, `p`=pt, `z`=zh) — the backend must translate the ISO `language` to
+the letter. Other backends advertise different `extras`/`rate`/`streaming` (pocket_tts is
+`streaming:true`); capabilities is built per-backend, never copied from this example.
 
 ### Backend Protocol
 ```python
@@ -155,6 +197,11 @@ class TTSBackend(Protocol):
     async def close(self) -> None: ...
 ```
 `extras` (validated against `capabilities["extras"]`) splats into `model.generate(**extras)`.
+The validated `extras` keys MUST be disjoint from the fixed `generate` params the backend
+already passes (`text`, `voice`, `language`/`lang_code`) — otherwise `**extras` raises
+`TypeError` at the call site. Because `generate` accepts `**kwargs`, an *unfiltered* extra
+is silently swallowed (or `del`'d) rather than rejected, so per-backend `extras` validation
+is what keeps the advertised contract honest.
 
 ## Testing Notes
 - `ToneBackend` makes Phase-1 fully deterministic with **no mlx dependency** — protocol,
