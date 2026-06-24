@@ -20,10 +20,22 @@ server is app-agnostic.
 
 ## Context
 
-- **Why a server:** today gamealerts loads Kokoro **in-process**, coupling heavy
-  mlx/torch deps to the app and re-loading the model on every restart. The STT side
-  already solved this with a shared local server (`stt_server`, websockets over a Unix
-  socket, lazy-imported per-model backends). This project does the TTS-side mirror.
+- **Why a server:** today gamealerts loads Kokoro **in-process** (in a subprocess),
+  coupling heavy mlx/torch deps to the app and re-loading the model on every restart.
+  This server replaces that subprocess. The STT side already solved this with a shared
+  local server (`stt_server`, websockets over a Unix socket, lazy-imported per-model
+  backends). This project does the TTS-side mirror.
+- **gamealerts client contract (authoritative, from the consumer side):** the client owns
+  the output device, resampling, and buffering; the server owes it exactly two things.
+  (1) **An exact, stable advertised rate.** `MacAudioSurface` plays through the selected
+  device (often a 48 kHz Focusrite Scarlett USB interface) and resamples model-rate →
+  device-rate driven entirely by `hello.audio.rate`. A past "croaky" bug was a rate/buffer
+  mismatch on that USB device; a wrong/variable advertised rate makes the client resample
+  at the wrong ratio → pitch/speed distortion. Format stays int16-LE mono at that rate.
+  (2) **A steady in-response stream.** That croak was a playback-buffer underrun; in-process
+  the audio was always immediately available, but over a socket a server-side stall is a
+  new way to starve the client's playback buffer. Don't stall mid-response. These map to
+  R1 (rate) and R4 (rate + steady streaming).
 - **Template:** `pipecat-local-stt-server` v0.3.2 is the authoritative reference —
   `protocol.py` (OpenAI-Realtime-inspired event subset), `backend.py`
   (`TranscriptionBackend`/`BackendStream` Protocols + `EchoBackend`), lazy-extra
@@ -71,6 +83,13 @@ server is app-agnostic.
 
 - **R1 — Protocol** (`protocol.py`): `PROTOCOL_VERSION="0.1"`, pcm16 mono, per-backend
   rate. Event set per Technical Specifications. `ErrorCode` enum mirroring stt.
+  **Rate is a correctness contract, not metadata** (client requirement, see Context →
+  *gamealerts client contract*): `hello.audio.rate` is the true model rate (Kokoro
+  24000, read from `model.sample_rate` at connect — no warmup dependency), and every
+  `response.audio.delta` for the session MUST be int16-LE mono at exactly that rate with
+  no per-utterance drift. The client resamples model-rate → device-rate (e.g. 48 kHz USB)
+  off this single advertised value; a wrong or variable rate makes it resample at the
+  wrong ratio and pitch/speed-distorts playback.
 - **R2 — Backend abstraction** (`backend.py`): `TTSBackend` + `TTSStream` Protocols +
   a dependency-free `ToneBackend` (sine) reference for tests (the `EchoBackend` analog).
 - **R3 — Kokoro backend** (`backends/kokoro.py`): mlx-audio load/generate, float→pcm16,
@@ -91,7 +110,20 @@ server is app-agnostic.
   `streaming:false`.
 - **R4 — Server/session** (`server.py`): handshake (`server.hello`), per-session text
   buffer, commit→synthesize, the 20 ms re-chunker, `response.cancel` (barge-in),
-  send-queue high-water close, resource limits.
+  send-queue high-water close, resource limits. **Two behavioral contracts the socket
+  imposes on playback** (client requirement, see Context → *gamealerts client contract*):
+  (a) **exact, stable emitted rate** — every frame matches the advertised `hello.audio.rate`
+  (per R1); (b) **steady in-response streaming, no jitter starvation** — once
+  `response.created` fires, feed the client buffer continuously: do NOT block the send
+  loop on synthesis between chunks, and do NOT emit one large burst then a long gap. For
+  Kokoro (yields per `.segment_idx` on `\n+`), **emit each segment's audio as it
+  completes** rather than buffering the whole utterance — this lowers time-to-first-audio
+  and keeps the client's playback buffer fed. This makes the streaming lifecycle a
+  correctness requirement, not an optimization: `open_stream`'s `end()` must NOT block
+  until full synthesis while `events()` replays a stored result (the stt-mirrored
+  commit-then-drain shape); `events()` must yield frames as segments land. The client
+  carries a deep (8192-frame) buffer to absorb normal jitter, so the bar is "don't stall
+  mid-response," not a redesign.
 - **R5 — Client** (`client.py`): async `TTSClient` — `connect() -> hello`, `update()`,
   `append()`, `commit()`, `cancel()`, `events()`, `status()`, `close()`. Transport-generic
   (no app labels/frame types — the pipecat adapter lives in `examples/`).
@@ -209,11 +241,24 @@ is what keeps the advertised contract honest.
 - Kokoro tests are marked/skipped when mlx or Apple Silicon is absent.
 - Assert the 20 ms re-chunker emits uniform frame sizes from both a single-chunk
   (non-streaming) and multi-chunk (simulated streaming) backend.
+- **Rate-exactness:** assert every `response.audio.delta` frame's implied rate matches
+  `hello.audio.rate` and is constant across a multi-segment utterance (a `ToneBackend`
+  with a fixed rate makes this deterministic in plain CI).
+- **Steady streaming / no jitter starvation:** with a `ToneBackend` whose segments
+  complete with an injected delay, assert first audio arrives before the whole utterance
+  is synthesized (time-to-first-frame << total synth time) and that the send loop is not
+  blocked between segments — i.e. `events()` yields per segment, it does not buffer the
+  full utterance then flush.
 
 ## Acceptance Criteria
 - `python -m tts_server serve --backend kokoro` serves; `status` prints backend/model/rate.
 - A client synthesizes text → non-empty PCM16 frames at the advertised rate; `response.cancel`
   stops mid-stream promptly.
+- **Rate contract:** every emitted frame is int16-LE mono at exactly `hello.audio.rate`,
+  constant across the whole utterance (no per-utterance drift).
+- **Steady-stream contract:** for a multi-segment utterance, first audio reaches the client
+  before full synthesis completes, and audio is delivered continuously (no burst-then-gap)
+  so the client playback buffer never starves.
 - Base install (no `kokoro` extra) imports and runs the Tone path; no mlx at import time.
 
 ## Decided defaults (locked so `/conduct` doesn't fork; revisit only if a phase surfaces a reason)
