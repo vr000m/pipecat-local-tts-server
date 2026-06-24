@@ -160,7 +160,7 @@ server is app-agnostic.
 - [ ] Test: client synthesizes a tone end-to-end; cancel mid-stream; protocol round-trip.
 
 ### Phase 2 — Kokoro backend
-- [ ] `backends/kokoro.py`: load/generate, float→pcm16, thread executor, warmup rate.
+- [ ] `backends/kokoro.py`: load/generate, float→pcm16, thread executor; rate from `model.sample_rate` (warmup is JIT-only, decoupled from rate discovery — see R3).
 - [ ] `capabilities()` → `streaming:false`, chunk-size hints, voices count, languages.
 - [ ] Test (gated on mlx / Apple Silicon, skipped in lean CI): synthesize "GOAL!" → non-empty PCM16 at advertised rate.
 
@@ -199,7 +199,7 @@ server is app-agnostic.
 
 ### capabilities (server.hello) — Kokoro example, verified fields annotated
 ```jsonc
-{ "streaming": false, "binary_audio": false, "rate": 24000,   // rate 24000 VERIFIED
+{ "streaming": false, "binary_audio": false,                  // rate is NOT here — canonical rate is hello.audio.rate (24000, VERIFIED); R1 client reads that
   "text_formats": ["plain"],                                   // ssml/ipa UNVERIFIED for Kokoro — plain confirmed; drop until checked
   "languages": ["en","ja","zh","fr","es","it","pt","hi"],     // VERIFIED from 54 voice prefixes (a/b→en, e→es, f→fr, h→hi, i→it, j→ja, p→pt, z→zh)
   "voice_count": 54,                                           // VERIFIED (54 distinct voices in mlx-community/Kokoro-82M-bf16)
@@ -210,6 +210,12 @@ Note: Kokoro's `language` maps to a single-letter `lang_code` (`a`/`b`=en, `e`=e
 `h`=hi, `i`=it, `j`=ja, `p`=pt, `z`=zh) — the backend must translate the ISO `language` to
 the letter. Other backends advertise different `extras`/`rate`/`streaming` (pocket_tts is
 `streaming:true`); capabilities is built per-backend, never copied from this example.
+Note: `streaming:false` means **no sub-segment streaming** — segment-level streaming still
+happens (R4 emits each Kokoro `\n+` segment as it completes). So the client's sentence-chunking
+on non-streaming backends is about choosing sentence boundaries *within a commit*, not a
+substitute for the server's per-segment delivery. (Division of labour — newline-join one
+commit vs per-sentence commits — is settled with gamealerts at integration; it only matters
+for long Q&A, not commentary.)
 
 ### Backend Protocol
 ```python
