@@ -703,3 +703,40 @@ earlier source-regex survey; satisfies R7's "re-verify via `inspect.signature` b
 - **[Phase 2]** `backends/_stream_util.py` EOF sentinel is enqueued via `loop.call_soon_threadsafe(queue.put_nowait, _EOF)`; if the consumer broke out early (cancel) leaving a full queue, `put_nowait` raises `QueueFull` inside the loop callback (logged, benign — Metal lock still releases, no hang). The bridge cancel path is first exercised by Kokoro in Phase 2 — harden the EOF put there (swallow `QueueFull` / drain-then-put).
 - **[Phase 4]** `server.py` emits a `session.closed` event (reason `client_cancel`/`client_close`) on `session.cancel`/`session.close`, but `docs/protocol.md` §5 does not list `session.closed`. Reconcile when Phase 4 verifies protocol.md against the shipped `protocol.py`.
 - **[Phase 3]** In-flight commit rejection (K=1) currently uses `ErrorCode.INVALID_EVENT`; when Phase 3 wires `BUSY`/`retry_after_ms`, map the in-flight/backlog rejection to the right code.
+
+## Operator justfile (post-review)
+
+Added after the reviewed contract, so it lives here in the workspace rather than in the
+Implementation Checklist (keeps the `<!-- reviewed -->` hash valid). Mirrors the sibling
+`pipecat-local-stt-server/justfile`. macOS / `launchctl` only.
+
+### Shipped now (read-only recipes — work against any running server)
+- **`default`** — `just --list`.
+- **`tts-list`** — sweep `~/Library/LaunchAgents/pipecat.tts-server*.plist`, print state/pid via
+  `launchctl print`, and for the canonical label (`pipecat.tts-server` → `~/Library/Caches/pipecat-tts/tts.sock`)
+  probe the live backend with `python -m tts_server status`. Because the TTS server has **no launchd
+  install path yet**, the recipe also falls back to probing the canonical ad-hoc socket directly, so a
+  server started by hand (README quick-start) still shows up. Read-only sweep — always exits 0.
+- **`tts-status [socket]`** — wraps `python -m tts_server status --socket-path <socket>`; defaults to
+  the canonical `tts.sock`. Exits with the probe's own status (mirrors stt's behaviour).
+- Smoke-tested 2026-06-24 (arm64): `just tts-list` correctly reports "no agents" with no server, and
+  surfaces an ad-hoc tone server (`live: tone`) when one is running; `tts-status` prints the full status block.
+
+### Deferred — launchd lifecycle recipes (a future "Phase 6 — launchd ops parity" candidate)
+The stt justfile also carries `stt-install` / `stt-enable` / `stt-disable` / `stt-uninstall`, which
+delegate to `scripts/install_stt_agent.sh` + a plist renderer (`render_stt_plist.py`). The TTS repo
+has **neither**, so those recipes were omitted rather than written against non-existent files. To reach
+full ops parity later:
+- **Impl files:** `scripts/install_tts_agent.sh` (port of the stt installer; env-keyed
+  `PIPECAT_TTS_LABEL`/`PIPECAT_TTS_SOCKET`/`PIPECAT_TTS_BACKEND`), `scripts/render_tts_plist.py`
+  (RunAtLoad + KeepAlive plist), and the `tts-install/enable/disable/uninstall` recipes + a backend→
+  `(label, socket, backend-name)` `_resolve` map in `justfile`.
+- **Canonical map / drift guard:** add a README "Per-backend socket convention" table and a
+  `tests/test_justfile_recipes.py` that parses it and asserts the justfile `_resolve` map matches
+  (the stt repo's drift test is the model). Until that table exists the map stays single-entry
+  (`pipecat.tts-server` → `tts.sock`).
+- **Test command:** `uvx pytest tests/test_justfile_recipes.py -v` (point `la_dir`/`cache_dir` at a
+  temp `$HOME`, as the stt tests do).
+- **Decision needed before conducting:** whether `tone` gets its own canonical label/socket
+  (`pipecat.tts-server.tone` / `tone.sock`) or stays test-only. The README documents only `tts.sock`
+  today; do not invent a multi-socket convention without a backend that needs it.
