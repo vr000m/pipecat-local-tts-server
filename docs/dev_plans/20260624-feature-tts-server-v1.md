@@ -622,4 +622,25 @@ gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-
 
 ## Progress
 
+- [x] Phase 0: Scaffold — committed d56d502 (import-safety 12 passed, ruff clean)
+- [x] Phase 1: Protocol + Tone end-to-end — committed (70 lean tests pass, ruff clean)
+- [x] Phase 2: Kokoro backend — committed (80 lean + 5 mlx-gated tests pass; live synth verified)
+- [x] Phase 3: Ops parity with stt — committed (103 lean tests pass; scheduler/auth/backpressure verified)
+- [x] Phase 4: Reference adapter + docs — committed (pipecat adapter, README, protocol.md reconciled)
+- [ ] Phase 5: More backends
+
 ## Findings
+
+### Phase 2 measured results (Apple Silicon, mlx-audio 0.4.4, Kokoro-82M-bf16)
+- **Kokoro long single-segment cancellation latency ≈ 51 s** (measured 2026-06-24, arm64). Kokoro yields a no-newline segment as ONE delta only at the END of `generate()`, and the bridge checks the cancel flag at the per-result boundary — so a single-segment cancel cannot take effect until `generate()` completes. This confirms the plan's documented **"yield-boundary best effort"** limitation: long single-segment cancellation far exceeds any barge-in target. **Resolution (per plan R3/Phase-2 fallback): the client MUST chunk at sentence/newline boundaries for Kokoro to get prompt barge-in.** The server's hard guarantee remains "no more deltas after `response.cancelled`" (asserted in tests).
+- **mlx-audio 0.4.4 `broadcast_shapes` bug:** a very long single segment (~542k samples) and certain short inputs (e.g. "Warm up") trip an internal `broadcast_shapes` error inside Kokoro `generate()`, unrelated to our code. Warmup is therefore best-effort (caught/logged/non-fatal) and uses the verified-safe phrase "Hello there."; rate discovery is independent of warmup per R3.
+- **Packaging fix:** Phase 0's `kokoro` extra was missing `misaki[en]` (R3's G2P dep, lazily imported by mlx-audio 0.4.4 so not a transitive hard dep). Added in Phase 2; `mlx-audio==0.4.4` pin kept.
+
+### Phase 3 notes
+- **Send-queue high-water guard — trippability over loopback (stt-parity limitation):** the outbound send-queue high-water *close* logic is correct and unit-tested deterministically (a fake connection reporting `pending > high_water` → `state.closed`, `ws.close(1011, "send_queue_overflow")`, overflowing frame dropped). BUT over loopback the drain blocks inside a single `await ws.send()` while the kernel/asyncio absorbs the bytes, and the guard only samples `transport.get_write_buffer_size()` *before* each send — so a never-reading raw client is not actually closed (buffer reads 0 during the in-progress send). **This matches the stt reference exactly** (same guard, no live-socket trip test there); the plan says "mirror stt". Future hardening (if a true end-to-end stall-close is needed): re-check the buffer while a send is in progress, or bound buffering differently. Recorded, not fixed (out of v1 mirror scope).
+- Phase 3 mid-phase review: scheduler/auth/concurrency invariants verified sound (single-dispatcher Metal-lock serialization, fair round-robin, no lost-wakeup, no starvation, no slot double-free). One Minor cosmetic finding (redundant `except` tuple in `_SynthScheduler.stop()`) left as advisory.
+
+### Phase 1 mid-phase review (advisory, deferred to later phases)
+- **[Phase 2]** `backends/_stream_util.py` EOF sentinel is enqueued via `loop.call_soon_threadsafe(queue.put_nowait, _EOF)`; if the consumer broke out early (cancel) leaving a full queue, `put_nowait` raises `QueueFull` inside the loop callback (logged, benign — Metal lock still releases, no hang). The bridge cancel path is first exercised by Kokoro in Phase 2 — harden the EOF put there (swallow `QueueFull` / drain-then-put).
+- **[Phase 4]** `server.py` emits a `session.closed` event (reason `client_cancel`/`client_close`) on `session.cancel`/`session.close`, but `docs/protocol.md` §5 does not list `session.closed`. Reconcile when Phase 4 verifies protocol.md against the shipped `protocol.py`.
+- **[Phase 3]** In-flight commit rejection (K=1) currently uses `ErrorCode.INVALID_EVENT`; when Phase 3 wires `BUSY`/`retry_after_ms`, map the in-flight/backlog rejection to the right code.
