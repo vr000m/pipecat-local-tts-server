@@ -284,8 +284,30 @@ decision, so each is its own branch/commit). Signatures and streaming behaviour 
 arm64; supersedes the earlier source-regex survey — see Findings → *Phase 5 signature
 verification*). The session loop, 20 ms re-chunker, scheduler, and `_stream_util` bridge are
 already backend-agnostic (Phases 1–2), so a new backend is: lazy-import + `generate()` adapter +
-`capabilities()` + extras filtering. **No streaming-seam work remains** — sub-segment chunks feed
-the same bounded queue and nothing downstream changes.
+`capabilities()` + extras filtering. **No bridge/queue/re-chunker code changes are needed** —
+sub-segment chunks feed the same bounded queue, and `response.audio.done.duration_ms` accumulates
+per-delta sample counts in `server.py::_run_response` (not `chunks × interval`), so sub-segment
+chunking changes only the chunk *count*, not the totals. (This is *why* "nothing downstream changes"
+holds — confirmed against `_run_response`; it is not a bare assertion. Each sub-phase still adds its
+own backend module, tests, packaging, and a verified streaming-cadence default — see below.)
+
+**`streaming_interval` plumbing (applies to 5a/5b).** There is no constructor/CLI channel for it:
+`make_backend(name, model)` (`tts_server/backends/__init__.py:23`) and the CLI take only
+`--backend`/`--model`. So each streaming backend carries `streaming_interval` as a **per-backend
+module constant baked into its `_gen_factory()` `generate()` call** — exactly how `kokoro.py`
+hardcodes `lang_code`/`speed` — NOT a new constructor param, CLI flag, or client `extras` key.
+
+**`voice=None` handling (applies to all 5a/5b/5c).** The server forwards
+`voice=msg.get("voice", config.get("voice"))`, which is **`None` when the client omits voice**
+(`server.py`). The model defaults differ per backend (voxtral `'casual_male'`, pocket/dia `None`
+with dialogue-tag semantics), so each backend's adapter MUST **omit `voice` from the `generate()`
+call when it is `None`** (let the model default stand) rather than forwarding `voice=None`. Kokoro's
+`_gen_factory` does this for `speed`; replicate the pattern for `voice`.
+
+**`ToneBackend` streaming fixture (5a prerequisite, lean CI).** `ToneBackend.capabilities()` is
+hardcoded `"streaming": False` (`tts_server/backend.py:223`). Add a `streaming: bool` constructor
+param (it already parametrizes `extras`/`languages`) so the `streaming:true` capabilities branch and
+the client no-split path are exercisable in **lean CI**, independent of the mlx-gated real backends.
 
 #### Phase 5a — `voxtral_tts` (streaming reference) — do first
 - [ ] `backends/voxtral_tts.py`. VERIFIED signature: `generate(text, voice='casual_male',
@@ -293,45 +315,107 @@ the same bounded queue and nothing downstream changes.
   streaming_interval=2.0, **kwargs)`. Native `stream`/`streaming_interval`, **no `ref_audio`**
   — the cleanest streaming backend (exercises the `streaming:true` no-split client path with no
   cloning concern). `capabilities()` → `streaming:true`, extras `{temperature, top_k, top_p}`.
-- [ ] **Set a small `streaming_interval` default (≈0.3–0.5s), do NOT use the model default 2.0s.**
-  VERIFIED (`voxtral_tts.py:671-716`): with `stream=True` the model yields a `GenerationResult`
-  only every `frames_per_chunk = max(1, int(streaming_interval/0.08))` frames (1 frame = 80 ms),
-  so the default 2.0s buffers ~2 s of audio before the **first** chunk lands. The 20 ms re-chunker
-  cannot lower TTFB — it only re-frames *after* a chunk arrives. `streaming_interval` is a
-  **backend config**, NOT a client `extras` knob (keep it out of the advertised extras).
+  Apply the `streaming_interval` plumbing and `voice=None` rule above.
+- [ ] **Default `streaming_interval` small — ~0.3–0.5s is a STARTING ESTIMATE, not a measured
+  optimum.** VERIFIED mechanism only (`voxtral_tts.py:671-716`): with `stream=True` the model yields
+  a `GenerationResult` every `frames_per_chunk = max(1, int(streaming_interval/0.08))` frames
+  (1 frame = 80 ms), so the model default 2.0s buffers ~2 s before the **first** chunk; the 20 ms
+  re-chunker cannot lower TTFB (it re-frames only *after* a chunk arrives). What is **NOT** verified:
+  (a) that 0.3–0.5s is the floor that still yields clean audio — voxtral adds `context_frames`
+  overlap per chunk to avoid boundary artifacts, so a smaller interval carries a decode-overhead and
+  artifact cost not yet quantified; (b) absolute TTFB — that is dominated by model prefill +
+  first-decode, unmeasured for voxtral. **Measurement step (mirror Phase-2 discipline):** before
+  locking the default, measure TTFB *and* audio quality at 0.3 / 0.5 / 1.0s and record the chosen
+  value in Findings. The interval bounds *added buffering* latency, not absolute TTFB.
 - [ ] EOF stays keyed off **generator exhaustion**, not `.is_final_chunk`. VERIFIED: voxtral *does*
   set `is_final_chunk=True` on its last chunk (`voxtral_tts.py:781-782`) — unlike Kokoro, which
   never sets it — but exhaustion handles both, so no code change; the bridge contract holds across
   both shapes. **`kyutai` is still not an mlx-audio TTS family**; `moss_tts*` is unrelated to
   Kyutai/Moshi.
+- [ ] `_stream_util` bridge `maxsize`: `_BRIDGE_MAXSIZE=8` (`kokoro.py:96`) is tuned for Kokoro's
+  *few large* per-segment chunks; voxtral emits *many small* sub-segment chunks (~one per
+  `streaming_interval`). Set a per-backend `maxsize` with a streaming-cadence rationale; do not copy
+  Kokoro's bound or comment verbatim.
+- [ ] Tests:
+  - **Lean (no mlx, `ToneBackend(streaming=True)`):** assert `capabilities()["streaming"] is True`
+    and the `streaming:true` no-split client path.
+  - **Bridge unit (lean, no mlx) — `is_final_chunk=True` EOF:** drive `_stream_util.stream_generate`
+    **directly** with fake `GenerationResult`s whose last carries `is_final_chunk=True`, and assert
+    EOF still comes from **generator exhaustion** (the flag is advisory). This CANNOT go through
+    `ToneBackend` — `AudioEvent` carries only `{kind, pcm}` (`backend.py:47-48`), so the model flag
+    never reaches it; the bridge is the only layer that sees `is_final_chunk`. (Closes the "both
+    shapes" claim — the existing EOF guard only covers Kokoro's `is_final_chunk=False`.)
+  - **Backend-unit (no model load):** assert the backend's effective `streaming_interval` is the
+    chosen small default (e.g. `0.3 <= value <= 0.5`) and that `streaming_interval` is **not** in
+    `capabilities()["extras"]`.
+  - **mlx-gated — sub-segment streaming proven at the NATIVE boundary, not the wire:** a wire
+    `response.audio.delta` count is meaningless — the 20 ms re-chunker (`server.py::_run_drain`)
+    splits even one large *non-streaming* native chunk into many 20 ms deltas, so "≥2 deltas" passes
+    for a single Kokoro-style chunk. Instead spy on the backend's **native** yields (count
+    `GenerationResult`/bridge chunks, or the stream's `events()` `"delta"` `AudioEvent`s) and assert
+    **≥2 native chunks** for a single no-newline sentence — the structural difference from Kokoro
+    (which yields once per `\n+` segment).
 
 #### Phase 5b — `pocket_tts` (streaming + ref_audio negative guard) — do second
 - [ ] `backends/pocket_tts.py`. VERIFIED signature: `generate(text, voice=None, ref_audio=None,
   temperature=None, verbose=False, stream=False, streaming_interval=2.0, frames_after_eos=None,
   **kwargs)`. Native streaming (`pocket_tts.py:285-318`, yields per
   `interval_samples = streaming_interval * sample_rate`); imports cleanly in 0.4.4. `capabilities()`
-  → `streaming:true`, extras `{temperature}` **only**. Same small-`streaming_interval` default as 5a.
+  → `streaming:true`, extras `{temperature}` **only**. Apply the `streaming_interval` plumbing,
+  `voice=None` rule, per-backend bridge `maxsize`, and small-interval measurement step from 5a.
 - [ ] **Leave `ref_audio` AND `frames_after_eos` unwired** (decision 2 + undocumented param). This
   is the backend that exercises the decision-#2 negative guard — voxtral structurally cannot
   (it has no `ref_audio`).
-- [ ] Test: assert `capabilities["extras"]` **excludes `ref_audio`/`frames_after_eos`** and a
-  client-supplied `ref_audio` cannot be passed through to `generate()` — the negative guard for
-  locked decision #2.
+- [ ] Negative-guard test — the load-bearing assertion is at the **backend layer, not end-to-end.**
+  The server's `_validate_extras` (`server.py:533-553`) already drops any extra not in the advertised
+  set *before* the backend, so an end-to-end client `extras={"ref_audio": ...}` never reaches
+  `generate()` regardless of backend correctness — a spy on that path passes trivially and proves
+  nothing. Instead: (1) assert `capabilities()["extras"]` **excludes `ref_audio`/`frames_after_eos`**;
+  (2) call the backend's `open_stream(extras={"ref_audio": ..., "frames_after_eos": ...})`
+  **directly** (bypassing server validation, exercising the backend's own last-defense filter —
+  mirror Kokoro's at `kokoro.py:366-374`) and spy the `generate()` kwargs, asserting neither key
+  appears — the real "cannot reach `generate()`" invariant, robust to a future unfiltered `**extras`
+  refactor. Place in the already-lean-allow-listed `tests/test_capabilities_extras.py` (or add a new
+  lean file AND extend the allow-list in the same commit — see *Per sub-phase*).
+- [ ] **Streaming-flag assert:** `capabilities()["streaming"] is True`.
 
 #### Phase 5c — `dia` (dialogue, NON-streaming) — defer; separate design
 - [ ] `backends/dia.py`. VERIFIED signature: `generate(text, voice=None, temperature=1.3,
   top_p=0.95, split_pattern='\n', max_tokens=None, verbose=False, ref_audio=None, ref_text=None,
   **kwargs)`. **NOT a streaming backend** — no `stream` param, uses `split_pattern` (segment-level,
-  like Kokoro) → must advertise **`streaming:false`**. extras `{temperature, top_p}`.
+  like Kokoro) → must advertise **`streaming:false`** (assert `capabilities()["streaming"] is False`).
+  extras `{temperature, top_p}`. Apply the `voice=None` rule (note dia's `voice` interacts with
+  `[S1]`/`[S2]` tags — part of the deferred design).
 - [ ] **Leave BOTH `ref_audio` AND `ref_text` unwired** (decision 2); the negative-guard test must
-  cover `ref_text` too. Multi-speaker dialogue model (`[S1]`/`[S2]` tags) — its `voice`/text
-  semantics differ from single-voice backends, so defer until that mapping is designed.
+  cover `ref_text` too — assert at both layers (capabilities exclusion **and** absence at the
+  `generate()` call boundary, as in 5b) for `{ref_audio, ref_text}`. Multi-speaker dialogue model
+  (`[S1]`/`[S2]` tags) — its `voice`/text semantics differ from single-voice backends, so defer
+  until that mapping is designed.
 
 #### Per sub-phase (5a/5b/5c)
+- [ ] **Wire the backend into the resolver** (`tts_server/backends/__init__.py::make_backend`) in the
+  same commit — it currently resolves only `tone`/`kokoro` and `raise SystemExit` otherwise, so
+  without a new branch `--backend voxtral_tts|pocket_tts|dia` is dead end-to-end even though the
+  backend module and its unit tests pass. Add a **lazy-import** branch (mirror Kokoro's: import inside
+  the branch, `mlx_audio` only in `start()`) and a **lean construction/lazy-import test** asserting
+  the name resolves and the module imports without `mlx_audio` present.
+- [ ] **Per-backend `sample_rate` discovery** (R1/R3 rate contract): each backend must expose
+  `sample_rate` after `start()`/load so `server.start()` (`server.py:323-362`, connect→load→hello)
+  advertises the true model rate in `server.hello.audio.rate`; decouple it from warmup per R3. Add an
+  mlx-gated test asserting `hello.audio.rate` equals the loaded model's rate **before any synth runs**
+  (voxtral/pocket/dia rates are per-model and unverified — Kokoro's is 24000; do NOT assume these match).
 - [ ] Packaging/CI update in the **same commit** as each new backend: add the `pyproject.toml`
-  optional dependency extra, update the full macOS/all-extras sync job to install it, keep lean CI
+  optional dependency extra **and append `--extra <name>` to the macOS job's sync line**
+  (`.github/workflows/test.yml:81` is `uv sync --extra client --extra kokoro` — a hardcoded list,
+  **not** `--all-extras`; a forgotten `--extra` leaves the backend uninstalled and its mlx-gated test
+  silently `importorskip`-skipped, shipping zero CI coverage while green). *Alternative (preferred,
+  do once): switch line 81 to `uv sync --all-extras` so it cannot drift per-backend.* Keep lean CI
   free of those heavy deps, and decide model-download/network gating (same constraint that made
-  Phase 2 environment-gated).
+  Phase 2 environment-gated; larger weights than Kokoro — confirm runner access before 5a).
+- [ ] **If a sub-phase adds a NEW lean test file, extend the lean allow-list
+  (`.github/workflows/test.yml:40-55`) in the same commit** (`pytest` errors on a missing
+  allow-listed path — the discipline Phases 1–3 each followed). Folding the negative-guard assertion
+  into the already-allow-listed `tests/test_capabilities_extras.py` avoids this edit.
 - [ ] **Update the Phase-4 README/protocol-doc capabilities & extras table** for the new backend
   (they were Kokoro-only when first written) — including its `streaming` flag.
 - [ ] **Re-verify the live `generate()` signature via `inspect.signature` before wiring** if the
@@ -658,7 +742,7 @@ Phase 3:
 ## Companion plan
 gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.
 
-<!-- reviewed: 2026-06-24 @ 01247d4a4906b5570c28030d86a9f0c2e427abb6 -->
+<!-- reviewed: 2026-06-24 @ f9c8513e3885a32cba75042082f2dd2c5435b82f -->
 
 ## Progress
 
@@ -689,15 +773,36 @@ earlier source-regex survey; satisfies R7's "re-verify via `inspect.signature` b
 - **voxtral_tts & pocket_tts are genuine sub-segment streamers** (native `stream`/`streaming_interval`,
   confirmed yielding incrementally in source). **dia is NOT** — no `stream` param, uses
   `split_pattern` like Kokoro → `streaming:false`.
-- **`streaming_interval` default 2.0s is too coarse** — first chunk lands after ~2s of audio.
-  Backends must default it to ≈0.3–0.5s for Cartesia/11Labs-like TTFB; it is a backend config,
-  not a client extra. (The 20 ms re-chunker cannot lower TTFB.)
+- **`streaming_interval` default 2.0s is too coarse** — first chunk lands after ~2s of audio
+  (mechanism verified; the 20 ms re-chunker cannot lower TTFB). It is a backend config, not a client
+  extra. ≈0.3–0.5s is a **starting estimate, not measured** — the plan now requires measuring TTFB +
+  audio quality before locking a default (see Phase 5a measurement step).
 - **voxtral sets `is_final_chunk=True`** on its last chunk (Kokoro never does); EOF-on-exhaustion
   handles both, so no bridge change.
 - **Undocumented params to keep unwired:** pocket_tts `frames_after_eos`; dia `ref_text` (in
   addition to `ref_audio`). Negative-guard tests must cover these.
 - **Backend split rationale confirmed:** voxtral has no `ref_audio` (can't test decision-#2 guard);
   pocket_tts/dia do (they exercise it). → Phase 5 split 5a voxtral / 5b pocket / 5c dia.
+
+### Phase 5 plan review rounds (2026-06-24, pre-implementation)
+Two review passes on the revised Phase 5 section; all findings folded into the plan body above.
+- **`/review-plan` (5 lenses):** 15 findings (0 Critical at plan level, 2 Critical test gaps, 9
+  Important, 4 Minor); codebase-claims clean (78/78 references verified). Folded: `streaming_interval`
+  plumbing as a per-backend module constant; `voice=None` must be omitted from `generate()`; the
+  ~0.3–0.5s default reframed as an unmeasured estimate + measurement step; two-layer negative-guard
+  tests; `streaming:true/false` advertisement asserts; `ToneBackend` streaming ctor param; per-backend
+  bridge `maxsize`; macOS CI `--extra` flip / `--all-extras`; lean allow-list extension; EOF
+  `is_final_chunk=True` test.
+- **Codex adversarial pass:** 5 Important findings, all verified against code and folded:
+  (1) sub-segment streaming must be asserted at the **native** chunk boundary — wire-delta count is
+  meaningless because the 20 ms re-chunker splits one big chunk into many deltas; (2) negative-guard
+  test must call `open_stream(extras=...)` **directly** — `_validate_extras` (`server.py:533-553`)
+  drops unadvertised extras before the backend, so the e2e path proves nothing; (3) the
+  `is_final_chunk=True` EOF test must drive `_stream_util.stream_generate` directly — `ToneBackend`
+  can't carry the flag (`AudioEvent` is `{kind, pcm}` only); (4) per-backend `sample_rate` discovery
+  before `server.hello` is unstated (rates are per-model, unverified); (5) new backends must be wired
+  into `make_backend` (resolves only `tone`/`kokoro` today) + a lean construction test, else
+  `--backend voxtral_tts|…` is dead end-to-end.
 
 ### Phase 1 mid-phase review (advisory, deferred to later phases)
 - **[Phase 2]** `backends/_stream_util.py` EOF sentinel is enqueued via `loop.call_soon_threadsafe(queue.put_nowait, _EOF)`; if the consumer broke out early (cancel) leaving a full queue, `put_nowait` raises `QueueFull` inside the loop callback (logged, benign — Metal lock still releases, no hang). The bridge cancel path is first exercised by Kokoro in Phase 2 — harden the EOF put there (swallow `QueueFull` / drain-then-put).
