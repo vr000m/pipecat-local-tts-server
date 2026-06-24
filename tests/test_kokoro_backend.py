@@ -124,6 +124,32 @@ async def test_synthesize_goal_yields_nonempty_pcm16(started_backend):
 
 
 # ---------------------------------------------------------------------------
+# Regression: the upstream mlx-audio SineGen length bug.
+#
+# Without ``_apply_kokoro_vocoder_fix`` (applied in ``start()``), this phrase
+# fails inside mlx-audio's Kokoro vocoder with ``[broadcast_shapes] Shapes
+# (1,T,1) and (1,T+300,9) cannot be broadcast`` — ``_f02sine``'s interpolate
+# round-trip returns one extra upsample hop, so ``sine_waves`` is one hop longer
+# than ``uv``/``noise_amp``. "Hello there." (the warmup phrase) is in the failing
+# class; "GOAL!" happens to align, which is why the test above is NOT sufficient
+# to catch the bug. This test fails fast if the fix regresses or stops applying.
+# ---------------------------------------------------------------------------
+
+
+async def test_synthesize_broadcast_bug_phrase_succeeds(started_backend):
+    """A phrase that trips the upstream broadcast_shapes bug WITHOUT the fix must
+    synthesize to non-empty PCM WITH it (the fix is applied in start())."""
+    backend = started_backend
+    stream = await backend.open_stream(language="en")
+    await stream.feed("Hello there.")
+    await stream.end()
+    pcm = await _drain(stream)
+    assert pcm, "expected non-empty PCM16 for 'Hello there.' (vocoder fix not applied?)"
+    assert len(pcm) % 2 == 0
+    assert len(pcm) // 2 > 0
+
+
+# ---------------------------------------------------------------------------
 # capabilities(): extras exact, unsupported kwargs excluded, voice/lang shape.
 # ---------------------------------------------------------------------------
 

@@ -54,6 +54,63 @@ DEFAULT_KOKORO_MODEL = "mlx-community/Kokoro-82M-bf16"
 # ignored, so it MUST NOT be advertised and MUST be dropped before the call.
 _KOKORO_EXTRAS = ["speed"]
 
+# --- Upstream mlx-audio Kokoro vocoder fix --------------------------------------
+# Bug (present in mlx-audio 0.4.4 — the latest PyPI release — AND on mlx-audio
+# ``main`` as of 2026-06-24, so no version bump fixes it):
+# ``istftnet.SineGen._f02sine`` reconstructs its time axis with an
+# ``interpolate(1/upsample_scale)`` -> ``cumsum`` -> ``interpolate(upsample_scale)``
+# round-trip that is NOT length-preserving — for most inputs it returns one extra
+# ``upsample_scale`` hop (300 samples at 24 kHz). In ``SineGen.__call__`` the
+# resulting ``sine_waves`` is then one hop longer than ``uv``/``noise_amp`` (which
+# keep the original f0 length), so ``noise_amp * mx.random.normal(sine_waves.shape)``
+# multiplies ``(1, T, 1)`` by ``(1, T+300, 9)`` and MLX (correctly) refuses to
+# broadcast. Result: ``generate()`` raises ``[broadcast_shapes]`` for every
+# utterance whose length is not a fixed point of the round-trip (e.g.
+# "Hello there."); only rare inputs (e.g. "GOAL!") happen to align.
+#
+# Fix: enforce ``_f02sine``'s length contract by truncating its output to the
+# input length. This is a NO-OP when the lengths already match, so it is safe for
+# all inputs and stays correct if upstream later fixes the round-trip. Applied
+# once, idempotently, in ``start()`` before any ``generate()`` (warmup or synth).
+# Remove this shim once a fixed mlx-audio is released and the pin is bumped.
+_SINEGEN_PATCH_ATTR = "_tts_server_length_fix"
+
+
+def _apply_kokoro_vocoder_fix() -> None:
+    """Idempotently patch mlx-audio's ``SineGen._f02sine`` to be length-preserving.
+
+    Best-effort: if the upstream symbol cannot be located (a future mlx-audio may
+    restructure it), the failure is logged rather than raised — but synthesis
+    would then hit the upstream ``broadcast_shapes`` bug, so the warning is
+    actionable. Class-level patch, shared across all instances.
+    """
+    try:
+        from mlx_audio.tts.models.kokoro import istftnet  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - upstream import shape may change
+        logger.warning("kokoro: could not import istftnet to apply vocoder fix: %s", exc)
+        return
+    sine_gen = getattr(istftnet, "SineGen", None)
+    orig = getattr(sine_gen, "_f02sine", None) if sine_gen is not None else None
+    if orig is None:
+        logger.warning(
+            "kokoro: mlx-audio SineGen._f02sine not found; vocoder length fix NOT "
+            "applied (synthesis may fail with broadcast_shapes)"
+        )
+        return
+    if getattr(orig, _SINEGEN_PATCH_ATTR, False):
+        return  # already patched
+
+    def _f02sine_length_preserving(self, f0_values):  # type: ignore[no-untyped-def]
+        out = orig(self, f0_values)
+        t = f0_values.shape[1]
+        # Drop the spurious extra hop(s) so ``sine_waves`` matches ``uv`` length.
+        return out[:, :t, :] if out.shape[1] != t else out
+
+    setattr(_f02sine_length_preserving, _SINEGEN_PATCH_ATTR, True)
+    sine_gen._f02sine = _f02sine_length_preserving
+    logger.info("kokoro: applied mlx-audio SineGen._f02sine length fix")
+
+
 # Kokoro voice-name prefix letter -> ISO language. Verified via ``--load``
 # 2026-06-24 (voice-prefix/lang_code mapping in mlx-community/Kokoro-82M-bf16):
 # a:20,b:8 -> en, e:3 -> es, f:1 -> fr, h:4 -> hi, i:2 -> it, j:5 -> ja,
@@ -218,6 +275,10 @@ class KokoroBackend:
         # fast here (not at module load / construction) if the extra is absent.
         from mlx_audio.tts.utils import load  # type: ignore
 
+        # Correct the upstream Kokoro vocoder length bug before any generate()
+        # (warmup or synth). Idempotent; see _apply_kokoro_vocoder_fix.
+        _apply_kokoro_vocoder_fix()
+
         # ``load(lazy=False)`` evaluates params immediately and downloads the
         # checkpoint if not cached. Run it off the event loop so the connect
         # handshake's load step does not block other coroutines.
@@ -308,11 +369,12 @@ class KokoroBackend:
             # ``voice=None`` broadcast-shape error. JIT cost is then paid on the
             # first real synth (rate discovery is unaffected — R3).
             return
-        # ``"Hello there."`` is a deterministically-safe warmup phrase: some
-        # short/degenerate inputs trip an internal ``broadcast_shapes`` error in
-        # mlx-audio 0.4.4's Kokoro generate, but a well-formed short sentence does
-        # not (verified 2026-06-24). A real synth is unaffected by a warmup
-        # failure regardless — this is purely a JIT-cost amortization.
+        # With the SineGen length fix applied in start() (see
+        # _apply_kokoro_vocoder_fix), well-formed phrases synthesize reliably;
+        # WITHOUT it, "Hello there." trips the upstream ``broadcast_shapes`` bug
+        # (verified 2026-06-24 — the earlier "deterministically-safe" assumption
+        # was wrong). Warmup is a JIT-cost amortization only — a failure here is
+        # non-fatal regardless.
         try:
             with self._metal_lock:
                 for _ in self._loaded_model.generate(
