@@ -43,6 +43,35 @@ logger = logging.getLogger("tts_server.backends._stream_util")
 # Sentinel enqueued on generator exhaustion / error to terminate iteration.
 _EOF = object()
 
+
+def _put_eof(queue: "asyncio.Queue") -> None:
+    """Enqueue the EOF sentinel from inside a loop callback without backpressure.
+
+    Runs on the event loop via ``call_soon_threadsafe``. A plain
+    ``put_nowait(_EOF)`` raises ``QueueFull`` when the consumer broke out early
+    (cancel) and left the bounded queue full — a spurious unhandled exception in
+    the loop. Since the consumer has stopped reading, a buffered item is dead
+    data: drain one slot to make room, then put. The post-drain put is wrapped in
+    a final ``QueueFull`` swallow as a belt-and-suspenders guard (the queue has a
+    single producer, so a slot freed here cannot be re-taken before the put).
+    """
+    try:
+        queue.put_nowait(_EOF)
+        return
+    except asyncio.QueueFull:
+        pass
+    # Queue full: drop one buffered chunk (consumer is gone) and retry.
+    try:
+        queue.get_nowait()
+    except asyncio.QueueEmpty:
+        pass
+    try:
+        queue.put_nowait(_EOF)
+    except asyncio.QueueFull:
+        # Should not happen (single producer), but never let teardown raise.
+        pass
+
+
 # How long a producer put blocks before re-checking the cancel flag. Bounds the
 # window between ``cancel`` being set and the producer thread noticing while it
 # is parked on a full queue.
@@ -122,12 +151,19 @@ async def stream_generate(
             logger.exception("tts_server: synthesis worker failed")
         finally:
             # EOF is ALWAYS enqueued on exhaustion/error/cancel — never keyed
-            # off ``.is_final_chunk``. Use call_soon_threadsafe for the sentinel
-            # so teardown cannot deadlock on a full queue (the consumer drains
-            # to the sentinel regardless of bound).
+            # off ``.is_final_chunk``. The sentinel must never apply
+            # backpressure (teardown cannot block on a full queue), so it is
+            # scheduled on the loop. But a bare ``queue.put_nowait`` inside the
+            # callback raises ``QueueFull`` when the consumer broke out early
+            # (cancel) leaving a full queue — that surfaces as a spurious
+            # unhandled ``QueueFull`` in the loop. ``_put_eof`` drains one slot
+            # if needed (the consumer is gone, so dropped data is irrelevant)
+            # and swallows the residual full case, so EOF lands without noise.
             try:
-                loop.call_soon_threadsafe(queue.put_nowait, _EOF)
+                loop.call_soon_threadsafe(_put_eof, queue)
             except RuntimeError:
+                # Event loop already closed (consumer fully torn down). The
+                # consumer is no longer reading, so there is nothing to signal.
                 pass
             metal_lock.release()
 

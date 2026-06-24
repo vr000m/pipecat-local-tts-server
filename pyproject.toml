@@ -43,7 +43,12 @@ client = ["websockets>=13.0"]
 # widening the pin. Importing Kokoro pulls misaki (G2P) -> num2words/spacy/
 # en_core_web_sm AND torch, so this extra is heavy by design; keep it out of
 # lean base.
-kokoro = ["websockets>=13.0", "mlx-audio==0.4.4"]
+#
+# mlx-audio 0.4.4 imports misaki lazily (a helpful ImportError at synth time if
+# absent), so it is NOT a transitive hard dep of mlx-audio — Kokoro's G2P needs
+# it declared explicitly. ``misaki[en]`` drags in num2words/spacy/en_core_web_sm
+# AND torch, which is what makes this extra heavy (R3); keep it behind the extra.
+kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
 
 [dependency-groups]
 dev = [
