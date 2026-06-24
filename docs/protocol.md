@@ -108,8 +108,8 @@ holding the lock for the duration of one commit.
 | `input_text.commit` | `{voice?, language?, extras?}` | Synthesize the buffered text as one response. **No `audio_format` field** — sending one is an unknown-field protocol error (`invalid_config`), not format negotiation. |
 | `input_text.clear` | `{}` | Drop uncommitted buffered text. Replies `input_text.cleared`. |
 | `response.cancel` | `{response_id?}` | Cancel the active response (barge-in). With v1 `K=1` (one active/queued response per connection) `response_id` is optional and unambiguous. |
-| `session.cancel` | `{}` | Discard the in-flight response and any queued work (discard semantics). |
-| `session.close` | `{}` | Graceful close: drain the in-flight response, then close. |
+| `session.cancel` | `{}` | Discard the in-flight response and any queued work (discard semantics). Server replies `session.closed{reason: "client_cancel"}`, then closes the socket. |
+| `session.close` | `{}` | Graceful close: drain the in-flight response, then close. Server replies `session.closed{reason: "client_close"}`, then closes the socket. |
 | `server.status` | `{}` | Request a `server.status` snapshot. |
 
 ## 5. Server → client events
@@ -125,6 +125,7 @@ holding the lock for the duration of one commit.
 | `response.audio.done` | `{response_id, duration_ms}` | Synthesis finished. `duration_ms` is from the original sample count (not `frames × 20 ms`). Fired on generator exhaustion. |
 | `response.cancelled` | `{response_id}` | The response was cancelled; no further `delta` for it. |
 | `response.failed` | `{response_id, error?}` | The response errored mid-synthesis; carries `{code, message}`. The session stays usable. |
+| `session.closed` | `{session_id, reason}` | Sent in reply to `session.cancel` (`reason: "client_cancel"`) or `session.close` (`reason: "client_close"`) immediately before the server closes the socket. |
 | `server.status` | `{backend:{name,model}, audio:{…}, …queue/voice info}` | Health/status snapshot. |
 | `error` | `{code, message, retry_after_ms?}` | Session-level error. `retry_after_ms` is present iff `code == busy` (synthesis-backlog backpressure, §7). |
 

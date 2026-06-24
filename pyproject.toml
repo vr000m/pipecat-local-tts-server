@@ -49,6 +49,12 @@ client = ["websockets>=13.0"]
 # it declared explicitly. ``misaki[en]`` drags in num2words/spacy/en_core_web_sm
 # AND torch, which is what makes this extra heavy (R3); keep it behind the extra.
 kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
+# Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
+# This is for running the *example*, not the server itself — it pulls the
+# Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a
+# dependency of the server or the lean client; a consumer that already has
+# Pipecat installed does not need this extra.
+examples = ["websockets>=13.0", "pipecat-ai"]
 
 [dependency-groups]
 dev = [
