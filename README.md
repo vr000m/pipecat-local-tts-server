@@ -82,6 +82,12 @@ and prints the backend, model, audio format/rate, capabilities
 the **voice list**, buffered chars, uptime, and pid. It exits non-zero if no
 server is reachable.
 
+For day-to-day operation on macOS the [`justfile`](justfile) carries read-only
+operator recipes mirroring the sibling stt server: `just tts-list` lists every
+`pipecat.tts-server*` launchd agent with state, pid, and live backend, and
+`just tts-status` runs the wire `status` probe against the canonical socket
+(override with `just tts-status socket=…`).
+
 ## Protocol
 
 The full wire contract is in [`docs/protocol.md`](docs/protocol.md). In brief:
@@ -143,5 +149,6 @@ sub-segment cancel promptness is yield-boundary best-effort.
 - `tts_server/` — protocol, backend abstraction, server, async client, CLI.
 - `tts_server/backends/` — lazy-imported per-model backends (Kokoro first).
 - `examples/` — the stdlib oracle and the Pipecat service adapter.
+- `justfile` — macOS operator recipes (`tts-list`, `tts-status`).
 - `docs/protocol.md` — the wire protocol specification.
 - `docs/dev_plans/` — development plans.
