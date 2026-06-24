@@ -73,6 +73,10 @@ class TTSBackend(Protocol):
     sample_rate: int
 
     def capabilities(self) -> dict: ...
+    # Full voice list (decided default #4: count in ``server.hello``, full list
+    # via ``server.status``). Optional — the server reads it via ``getattr`` and
+    # tolerates a backend that does not implement it.
+    def voices(self) -> list[str]: ...
     async def start(self) -> None: ...
     async def open_stream(
         self,
@@ -226,6 +230,11 @@ class ToneBackend:
             "ideal_words": self._ideal_words,
             "max_text_chars": self._max_text_chars,
         }
+
+    def voices(self) -> list[str]:
+        # Decided default #4: full voice list via ``server.status``. ToneBackend
+        # has a single synthetic voice.
+        return ["tone"]
 
     @property
     def max_text_chars(self) -> int:

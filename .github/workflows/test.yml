@@ -47,7 +47,12 @@ jobs:
             tests/test_endpoint_resolution.py \
             tests/test_server_cleartext_guard.py \
             tests/test_pcm16_clip.py \
-            tests/test_kokoro_lazy_import.py
+            tests/test_kokoro_lazy_import.py \
+            tests/test_status.py \
+            tests/test_auth.py \
+            tests/test_resource_limits.py \
+            tests/test_backpressure.py \
+            tests/test_multiconn_fairness.py
 
   # Full macOS / Apple-Silicon job: the mlx-audio (Kokoro) wheels are
   # macOS/Apple-Silicon only, so the all-extras job runs on macos-14. It syncs

@@ -48,6 +48,22 @@ FRAME_DURATION_MS = 20
 SEND_QUEUE_HIGH_WATER_BYTES = 1 * 1024 * 1024
 SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 10.0
 
+# --- Synthesis backpressure caps (R4, Phase 3) ---
+# Bounded GLOBAL synthesis backlog (commits waiting on the shared Metal lock
+# across all connections). When this many commits are admitted-but-not-yet-done,
+# a new ``commit`` is REJECTED (not enqueued) with ``error {code: BUSY,
+# retry_after_ms}``. Commits are size-capped (decision #6) so a depth-in-commits
+# metric is safe.
+SYNTHESIS_QUEUE_MAX = 8
+# Per-connection in-flight cap (K). v1 sets K=1: at most one active-or-queued
+# response per connection, which keeps ``response.cancel`` unambiguous. A
+# connection's (K+1)th queued commit is rejected with ``BUSY`` while other
+# connections still get served.
+PER_CONNECTION_INFLIGHT_MAX = 1
+# Advertised retry hint (ms) on a ``BUSY`` rejection. MUST be a positive,
+# bounded integer so a client backs off rather than hot-loops.
+BUSY_RETRY_AFTER_MS = 250
+
 
 # --- Client -> server event types ---
 EVT_SESSION_UPDATE = "session.update"

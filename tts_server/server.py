@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
 import signal
 import time
 import uuid
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -89,12 +91,170 @@ class ServerConfig:
 
 @dataclass
 class _Response:
-    """One in-flight (or just-finished) synthesis response."""
+    """One admitted (queued, in-flight, or just-finished) synthesis response."""
 
     response_id: str
+    # Drain parameters captured at admission so the single dispatcher can run
+    # the synthesis later, round-robin across connections.
+    ws: ServerConnection
+    state: "_SessionState"
+    text: str
+    voice: str | None
+    language: str | None
+    extras: dict
+    # Connection key the scheduler uses for round-robin fairness.
+    conn_key: int = 0
     stream: TTSStream | None = None
     task: asyncio.Task | None = None
     cancelled: bool = False
+    # Set False until the dispatcher selects this commit and starts its drain.
+    # Used so cancel can distinguish "queued, never started" (drop from the
+    # backlog) from "in-flight" (cancel the running drain).
+    started: bool = False
+    # Resolves when the drain task finishes (or the commit is dropped while
+    # still queued) so ``session.close`` can wait on it.
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class _SynthScheduler:
+    """Global synthesis backlog + single round-robin dispatcher (R4).
+
+    Two backpressure caps live here: a bounded GLOBAL backlog shared across all
+    connections, and a per-connection in-flight cap (K). A single dispatcher
+    selects the next commit round-robin across non-empty per-connection queues,
+    so fairness is owned by the scheduler — NOT by daemon threads racing for the
+    Metal lock. Only the selected commit's drain runs at a time, which is what
+    serializes access to the shared model/Metal lock at commit granularity.
+    """
+
+    def __init__(
+        self,
+        *,
+        run_drain: Callable[[_Response], Awaitable[None]],
+        queue_max: int = P.SYNTHESIS_QUEUE_MAX,
+        per_connection_max: int = P.PER_CONNECTION_INFLIGHT_MAX,
+    ) -> None:
+        self._run_drain = run_drain
+        self._queue_max = queue_max
+        self._per_connection_max = per_connection_max
+        # Insertion-ordered per-connection FIFO queues of admitted-but-not-yet-
+        # started commits. ``OrderedDict`` gives a stable round-robin order.
+        self._queues: "OrderedDict[int, deque[_Response]]" = OrderedDict()
+        # Count of admitted commits NOT yet finished (queued + in-flight). This
+        # is the global backlog depth the cap is measured against.
+        self._admitted = 0
+        # Per-connection count of admitted-not-finished commits (the K cap).
+        self._per_conn: dict[int, int] = {}
+        self._wake = asyncio.Event()
+        self._dispatcher: asyncio.Task | None = None
+        self._stopped = False
+
+    @property
+    def depth(self) -> int:
+        """Current global backlog depth in commits (queued + in-flight)."""
+        return self._admitted
+
+    def start(self) -> None:
+        if self._dispatcher is None:
+            self._dispatcher = asyncio.create_task(self._dispatch_loop())
+
+    async def stop(self) -> None:
+        self._stopped = True
+        self._wake.set()
+        if self._dispatcher is not None:
+            self._dispatcher.cancel()
+            try:
+                await self._dispatcher
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._dispatcher = None
+
+    def admit(self, response: _Response) -> bool:
+        """Try to admit a commit. Returns False (caller emits BUSY) when the
+        global backlog is full or the connection is at its in-flight cap."""
+        key = response.conn_key
+        if self._per_conn.get(key, 0) >= self._per_connection_max:
+            return False
+        if self._admitted >= self._queue_max:
+            return False
+        self._admitted += 1
+        self._per_conn[key] = self._per_conn.get(key, 0) + 1
+        self._queues.setdefault(key, deque()).append(response)
+        self._wake.set()
+        return True
+
+    def discard_if_queued(self, response: _Response) -> bool:
+        """Remove a still-queued (never-started) commit from the backlog and
+        free its slot. Returns True if it was queued (and thus removed here).
+
+        A STARTED commit is owned by the dispatcher loop, which frees its slot
+        in ``_finish`` when the drain returns — so this is a no-op for those
+        (returns False), avoiding a double-decrement. Used by cancel: a queued
+        commit is dropped here; an in-flight one is cancelled via its task and
+        accounted by the dispatcher.
+        """
+        key = response.conn_key
+        q = self._queues.get(key)
+        if q is None or response not in q:
+            return False
+        q.remove(response)
+        if not q:
+            self._queues.pop(key, None)
+        self._admitted = max(0, self._admitted - 1)
+        self._per_conn[key] = max(0, self._per_conn.get(key, 0) - 1)
+        if self._per_conn.get(key, 0) == 0:
+            self._per_conn.pop(key, None)
+        response.done.set()
+        self._wake.set()
+        return True
+
+    async def _dispatch_loop(self) -> None:
+        while not self._stopped:
+            nxt = self._next()
+            if nxt is None:
+                self._wake.clear()
+                # Re-check after clearing to avoid a lost wakeup race.
+                if self._next() is None:
+                    await self._wake.wait()
+                continue
+            nxt.started = True
+            try:
+                await self._run_drain(nxt)
+            finally:
+                # The drain marks completion; ensure the slot is freed exactly
+                # once even if the drain raised.
+                self._finish(nxt)
+
+    def _next(self) -> _Response | None:
+        """Round-robin across non-empty per-connection queues. Rotating the
+        OrderedDict after each selection bounds head-of-line blocking to one
+        already-selected commit (R4 fairness)."""
+        for key in list(self._queues.keys()):
+            q = self._queues.get(key)
+            if not q:
+                self._queues.pop(key, None)
+                continue
+            response = q.popleft()
+            if not q:
+                self._queues.pop(key, None)
+            else:
+                # Rotate this connection to the back so the next selection
+                # prefers a different connection (fairness).
+                self._queues.move_to_end(key)
+            return response
+        return None
+
+    def _finish(self, response: _Response) -> None:
+        """A started drain finished: free its slot once."""
+        if response.started:
+            key = response.conn_key
+            self._admitted = max(0, self._admitted - 1)
+            self._per_conn[key] = max(0, self._per_conn.get(key, 0) - 1)
+            if self._per_conn.get(key, 0) == 0:
+                self._per_conn.pop(key, None)
+            response.started = False
+            response.done.set()
+            self._wake.set()
 
 
 @dataclass
@@ -104,6 +264,8 @@ class _SessionState:
     (mirrors stt's per-connection isolation, R4)."""
 
     session_id: str
+    # Stable key for scheduler round-robin fairness (one per connection).
+    conn_key: int = 0
     # voice/language/extras config set via ``session.update``.
     config: dict = field(default_factory=dict)
     # Uncommitted text buffer (consumed by a commit).
@@ -132,6 +294,12 @@ class TTSServer:
         self._active_drains: set[asyncio.Task] = set()
         self._shutdown_event = asyncio.Event()
         self._started = False
+        # Monotonic per-connection key source for scheduler fairness.
+        self._next_conn_key = 0
+        # Global synthesis scheduler: bounded backlog + single round-robin
+        # dispatcher. Built here, started in ``start()`` (it needs a running
+        # loop).
+        self._scheduler = _SynthScheduler(run_drain=self._dispatch_drain)
 
     # --- lifecycle ---
     async def start(self) -> None:
@@ -164,6 +332,7 @@ class TTSServer:
                 port=self._config.port,
                 process_request=self._process_request,
             )
+        self._scheduler.start()
         self._started = True
         logger.info(
             "tts_server listening on %s (backend=%s model=%s rate=%s)",
@@ -172,8 +341,14 @@ class TTSServer:
             self._backend.model,
             self._backend.sample_rate,
         )
-        # Cleartext-remote guard: a token-less TCP listener bound to a
-        # non-loopback address is reachable in the clear. Make the gap loud.
+        # Cleartext-remote guard (mirror stt): a token-less TCP listener bound to
+        # a non-loopback address is reachable in the clear. A UDS is protected by
+        # its 0o600 mode + local trust boundary; a non-loopback TCP listener is
+        # not. The COMPLEMENTARY guard — a bearer token sent over cleartext ws://
+        # to a remote host — lives client-side (``client.py`` connect and the
+        # ``status`` probe in ``__main__.py``), because only the sender knows
+        # whether TLS is terminated in front (a reverse proxy may add it), so a
+        # server-side warn on token+non-loopback would be a false positive.
         if (
             self._config.socket_path is None
             and not self._config.auth_token
@@ -227,6 +402,7 @@ class TTSServer:
                     if not t.done():
                         t.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+        await self._scheduler.stop()
         if self._server is not None:
             await self._server.wait_closed()
         await self._backend.close()
@@ -234,19 +410,27 @@ class TTSServer:
 
     # --- connection handling ---
     async def _process_request(self, connection, request):
+        # Reject unexpected browser Origin headers for non-browser-focused v1,
+        # and enforce optional bearer auth in one place (mirror stt).
         headers = request.headers
         origin = headers.get("Origin")
         if self._config.reject_browser_origins and origin:
             return connection.respond(403, "origin not permitted\n")
-        # NOTE: auth *enforcement* is deferred to Phase 3 per the plan. The
-        # cleartext-remote warning above is the Phase-1 deliverable.
+        if self._config.auth_token:
+            provided = headers.get("Authorization", "") or ""
+            expected = f"Bearer {self._config.auth_token}"
+            # Constant-time compare so a loopback attacker cannot recover the
+            # token byte-by-byte via response-timing signals.
+            if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+                return connection.respond(401, "unauthorized\n")
         return None
 
     async def _handle_connection(self, ws: ServerConnection) -> None:
         task = asyncio.current_task()
         assert task is not None
         self._active_handlers.add(task)
-        state = _SessionState(session_id=_session_id())
+        self._next_conn_key += 1
+        state = _SessionState(session_id=_session_id(), conn_key=self._next_conn_key)
         try:
             await self._send(
                 ws,
@@ -466,14 +650,16 @@ class TTSServer:
                 client_event_id=client_event_id,
             )
             return
-        # v1 K=1: reject a commit while a response is active. (Backpressure
-        # *caps* / BUSY are Phase 3; this in-flight guard keeps K=1 honest now.)
-        if state.response is not None and self._response_active(state.response):
+        # Hard server cap: reject a committed buffer over ``max_text_chars``
+        # (the soft ``ideal_words`` chunking is the client's job; this is the
+        # backstop the server enforces regardless of client behavior).
+        max_chars = self._backend.capabilities().get("max_text_chars")
+        if isinstance(max_chars, int) and len(state.buffer) > max_chars:
             await self._error(
                 ws,
                 state,
-                P.ErrorCode.INVALID_EVENT,
-                "commit while a response is in flight",
+                P.ErrorCode.PAYLOAD_TOO_LARGE,
+                f"committed text exceeds max_text_chars ({max_chars})",
                 client_event_id=client_event_id,
             )
             return
@@ -492,9 +678,37 @@ class TTSServer:
         extras.update(validated)
 
         text = state.buffer
-        state.buffer = ""
         rid = _response_id()
-        response = _Response(response_id=rid)
+        response = _Response(
+            response_id=rid,
+            ws=ws,
+            state=state,
+            text=text,
+            voice=voice,
+            language=language,
+            extras=extras,
+            conn_key=state.conn_key,
+        )
+
+        # Backpressure admission control (R4): the scheduler rejects when the
+        # GLOBAL synthesis backlog is full OR this connection is at its
+        # per-connection in-flight cap (K). A rejected commit is NOT enqueued and
+        # gets ``error {code: BUSY, retry_after_ms}`` — the buffer is left intact
+        # so the client can retry the same text after backing off. With K=1 this
+        # also subsumes the old "commit while a response is in flight" guard.
+        if not self._scheduler.admit(response):
+            await self._error(
+                ws,
+                state,
+                P.ErrorCode.BUSY,
+                "synthesis backlog full; retry after backoff",
+                client_event_id=client_event_id,
+                retry_after_ms=P.BUSY_RETRY_AFTER_MS,
+            )
+            return
+
+        # Admitted: consume the buffer and register the response for cancel.
+        state.buffer = ""
         state.response = response
 
         committed: dict[str, Any] = {
@@ -514,15 +728,9 @@ class TTSServer:
                 "response_id": rid,
             },
         )
-
-        # Drain loop runs in a TRACKED TASK (not inline) so cancel/session.* are
-        # serviceable while synthesis runs.
-        drain = asyncio.create_task(
-            self._run_drain(ws, state, response, text, voice, language, extras)
-        )
-        response.task = drain
-        self._active_drains.add(drain)
-        drain.add_done_callback(self._active_drains.discard)
+        # The single scheduler dispatcher runs the drain round-robin; it does NOT
+        # start inline here, so cross-connection fairness is owned by the
+        # scheduler, not by whichever drain task the OS happens to schedule.
 
     async def _on_clear(
         self,
@@ -536,16 +744,28 @@ class TTSServer:
             payload["previous_event_id"] = client_event_id
         await self._send(ws, state, payload)
 
-    async def _run_drain(
-        self,
-        ws: ServerConnection,
-        state: _SessionState,
-        response: _Response,
-        text: str,
-        voice: str | None,
-        language: str | None,
-        extras: dict,
-    ) -> None:
+    async def _dispatch_drain(self, response: _Response) -> None:
+        """Scheduler callback: run one selected commit's drain as a TRACKED TASK
+        (so ``response.cancel`` / ``session.*`` can target ``response.task``
+        while it runs) and await its completion before the dispatcher selects the
+        next commit. The await is what serializes synthesis at commit granularity
+        across all connections."""
+        if response.cancelled:
+            # Cancelled while still queued — nothing to synthesize.
+            return
+        drain = asyncio.create_task(self._run_drain(response))
+        response.task = drain
+        self._active_drains.add(drain)
+        drain.add_done_callback(self._active_drains.discard)
+        try:
+            await drain
+        except asyncio.CancelledError:
+            # The drain was cancelled (barge-in / teardown); the slot is still
+            # freed by the scheduler's finally. Do not propagate into the
+            # dispatcher loop.
+            pass
+
+    async def _run_drain(self, response: _Response) -> None:
         """The synthesis drain loop (the steady-stream contract, R4).
 
         Emits each segment's audio as it lands, re-chunked to fixed 20 ms wire
@@ -554,6 +774,12 @@ class TTSServer:
         ``response.audio.done`` with ``duration_ms`` from the ORIGINAL total
         sample count.
         """
+        ws = response.ws
+        state = response.state
+        text = response.text
+        voice = response.voice
+        language = response.language
+        extras = response.extras
         rid = response.response_id
         rate = self._backend.sample_rate
         bytes_per_frame = int(rate * P.FRAME_DURATION_MS / 1000) * P.AUDIO_SAMPLE_WIDTH_BYTES
@@ -683,6 +909,12 @@ class TTSServer:
         # Set the flag FIRST so the drain loop stops emitting deltas, then stop
         # the stream and unwind the task. No further ``delta`` after this.
         response.cancelled = True
+        # If the commit is still QUEUED (the dispatcher has not selected it yet),
+        # drop it from the backlog here — this frees the in-flight slot so a new
+        # ``commit`` is immediately admissible (guards a barge-in-heavy client
+        # from self-DoSing into permanent BUSY). An in-flight commit's slot is
+        # freed by the dispatcher when its drain returns below.
+        self._scheduler.discard_if_queued(response)
         if response.stream is not None:
             try:
                 await response.stream.cancel()
@@ -723,21 +955,22 @@ class TTSServer:
         if state.closed:
             return
         response = state.response
-        if response is not None and response.task is not None and not response.task.done():
+        # Drain the active/queued response to completion (bounded). ``done`` is
+        # set when the scheduler frees its slot — whether it ran to completion,
+        # was dropped while queued, or was cancelled — so this covers both the
+        # in-flight and the queued-but-not-yet-dispatched cases (the dispatcher
+        # may not have selected it yet under load).
+        if response is not None and not response.done.is_set():
             if self._shutdown_event.is_set():
-                response.task.cancel()
+                await self._cancel_response(response)
             else:
                 try:
                     await asyncio.wait_for(
-                        asyncio.shield(response.task),
+                        response.done.wait(),
                         timeout=self._config.drain_timeout_seconds,
                     )
                 except asyncio.TimeoutError:
-                    response.task.cancel()
-                    try:
-                        await response.task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    await self._cancel_response(response)
         state.closed = True
         await self._send(
             ws,
@@ -753,7 +986,7 @@ class TTSServer:
         await ws.close()
 
     async def _on_status(self, ws: ServerConnection, state: _SessionState) -> None:
-        active = state.response is not None and self._response_active(state.response)
+        caps = self._backend.capabilities()
         await self._send(
             ws,
             state,
@@ -770,12 +1003,31 @@ class TTSServer:
                     "rate": self._backend.sample_rate,
                     "channels": P.AUDIO_CHANNELS,
                 },
-                "queue_depth": 1 if active else 0,
+                # Global synthesis backlog depth (commits queued + in-flight
+                # across all connections) — the operationally meaningful load
+                # figure for a health probe.
+                "queue_depth": self._scheduler.depth,
+                # Decided default #4: the COUNT goes in ``server.hello``; the
+                # FULL list is exposed here via ``server.status``.
+                "voice_count": caps.get("voice_count"),
+                "voices": self._backend_voices(),
                 "buffered_chars": len(state.buffer),
                 "uptime_seconds": time.monotonic() - state.started_monotonic,
                 "pid": os.getpid(),
             },
         )
+
+    def _backend_voices(self) -> list[str]:
+        """Full voice list for ``server.status`` (decided default #4). Optional
+        on the backend — tolerated via ``getattr``."""
+        voices_fn = getattr(self._backend, "voices", None)
+        if not callable(voices_fn):
+            return []
+        try:
+            result = voices_fn()
+        except Exception:
+            return []
+        return list(result) if result else []
 
     async def _teardown_session(self, state: _SessionState) -> None:
         if state.response is not None:
@@ -783,10 +1035,6 @@ class TTSServer:
         state.closed = True
 
     # --- helpers ---
-    @staticmethod
-    def _response_active(response: _Response) -> bool:
-        return response.task is not None and not response.task.done()
-
     def _session_snapshot(self, state: _SessionState) -> dict[str, Any]:
         return {
             "id": state.session_id,

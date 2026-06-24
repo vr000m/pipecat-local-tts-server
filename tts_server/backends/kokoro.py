@@ -207,6 +207,7 @@ class KokoroBackend:
         self._metal_lock = threading.Lock()
         # Voice/language facts derived from the model in ``start()``.
         self._voice_count = 0
+        self._voice_names: list[str] = []
         self._languages: list[str] = []
         # An English voice name used only for the warmup generate (Kokoro's
         # ``voice=None`` warmup path trips a broadcast-shape error in 0.4.4, so
@@ -275,6 +276,8 @@ class KokoroBackend:
             stems = {f.stem for f in voices_dir.iterdir() if f.is_file()}
             if not stems:
                 return 54, static_languages
+            # Full voice list for ``server.status`` (decided default #4).
+            self._voice_names = sorted(stems)
             # Pick a stable English voice (prefix ``a``/``b``) for warmup.
             en_voices = sorted(s for s in stems if s[:1] in ("a", "b"))
             self._default_voice = en_voices[0] if en_voices else sorted(stems)[0]
@@ -346,6 +349,11 @@ class KokoroBackend:
             "ideal_words": _IDEAL_WORDS,
             "max_text_chars": _MAX_TEXT_CHARS,
         }
+
+    def voices(self) -> list[str]:
+        # Decided default #4: full voice list via ``server.status`` (the count
+        # alone goes in ``server.hello``). Empty until ``start()`` discovers them.
+        return list(self._voice_names)
 
     async def open_stream(
         self,
