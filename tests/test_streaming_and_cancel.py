@@ -259,3 +259,96 @@ async def test_bare_cancel_on_idle_session_is_noop():
                 client, {"server.status", "response.cancelled", "error"}, timeout=2.0
             )
             assert ev["type"] == "server.status", f"bare cancel produced {ev['type']}: {ev}"
+
+
+async def test_bridge_worker_done_set_after_lock_release():
+    """Adversarial-review #2: the bridge exposes worker completion via
+    ``worker_done``, set only AFTER the Metal lock is released. An observer that
+    sees it set can rely on the lock being free."""
+    import threading
+
+    from tts_server.backends._stream_util import stream_generate
+
+    class _FakeResult:
+        def __init__(self, audio):
+            self.audio = audio
+
+    loop = asyncio.get_running_loop()
+    metal_lock = threading.Lock()
+    cancel = threading.Event()
+    worker_done = threading.Event()
+    results = [_FakeResult([0.1, 0.1]) for _ in range(3)]
+
+    agen = stream_generate(
+        (lambda: iter(results)),
+        loop=loop,
+        metal_lock=metal_lock,
+        cancel=cancel,
+        maxsize=4,
+        worker_done=worker_done,
+    )
+    async for _pcm in agen:
+        pass
+    # worker_done is the worker's FINAL act (after the lock release + EOF enqueue),
+    # so the consumer can observe EOF a hair before it is set — wait for it, exactly
+    # as ``wait_closed`` does. Once set, the lock is guaranteed free.
+    done = await loop.run_in_executor(None, worker_done.wait, 2.0)
+    assert done, "worker_done must be set once the worker exits"
+    assert metal_lock.acquire(blocking=False), "lock must be free when worker_done is set"
+    metal_lock.release()
+
+
+async def test_kokoro_stream_wait_closed_blocks_until_lock_released():
+    """Adversarial-review #2: ``_KokoroStream.wait_closed`` must not return until
+    the synthesis worker has exited and released the process-wide Metal lock —
+    even after ``cancel()``, which only *requests* a break at the next yield. The
+    server awaits this before freeing a commit's scheduler slot so admission can
+    never advertise free capacity while the lock is still held."""
+    import threading
+    import time
+
+    from tts_server.backends.kokoro import _KokoroStream
+
+    class _FakeResult:
+        def __init__(self, audio):
+            self.audio = audio
+
+    class _SlowModel:
+        """Yields forever with a small per-segment sleep so the worker is still
+        running (holding the lock) when we cancel."""
+
+        def generate(self, text, *, voice=None, lang_code=None, **kwargs):
+            while True:
+                yield _FakeResult([0.2, 0.2])
+                time.sleep(0.01)
+
+    lock = threading.Lock()
+    stream = _KokoroStream(
+        model=_SlowModel(), voice="v", lang_code="a", speed=None, metal_lock=lock
+    )
+    await stream.feed("hello")
+    await stream.end()
+
+    gen = stream.events()
+    first = await gen.__anext__()  # one delta: worker is now running and holds the lock
+    assert first.kind == "delta"
+    assert not lock.acquire(blocking=False), "worker should hold the Metal lock mid-synthesis"
+
+    await stream.cancel()
+    await stream.wait_closed()  # must block until the worker breaks out and frees the lock
+    assert lock.acquire(blocking=False), "wait_closed returned while the lock was still held"
+    lock.release()
+    await gen.aclose()
+
+
+async def test_kokoro_stream_wait_closed_noop_before_synthesis():
+    """``wait_closed`` must return immediately when synthesis never started (a
+    pre-synthesis cancel) — there is no worker and no held lock to wait on."""
+    import threading
+
+    from tts_server.backends.kokoro import _KokoroStream
+
+    stream = _KokoroStream(
+        model=object(), voice="v", lang_code="a", speed=None, metal_lock=threading.Lock()
+    )
+    await stream.wait_closed()  # returns immediately; would hang if it waited on a phantom worker

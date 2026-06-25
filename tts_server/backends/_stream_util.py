@@ -77,6 +77,15 @@ def _put_eof(queue: "asyncio.Queue") -> None:
 # is parked on a full queue.
 _PUT_TIMEOUT_SECONDS = 0.5
 
+# Max attempts for the FINAL EOF enqueue (normal-exhaustion path). A live
+# consumer drains the sentinel in one or two attempts; this bound only matters
+# when a consumer is abandoned WITHOUT ever setting ``cancel`` (e.g. its async
+# generator is GC-deferred), where an unbounded retry would otherwise pin the
+# daemon worker thread forever. At ~0.5 s/attempt this caps the worst case to a
+# few seconds, after which the worker falls back to the non-blocking EOF path and
+# exits. Audio chunk puts stay unbounded (that is the backpressure contract).
+_EOF_PUT_MAX_ATTEMPTS = 12
+
 # How a result's audio is extracted. mlx-audio ``GenerationResult`` exposes
 # ``.audio`` as a float32 mono ``mx.array``; ``list(...)`` materializes Python
 # floats so the stdlib converter (no numpy/mlx) can map them. Kept here so a
@@ -104,6 +113,7 @@ async def stream_generate(
     metal_lock: threading.Lock,
     cancel: threading.Event,
     maxsize: int,
+    worker_done: "threading.Event | None" = None,
 ) -> AsyncIterator[bytes]:
     """Drive a blocking ``model.generate()`` generator on a daemon thread and
     yield int16-LE PCM chunks with producer-side backpressure.
@@ -112,15 +122,34 @@ async def stream_generate(
     Metal lock is held for the whole drain. Iteration ends when the worker
     enqueues the EOF sentinel from its ``finally`` (generator exhaustion, cancel,
     or error). On a worker error the exception is re-raised in the consumer.
+
+    ``worker_done`` (if supplied) is **set as the worker's final act**, after the
+    Metal lock has been released and EOF enqueued. It lets a caller wait for the
+    worker to fully exit — and thus the process-wide lock to be free — even on the
+    cancel path where the consumer stops reading early (the async generator is
+    abandoned and its ``finally`` may not run until GC). ``worker_done`` set
+    therefore guarantees the lock is released.
     """
     queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
     error_box: dict[str, BaseException] = {}
 
-    def _put_blocking(item: object) -> bool:
+    def _put_blocking(item: object, *, max_attempts: int | None = None) -> bool:
         """Put ``item`` onto the async queue from the worker thread, applying
         backpressure. Returns False if cancelled while waiting (so the worker
-        breaks out and releases the lock)."""
+        breaks out and releases the lock).
+
+        ``max_attempts`` bounds the number of timeout-retries. ``None`` (the
+        default, used for audio chunks) retries until the consumer drains or
+        ``cancel`` is set — the backpressure contract. A finite bound is used for
+        the terminal EOF put so a consumer abandoned without setting ``cancel``
+        cannot pin this worker thread forever; on exhausting the bound it returns
+        False and the caller falls back to the non-blocking EOF path.
+        """
+        attempts = 0
         while not cancel.is_set():
+            if max_attempts is not None and attempts >= max_attempts:
+                return False
+            attempts += 1
             fut = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
             try:
                 fut.result(timeout=_PUT_TIMEOUT_SECONDS)
@@ -183,7 +212,7 @@ async def stream_generate(
             #    if the queue is full so teardown can never block on a queue that
             #    nobody is draining.
             try:
-                if cancel.is_set() or not _put_blocking(_EOF):
+                if cancel.is_set() or not _put_blocking(_EOF, max_attempts=_EOF_PUT_MAX_ATTEMPTS):
                     try:
                         loop.call_soon_threadsafe(_put_eof, queue)
                     except RuntimeError:
@@ -192,6 +221,12 @@ async def stream_generate(
                         pass
             except Exception:  # noqa: BLE001 - teardown must never raise out of the worker
                 logger.exception("tts_server: EOF enqueue failed during worker teardown")
+            finally:
+                # The worker's last act: signal full exit. The Metal lock is
+                # already released above, so an observer that sees this set can
+                # rely on the lock being free (the slot is genuinely idle).
+                if worker_done is not None:
+                    worker_done.set()
 
     thread = threading.Thread(target=_worker, name="tts-synth", daemon=True)
     thread.start()

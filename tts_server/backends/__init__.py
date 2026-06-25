@@ -39,4 +39,7 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
         from .kokoro import DEFAULT_KOKORO_MODEL, KokoroBackend
 
         return KokoroBackend(model=model or DEFAULT_KOKORO_MODEL)
-    raise SystemExit(f"unknown backend: {name}")
+    # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
+    # callable outside the CLI, so it must not terminate the process. The CLI
+    # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.
+    raise ValueError(f"unknown backend: {name!r}")

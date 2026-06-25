@@ -152,7 +152,13 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     logging.getLogger("tts_server").info(
         "tts_server: starting (backend=%s model=%s)", args.backend, resolved_model
     )
-    backend = make_backend(args.backend, resolved_model)
+    try:
+        backend = make_backend(args.backend, resolved_model)
+    except ValueError as exc:
+        # ``make_backend`` raises ValueError for an unknown name; the CLI turns
+        # that into a clean exit rather than a traceback. (``--backend`` choices
+        # normally prevent this, but the translation keeps the contract honest.)
+        raise SystemExit(f"tts_server: {exc}")
     asyncio.run(
         serve(
             backend,

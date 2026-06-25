@@ -52,7 +52,8 @@ from websockets.asyncio.server import (
 )
 
 from . import protocol as P
-from .backend import TTSBackend, TTSStream, ToneBackend
+from .backend import SupportsVoices, SupportsWaitClosed, TTSBackend, TTSStream
+from .backends import make_backend
 from .env import is_loopback_host
 
 logger = logging.getLogger("tts_server")
@@ -158,6 +159,11 @@ class _Response:
     response_id: str
     # Drain parameters captured at admission so the single dispatcher can run
     # the synthesis later, round-robin across connections.
+    # INVARIANT: ``ws`` IS ``state``'s connection and is never reassigned (v1 has
+    # no reconnect/session-migration). The drain reaches the socket via ``ws`` and
+    # the write lock via ``state.write_lock``; they stay in step only because of
+    # this invariant. Do not set ``ws`` to anything other than the connection that
+    # owns ``state``.
     ws: ServerConnection
     state: "_SessionState"
     text: str
@@ -167,12 +173,22 @@ class _Response:
     # Connection key the scheduler uses for round-robin fairness.
     conn_key: int = 0
     stream: TTSStream | None = None
+    # The stream that ran this commit's synthesis, retained AFTER the drain ends
+    # (``stream`` above is cleared in ``_run_drain``'s finally). The dispatcher
+    # awaits its ``wait_closed`` before freeing the scheduler slot so a cancelled
+    # backend worker's still-held GPU lock is reflected in admission/queue_depth.
+    synth_stream: TTSStream | None = None
     task: asyncio.Task | None = None
     cancelled: bool = False
     # Set False until the dispatcher selects this commit and starts its drain.
     # Used so cancel can distinguish "queued, never started" (drop from the
     # backlog) from "in-flight" (cancel the running drain).
     started: bool = False
+    # Set when the dispatcher selects this commit and its drain begins. Lets
+    # ``session.close`` wait out the queue (head-of-line) phase WITHOUT spending
+    # the drain budget on it, so the drain timeout covers the actual synthesis
+    # rather than time spent waiting behind other connections' commits.
+    start_event: asyncio.Event = field(default_factory=asyncio.Event)
     # Resolves when the drain task finishes (or the commit is dropped while
     # still queued) so ``session.close`` can wait on it.
     done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -892,6 +908,32 @@ class TTSServer:
             # freed by the scheduler's finally. Do not propagate into the
             # dispatcher loop.
             pass
+        finally:
+            # Do NOT let the scheduler free this slot (the caller's ``_finish``,
+            # which runs once this returns) until the backend worker has actually
+            # exited and released the process-wide GPU lock. On barge-in the
+            # drain task is cancelled promptly (the client already saw
+            # ``response.cancelled``), but ``stream.cancel()`` only *requests* a
+            # break — a long single-segment Kokoro ``generate`` keeps the Metal
+            # lock until its next yield boundary. Awaiting here means
+            # admission/``queue_depth`` never report free capacity while the next
+            # commit would still block on that held lock. No-op for backends
+            # without a worker/lock (Tone) or that omit ``wait_closed``.
+            await self._await_worker_release(response)
+
+    async def _await_worker_release(self, response: _Response) -> None:
+        """Block until ``response``'s backend worker has exited (GPU lock free).
+
+        Optional capability (``SupportsWaitClosed``): a backend stream that does
+        not implement ``wait_closed`` has no worker/lock to wait on.
+        """
+        stream = response.synth_stream
+        if not isinstance(stream, SupportsWaitClosed):
+            return
+        try:
+            await stream.wait_closed()
+        except Exception:
+            logger.exception("tts_server: wait_closed failed during slot release")
 
     async def _run_drain(self, response: _Response) -> None:
         """The synthesis drain loop (the steady-stream contract, R4).
@@ -918,6 +960,9 @@ class TTSServer:
         try:
             stream = await self._backend.open_stream(voice=voice, language=language, extras=extras)
             response.stream = stream
+            # Retained past the drain so the dispatcher can await worker exit
+            # (lock release) before freeing the slot — see ``_dispatch_drain``.
+            response.synth_stream = stream
             await stream.feed(text)
             # Non-blocking: signals end-of-input and kicks the worker. It must
             # NOT block until synthesis completes (the anti-pattern).
@@ -1158,13 +1203,14 @@ class TTSServer:
         )
 
     def _backend_voices(self) -> list[str]:
-        """Full voice list for ``server.status`` (decided default #4). Optional
-        on the backend — tolerated via ``getattr``."""
-        voices_fn = getattr(self._backend, "voices", None)
-        if not callable(voices_fn):
+        """Full voice list for ``server.status`` (decided default #4) and the
+        source of truth for ``_validate_voice``. Optional capability
+        (``SupportsVoices``): a backend that cannot enumerate voices returns an
+        empty list (and voice validation is skipped for it)."""
+        if not isinstance(self._backend, SupportsVoices):
             return []
         try:
-            result = voices_fn()
+            result = self._backend.voices()
         except Exception:
             return []
         return list(result) if result else []
@@ -1272,7 +1318,10 @@ async def serve(
 ) -> None:
     """Start the server, wait for a shutdown signal, then drain and exit."""
     cfg = ServerConfig(socket_path=socket_path, host=host, port=port, auth_token=auth_token)
-    server = TTSServer(backend or ToneBackend(), cfg)
+    # Default backend is built through the same lazy resolver as every other
+    # backend (``make_backend``) so the server depends only on the abstract
+    # protocol types, never on a concrete backend class.
+    server = TTSServer(backend or make_backend("tone"), cfg)
     await server.start()
     loop = asyncio.get_running_loop()
     stop = loop.create_future()

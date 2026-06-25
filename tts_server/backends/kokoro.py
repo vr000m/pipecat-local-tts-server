@@ -188,6 +188,15 @@ class _KokoroStream:
         # ``completed`` event.
         self._cancel = threading.Event()
         self._external_cancel = False
+        # Set by the bridge worker as its final act (lock released + EOF
+        # enqueued). ``wait_closed()`` awaits it so the server can hold a
+        # commit's scheduler slot until the worker has truly exited and the
+        # Metal lock is free — not merely until the drain task was cancelled.
+        self._worker_done = threading.Event()
+        # True once ``events()`` has actually started the bridge worker. Guards
+        # ``wait_closed()`` from blocking forever when synthesis never ran (a
+        # pre-synthesis cancel returns early without a worker / a held lock).
+        self._worker_started = False
 
     async def feed(self, text: str) -> None:
         if self._external_cancel:
@@ -205,6 +214,19 @@ class _KokoroStream:
         # process-wide Metal lock so a cancelled response does not pin it.
         self._external_cancel = True
         self._cancel.set()
+
+    async def wait_closed(self) -> None:
+        """Block until the synthesis worker has exited and released the Metal
+        lock. The server awaits this before freeing a cancelled commit's
+        scheduler slot: ``cancel()`` only *requests* a break (honoured at the
+        next yield boundary), so a long single-segment ``generate`` can keep the
+        process-wide lock for tens of seconds after the drain task is cancelled.
+        Without this wait, admission / ``queue_depth`` would advertise free
+        capacity while the next commit blocks on that still-held lock."""
+        if not self._worker_started:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._worker_done.wait)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole
@@ -224,6 +246,9 @@ class _KokoroStream:
         if self._external_cancel:
             return
         loop = asyncio.get_running_loop()
+        # The bridge starts the worker thread synchronously; mark started so
+        # ``wait_closed()`` knows there is a worker (and a lock) to wait on.
+        self._worker_started = True
         # The shared bridge owns: Metal-lock acquisition for the whole drain,
         # float32 -> int16-LE PCM conversion (R3 clip+asymmetric map), bounded
         # producer-side backpressure, and EOF on generator exhaustion.
@@ -233,6 +258,7 @@ class _KokoroStream:
             metal_lock=self._metal_lock,
             cancel=self._cancel,
             maxsize=_BRIDGE_MAXSIZE,
+            worker_done=self._worker_done,
         ):
             if self._external_cancel:
                 return

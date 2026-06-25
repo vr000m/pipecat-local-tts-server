@@ -50,6 +50,13 @@ class AudioEvent:
 
 @runtime_checkable
 class TTSStream(Protocol):
+    """The REQUIRED stream surface every backend implements.
+
+    Optional capabilities live in separate ``Supports*`` protocols below so the
+    required contract stays minimal and the optionality is explicit in the type
+    system (rather than a member declared here but called through ``getattr``).
+    """
+
     async def feed(self, text: str) -> None: ...
     async def end(self) -> None: ...
     # Async-generator function: implementations must be ``async def`` with
@@ -58,6 +65,19 @@ class TTSStream(Protocol):
     # implementation that returns a plain coroutine.
     def events(self) -> AsyncGenerator[AudioEvent, None]: ...
     async def cancel(self) -> None: ...
+
+
+@runtime_checkable
+class SupportsWaitClosed(Protocol):
+    """Optional stream capability: block until the synthesis worker has fully
+    exited and released any process-wide GPU lock.
+
+    The server checks ``isinstance(stream, SupportsWaitClosed)`` before awaiting
+    it, so a backend with no worker/lock (e.g. a pure event-loop backend) simply
+    omits the method. Implemented by Kokoro (real Metal lock); ToneBackend
+    implements a no-op so the same call site is a harmless await."""
+
+    async def wait_closed(self) -> None: ...
 
 
 @runtime_checkable
@@ -73,10 +93,6 @@ class TTSBackend(Protocol):
     sample_rate: int
 
     def capabilities(self) -> dict: ...
-    # Full voice list (decided default #4: count in ``server.hello``, full list
-    # via ``server.status``). Optional — the server reads it via ``getattr`` and
-    # tolerates a backend that does not implement it.
-    def voices(self) -> list[str]: ...
     async def start(self) -> None: ...
     async def open_stream(
         self,
@@ -86,6 +102,20 @@ class TTSBackend(Protocol):
         extras: dict | None = None,
     ) -> TTSStream: ...
     async def close(self) -> None: ...
+
+
+@runtime_checkable
+class SupportsVoices(Protocol):
+    """Optional backend capability: enumerate the full voice list.
+
+    Decided default #4 puts the voice COUNT in ``server.hello`` and the full
+    list behind ``server.status``. The server checks
+    ``isinstance(backend, SupportsVoices)`` and also uses the list to validate a
+    client-supplied ``voice`` against the advertised set. A backend that cannot
+    enumerate voices omits this method (the server then skips voice validation
+    for it)."""
+
+    def voices(self) -> list[str]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +165,14 @@ class _ToneStream:
 
     async def cancel(self) -> None:
         self._cancelled.set()
+
+    async def wait_closed(self) -> None:
+        # ToneBackend runs entirely on the event loop — no worker thread, no
+        # process-wide GPU lock — so there is nothing to wait for. Present so the
+        # server's optional ``wait_closed`` call (used to hold a cancelled
+        # commit's slot until a real backend's worker releases the Metal lock)
+        # is a harmless no-op here.
+        return None
 
     def _segment_pcm(self, segment_idx: int) -> bytes:
         n = int(self._sample_rate * self._segment_ms / 1000)
