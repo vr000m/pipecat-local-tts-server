@@ -63,11 +63,35 @@ The server logs the resolved backend + model at startup, *before* the
 read from the loaded model, so model load completes before the first
 `server.hello` is sent.
 
+On startup over a Unix socket, the server **auto-clears a stale socket** left by
+a previous crash (`SIGKILL` / power loss), so the documented restart works
+without manual `rm`. It refuses to start — surfacing a diagnostic instead of
+clobbering — if a **non-socket file** exists at the path, or if a **live server**
+is already listening there (the socket is genuinely in use).
+
+### Environment variables
+
 Endpoint precedence (server and client both): **URI > socket > host+port**. The
-`TTS_WS_*` env vars mirror `STT_WS_*`. Optional bearer auth: the server reads
-`PIPECAT_TTS_AUTH_TOKEN`; the client reads `TTS_WS_TOKEN` (it never falls back to
-the server's env var). A token-less server bound to a non-loopback TCP address
-logs a cleartext-remote warning; a Unix socket does not.
+`TTS_WS_*` vars mirror `STT_WS_*`.
+
+| Variable | Side | Purpose |
+|---|---|---|
+| `TTS_WS_URI` | client | Full `ws://`/`wss://` URI; highest endpoint precedence. |
+| `TTS_WS_SOCKET` | client | Unix-socket path (used when no URI). |
+| `TTS_WS_HOST` | client | TCP host (used when no URI/socket). |
+| `TTS_WS_PORT` | client | TCP port (paired with host). |
+| `TTS_WS_TOKEN` | client | Bearer token the client/probe sends. Never falls back to the server var. |
+| `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
+| `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer token the server requires (optional auth). |
+
+Auth notes: the server reads `PIPECAT_TTS_AUTH_TOKEN`; the client/probe reads
+`TTS_WS_TOKEN` (the two are deliberately separate so a probe can never mask a
+client 401 or leak the server secret to a remote host). A plaintext
+`--auth-token` flag is intentionally unsupported (`ps` exposure) — use
+`--auth-token-file`. A token-less server bound to a non-loopback TCP address logs
+a cleartext-remote warning; a Unix socket does not. Sending a bearer over
+cleartext `ws://` to a remote host also warns client-side — use `wss://` or a
+Unix socket.
 
 ## Checking server health
 

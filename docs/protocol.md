@@ -222,6 +222,16 @@ the top-level `error`-frame wrapper) under its `response_id`.
 after `retry_after_ms` with capped backoff + jitter, giving up after ~5 retries. The server's
 queue cap protects it regardless of client behavior.
 
+**Slot accounting on cancel (server-internal guarantee):** the server holds a commit's
+synthesis-queue slot until the backend worker has fully **exited and released the process-wide
+GPU/Metal lock** — not merely until the drain task was cancelled. `response.cancel` only
+*requests* a break, honoured at the next yield boundary, so a long single-segment `generate()`
+can keep the lock for tens of seconds after `response.cancelled` was sent. By deferring the
+slot release until the lock is actually free, `queue_depth` and `busy` admission never advertise
+free capacity that a subsequent `commit` would immediately block on. Backends with no
+worker/lock (e.g. the tone backend) release the slot immediately. This is observable only as
+honest `queue_depth` in `server.status`; it does not change any wire frame.
+
 ---
 
 ## 8. Notes for implementers / clients

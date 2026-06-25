@@ -50,11 +50,56 @@ Not yet tagged or published; landing here as it is validated.
   config validation, endpoint resolution, import safety, cleartext guard, and
   tone end-to-end coverage.
 
+### Security
+
+- **`voice` is validated against the advertised voice list** (`session.update`
+  and `input_text.commit`), mirroring `language`. An unvalidated voice reached
+  mlx-audio's loader, which treats a `*.safetensors` value as a filesystem path
+  (arbitrary-file load) and otherwise triggers a Hugging Face download
+  (client-driven network egress); both are now rejected with `invalid_config`.
+- **`speed` extra is bounded** — finite values are clamped to `[0.5, 2.0]` and
+  non-finite (`NaN`/`inf`) or non-numeric values are rejected, so a degenerate
+  rate can no longer drive very-long synthesis while holding the Metal lock.
+
+### Changed
+
+- **Optional backend capabilities are now explicit protocols** (`SupportsVoices`,
+  `SupportsWaitClosed`) checked via `isinstance`, instead of methods declared on
+  the base protocol but accessed through `getattr`.
+- **`make_backend` raises `ValueError`** (not `SystemExit`) for an unknown
+  backend name; the CLI translates it to a clean exit. The default server backend
+  is built through `make_backend("tone")` so the server depends only on the
+  abstract protocol types.
+- **Client checks `server.hello.protocol_version`** and warns on a mismatch
+  (protocol §8 SHOULD).
+
 ### Fixed
 
+- **`session.close` drain timeout now covers synthesis, not queue waiting** — a
+  commit still queued behind other connections' work is given the drain budget
+  for its actual synthesis (waiting for dispatch first), instead of being
+  cancelled for head-of-line waiting it did not control.
+- **Bounded the terminal EOF enqueue in the streaming bridge** — a consumer
+  abandoned without setting the cancel flag can no longer pin the daemon synth
+  thread indefinitely; the worker falls back to the non-blocking EOF path after a
+  few attempts and exits.
 - **Kokoro vocoder `broadcast_shapes` bug** — worked around an upstream mlx-audio
   defect (mlx-audio [#803](https://github.com/Blaizzy/mlx-audio/issues/803)) via a
   scoped vocoder-fix shim.
 - Drain-after-close lock pinning and a bridge double-put race in the server;
   deduplicated the error object; capped caches; dropped dead fields
   (code-review + Codex adversarial review findings).
+- **Cancelled synthesis no longer under-reports busy capacity** — the dispatcher
+  now waits for the backend worker to exit and release the process-wide Metal
+  lock before freeing a commit's scheduler slot. Previously a cancelled-but-still-
+  draining Kokoro `generate` could keep the lock until its next yield boundary
+  while admission / `queue_depth` advertised free capacity, so the next commit
+  silently blocked on the held lock.
+- **Stale Unix socket no longer blocks the documented restart** — on start the
+  server unlinks a leftover socket from a crashed instance, refuses to clobber a
+  non-socket file at the path, and refuses to steal a socket a live server is
+  still listening on (asyncio's own bind would silently unlink it).
+- **Reference Pipecat adapter** — `_connect()` now drains the `session.update`
+  ack before any commit is sent (a rejected config surfaced after a commit would
+  otherwise abandon a live response and pin the backend lock), and a mid-synthesis
+  server `error` cancels the response before breaking.
