@@ -47,6 +47,15 @@ FRAME_DURATION_MS = 20
 # *backpressure cap* (synthesis backlog → ``BUSY``) is Phase 3.
 SEND_QUEUE_HIGH_WATER_BYTES = 1 * 1024 * 1024
 SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 10.0
+# Per-send wall-clock bound (seconds). The high-water guard above samples pending
+# bytes BEFORE a send; it cannot catch a send that wedges mid-flight when a reader
+# stops draining entirely and the socket write buffer fills *while* the drain loop
+# awaits ``ws.send``. An unbounded wedge parks the drain, backs up the bounded
+# backend->session bridge, and leaves the backend worker holding the process-wide
+# synthesis lock — stalling every other session. A live reader hands tiny (20 ms)
+# frames to the transport buffer in milliseconds, so this only fires for a reader
+# making zero progress; 5 s is generous headroom for that "dead reader" verdict.
+SEND_TIMEOUT_SECONDS = 5.0
 
 # --- Synthesis backpressure caps (R4, Phase 3) ---
 # Bounded GLOBAL synthesis backlog (commits waiting on the shared Metal lock

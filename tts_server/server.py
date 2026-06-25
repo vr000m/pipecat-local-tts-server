@@ -148,6 +148,7 @@ class ServerConfig:
     auth_token: str | None = None
     reject_browser_origins: bool = True
     send_queue_high_water_bytes: int = P.SEND_QUEUE_HIGH_WATER_BYTES
+    send_timeout_seconds: float = P.SEND_TIMEOUT_SECONDS
     drain_timeout_seconds: float = P.SHUTDOWN_DRAIN_TIMEOUT_SECONDS
     # chmod applied to the UDS after bind. 0o600 restricts connect to the owning
     # user; the UDS is the v1 trust boundary.
@@ -1387,6 +1388,19 @@ class TTSServer:
         }
 
     # --- send helpers ---
+    async def _drop_session(self, ws: ServerConnection, state: _SessionState, reason: str) -> None:
+        """Shared stalled-reader teardown for ``_send``. Both drop paths (the
+        pre-send high-water overflow guard and a mid-flight send that exceeds
+        ``send_timeout_seconds``) must mark the session closed and close the
+        socket (1011) in lockstep: the drain loop sees ``state.closed`` on its
+        next iteration, breaks, and cancels the stream so the backend worker
+        releases the process-wide synthesis lock."""
+        state.closed = True
+        try:
+            await ws.close(code=1011, reason=reason)
+        except Exception:
+            pass
+
     async def _send(
         self,
         ws: ServerConnection,
@@ -1409,16 +1423,32 @@ class TTSServer:
                         pending,
                         state.session_id,
                     )
-                    state.closed = True
-                    try:
-                        await ws.close(code=1011, reason="send_queue_overflow")
-                    except Exception:
-                        pass
+                    await self._drop_session(ws, state, "send_queue_overflow")
                     return
             try:
-                await ws.send(json.dumps(payload))
+                await asyncio.wait_for(
+                    ws.send(json.dumps(payload)),
+                    timeout=self._config.send_timeout_seconds,
+                )
             except websockets.exceptions.ConnectionClosed:
                 pass
+            except asyncio.TimeoutError:
+                # The high-water guard above samples pending bytes BEFORE this
+                # send; a send that wedges mid-flight (the reader stops draining
+                # and the socket write buffer fills WHILE we await) never trips it.
+                # Unbounded, the drain loop parks here, stops consuming the bounded
+                # backend->session bridge, and the backend worker stays parked
+                # behind a full queue holding the process-wide synthesis lock —
+                # stalling every other session. Bound the send and, on timeout,
+                # drop the session: mark it closed (the drain loop sees
+                # ``state.closed`` on its next iteration, breaks, and cancels the
+                # stream so the worker releases the lock) and close the socket.
+                logger.warning(
+                    "tts_server: outbound send exceeded %.1fs (stalled reader), closing session %s",
+                    self._config.send_timeout_seconds,
+                    state.session_id,
+                )
+                await self._drop_session(ws, state, "send_timeout")
 
     async def _error(
         self,

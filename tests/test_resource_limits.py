@@ -12,6 +12,7 @@ Lean-CI on ``ToneBackend``:
 
 from __future__ import annotations
 
+import asyncio
 
 import pytest
 
@@ -80,6 +81,61 @@ async def test_stalled_reader_trips_high_water_and_connection_closed():
     assert ws.closed_code == 1011, f"expected 1011 close, got {ws.closed_code}"
     assert ws.closed_reason == "send_queue_overflow"
     assert ws.sent == [], "the overflowing frame must be dropped, not buffered/sent"
+
+
+class _WedgedConnection:
+    """A connection whose ``send`` never completes — models a reader that stops
+    draining so the socket write buffer fills and ``ws.send`` blocks mid-flight.
+    Its pending-bytes sample stays UNDER the high-water mark, so only the per-send
+    timeout (not the pre-send guard) can rescue the drain loop. This is the live
+    stalled-reader case the byte-sampling guard cannot close by construction."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.closed_code: int | None = None
+        self.closed_reason: str | None = None
+        self.transport = self
+        self.send_cancelled = False
+
+    def get_write_buffer_size(self) -> int:
+        return 0  # under any high-water mark — the guard must NOT be what fires
+
+    async def send(self, data) -> None:
+        # Block forever (until wait_for cancels us): a reader that never drains.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.send_cancelled = True
+            raise
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed_code = code
+        self.closed_reason = reason
+
+
+async def test_wedged_send_times_out_and_closes_session():
+    # A send that blocks mid-flight (reader stopped draining, but pending bytes
+    # are under the high-water mark) must be bounded by send_timeout_seconds: the
+    # server marks the session closed, cancels the in-flight send, and closes the
+    # socket (1011) so the drain loop frees the synthesis lock instead of parking
+    # forever.
+    srv = TTSServer(
+        ToneBackend(),
+        ServerConfig(
+            host="127.0.0.1",
+            port=0,
+            reject_browser_origins=False,
+            send_timeout_seconds=0.05,
+        ),
+    )
+    ws = _WedgedConnection()
+    state = _SessionState(session_id="s-wedge")
+
+    await srv._send(ws, state, {"type": P.EVT_RESPONSE_AUDIO_DELTA, "seq": 0, "audio": "AAAA"})
+
+    assert state.closed is True, "a wedged send must mark the session closed"
+    assert ws.send_cancelled is True, "the in-flight send must be cancelled on timeout"
+    assert ws.closed_code == 1011 and ws.closed_reason == "send_timeout"
 
 
 async def test_under_high_water_does_not_close():
