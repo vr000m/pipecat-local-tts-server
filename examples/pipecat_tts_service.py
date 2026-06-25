@@ -184,6 +184,29 @@ class LocalTTSService(TTSService):
                 language=self._language,
                 extras=extras or None,
             )
+            # Synchronously consume the ack HERE, before any commit can be sent.
+            # The server answers session.update with session.created/updated
+            # (success) or an error (e.g. INVALID_CONFIG for a bad voice). If we
+            # left it unread, run_tts would send append+commit first and only
+            # then read events — surfacing a stale config error AFTER a commit is
+            # already synthesizing, so the adapter would break and abandon a live
+            # response (no drain, no cancel), pinning the backend/Metal lock.
+            await self._await_update_ack(client)
+
+    async def _await_update_ack(self, client: TTSClient) -> None:
+        """Read events until the session.update ack (success) or an error.
+
+        Raises ``RuntimeError`` on a rejected config so ``start()`` fails loudly
+        instead of silently proceeding with an unapplied voice/language/extras.
+        """
+        async for ev in client.events():
+            kind = ev.get("type")
+            if kind in (P.EVT_SESSION_UPDATED, P.EVT_SESSION_CREATED):
+                return
+            if kind in (P.EVT_ERROR, P.EVT_RESPONSE_FAILED):
+                raise RuntimeError(f"server rejected session.update: {ev!r}")
+            # No other event precedes the ack on a fresh session; ignore defensively.
+        raise RuntimeError("connection closed before session.update was acknowledged")
 
     async def _disconnect(self) -> None:
         client = self._client
@@ -203,6 +226,11 @@ class LocalTTSService(TTSService):
         the rate is only known after the handshake, which happens after ``start()``
         has already resolved a provisional rate.
         """
+        # FRAGILE: depends on a private attribute of pipecat's TTSService
+        # (``self._sample_rate``), verified against pipecat-ai as tested for this
+        # example. Pipecat could rename/relocate it without a semver bump — re-check
+        # this assignment (and prefer a public set-rate hook if one is added) when
+        # bumping the pipecat dependency.
         self._sample_rate = rate
 
     # --- interruption / barge-in ------------------------------------------
@@ -218,6 +246,17 @@ class LocalTTSService(TTSService):
         try:
             # K=1 in v1 → response_id is optional and unambiguous, but send it
             # when we have it so the intent is explicit.
+            #
+            # Timing note: an InterruptionFrame that arrives in the narrow window
+            # between sending ``commit`` and reading the first
+            # ``response.created``/``input_text.committed`` event finds
+            # ``_current_response_id`` still None and sends a bare cancel. If the
+            # server has not yet registered the response, that bare cancel is a
+            # no-op and audio for this commit may still stream. This is an
+            # accepted K=1 limitation: the pipeline's ``CancelledError`` path in
+            # ``run_tts`` also issues a cancel, and a subsequent InterruptionFrame
+            # will carry the now-known id. For prompt barge-in, feed
+            # sentence-sized text (see the module docstring's cancellation caveat).
             await client.cancel(response_id=self._current_response_id)
         except Exception:
             pass
@@ -278,6 +317,12 @@ class LocalTTSService(TTSService):
                     # Barge-in took effect; no further audio for this response.
                     break
                 elif kind in (P.EVT_ERROR, P.EVT_RESPONSE_FAILED):
+                    # A commit is already in flight on this connection. A generic
+                    # ``error`` is not necessarily terminal server-side (unlike
+                    # ``response.failed``), so cancel before breaking — otherwise
+                    # we stop draining while the server keeps synthesizing for a
+                    # reader that is gone, pinning the backend/Metal lock.
+                    await self._send_cancel()
                     yield ErrorFrame(error=f"tts_server {kind}: {ev!r}")
                     break
                 # Ignore other event types (session.*, server.status).
