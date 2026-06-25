@@ -1,6 +1,6 @@
 # Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)
 
-**Status**: Planned — design locked on paper; no code yet. mlx-audio API claims
+**Status**: In Progress — Phases 0–4 complete (merged on `feature/tts-server-phases-0-4`); Phase 5 pending. mlx-audio API claims
 verified against installed **0.4.4** via `scripts/verify_mlx_tts_api.py` — including the
 runtime `--load` path and `scripts/prosody_check.py`, **executed 2026-06-24 on
 arm64/vr000m-manganese, mlx-audio 0.4.4** (so the runtime facts below — rate, audio range,
@@ -9,7 +9,7 @@ drifted from 0.3.0 — see R8).
 **Component**: tts-server (server, protocol, backends, client)
 **Assigned to**: Varun Singh
 **Priority**: High (unblocks gamealerts TTS-server migration)
-**Branch**: main (founding work) → feature branches per phase
+**Branch**: `feature/tts-server-phases-0-4` (PR #2)
 **Created**: 2026-06-24
 
 ## Objective
@@ -268,7 +268,7 @@ server is app-agnostic.
 - [ ] Tests (mirror stt, lean-CI on `ToneBackend`): `status` round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; **auth** — token-required reject, token-absent TCP startup warning, UDS no-warn, and client `TTS_WS_TOKEN` vs server `PIPECAT_TTS_AUTH_TOKEN` precedence (client must NOT fall back to the server token); **resource limits** — stalled-reader trips send-queue high-water → connection closed (not unbounded), and `max_text_chars` over-limit rejection; **backpressure + isolation** (see Testing Notes) — `BUSY`/`retry_after_ms` on a full synthesis queue (assert `retry_after_ms` is a **positive, bounded integer** — not zero/absurd, else the client hot-loops), per-connection in-flight cap, **cancel frees an in-flight slot** (fill to K, `response.cancel` one, assert a new `commit` is accepted — guards a barge-in-heavy client from self-DoSing into permanent `BUSY`), and the 2-connection no-intermix / round-robin-fairness assertions.
 
 ### Phase 4 — Reference adapter + docs
-- [ ] `examples/pipecat_tts_service.py` (reference `InterruptibleTTSService` wrapper). The
+- [ ] `examples/pipecat_tts_service.py` (reference `LocalTTSService`, a `TTSService` subclass — not `InterruptibleTTSService`, which is the cloud-reconnect base; rationale in the module docstring). The
   lightweight `examples/reference_client.py` (stdlib + `websockets`, no pipecat dependency)
   already exists as a testing oracle; the pipecat-framework adapter is the additional Phase-4
   deliverable.
@@ -834,7 +834,7 @@ Two review passes on the revised Phase 5 section; all findings folded into the p
 
 ### Phase 1 mid-phase review (advisory, deferred to later phases)
 - **[Phase 2]** `backends/_stream_util.py` EOF sentinel is enqueued via `loop.call_soon_threadsafe(queue.put_nowait, _EOF)`; if the consumer broke out early (cancel) leaving a full queue, `put_nowait` raises `QueueFull` inside the loop callback (logged, benign — Metal lock still releases, no hang). The bridge cancel path is first exercised by Kokoro in Phase 2 — harden the EOF put there (swallow `QueueFull` / drain-then-put).
-- **[Phase 4]** `server.py` emits a `session.closed` event (reason `client_cancel`/`client_close`) on `session.cancel`/`session.close`, but `docs/protocol.md` §5 does not list `session.closed`. Reconcile when Phase 4 verifies protocol.md against the shipped `protocol.py`.
+- **[Phase 4 — RESOLVED]** `server.py` emits a `session.closed` event (reason `client_cancel`/`client_close`) on `session.cancel`/`session.close`. `docs/protocol.md` §5 now lists `session.closed {session_id, reason}` — reconciled in Phase 4.
 - **[Phase 3]** In-flight commit rejection (K=1) currently uses `ErrorCode.INVALID_EVENT`; when Phase 3 wires `BUSY`/`retry_after_ms`, map the in-flight/backlog rejection to the right code.
 
 ## Operator justfile (post-review)
