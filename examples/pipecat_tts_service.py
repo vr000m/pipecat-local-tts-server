@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
@@ -281,9 +282,19 @@ class LocalTTSService(TTSService):
         await self.start_ttfb_metrics()
         yield TTSStartedFrame(context_id=context_id)
 
+        # Correlate THIS commit with its ack. The server echoes a client-supplied
+        # ``event_id`` as ``previous_event_id`` on the matching
+        # ``input_text.committed`` (and on any ``error`` that rejects the commit).
+        # We learn ``_current_response_id`` ONLY from that correlated committed —
+        # never from whichever committed/created frame happens to arrive first on
+        # a persistent connection. See the gating comment below for why.
+        commit_event_id = uuid.uuid4().hex
         try:
             await client.append(text)
-            await client.commit(extras=self._params.to_extras() or None)
+            await client.commit(
+                extras=self._params.to_extras() or None,
+                event_id=commit_event_id,
+            )
         except Exception as exc:  # send-side failure before any audio
             yield ErrorFrame(error=f"tts_server commit failed: {exc}")
             yield TTSStoppedFrame(context_id=context_id)
@@ -295,33 +306,71 @@ class LocalTTSService(TTSService):
         try:
             async for ev in client.events():
                 kind = ev.get("type")
-                if kind == P.EVT_RESPONSE_CREATED:
-                    self._current_response_id = ev.get("response_id")
-                elif kind == P.EVT_TEXT_COMMITTED:
-                    self._current_response_id = ev.get("response_id", self._current_response_id)
-                elif kind == P.EVT_RESPONSE_AUDIO_DELTA:
-                    pcm = base64.b64decode(ev["audio"])
-                    if not pcm:
+                if kind == P.EVT_TEXT_COMMITTED:
+                    # Adopt the response id ONLY from the committed ack that
+                    # correlates to the commit we just sent. A *prior* cancelled
+                    # response can leave its own ``input_text.committed(old)`` /
+                    # ``response.created(old)`` / ``response.cancelled(old)``
+                    # buffered on the socket ahead of our ack. Trusting the first
+                    # committed/created would set ``_current_response_id = old``,
+                    # then the stale ``response.cancelled(old)`` would look current
+                    # and terminate THIS utterance — leaving the new commit
+                    # synthesizing with no reader (pinning the backend/Metal lock),
+                    # the exact corruption this guard exists to prevent.
+                    if ev.get("previous_event_id") == commit_event_id:
+                        self._current_response_id = ev.get("response_id")
+                    # else: a stale committed for a prior response — ignore it.
+                elif kind in (
+                    P.EVT_RESPONSE_CREATED,
+                    P.EVT_RESPONSE_AUDIO_DELTA,
+                    P.EVT_RESPONSE_AUDIO_DONE,
+                    P.EVT_RESPONSE_CANCELLED,
+                    P.EVT_RESPONSE_FAILED,
+                ):
+                    # Gate every response-scoped event by response_id. Until our
+                    # correlated committed has set ``_current_response_id``, ANY
+                    # response frame is stale (it belongs to a prior response); once
+                    # set, only frames carrying our id are ours. ``response.created``
+                    # has no ``previous_event_id`` to correlate on, so it is gated
+                    # the same way (and only confirms the id we already learned).
+                    rid = ev.get("response_id")
+                    if self._current_response_id is None or (
+                        rid is not None and rid != self._current_response_id
+                    ):
                         continue
-                    if not started_audio:
-                        await self.stop_ttfb_metrics()
-                        started_audio = True
-                    yield TTSAudioRawFrame(
-                        audio=pcm,
-                        sample_rate=self._server_rate,
-                        num_channels=_NUM_CHANNELS,
-                    )
-                elif kind == P.EVT_RESPONSE_AUDIO_DONE:
-                    break
-                elif kind == P.EVT_RESPONSE_CANCELLED:
-                    # Barge-in took effect; no further audio for this response.
-                    break
-                elif kind in (P.EVT_ERROR, P.EVT_RESPONSE_FAILED):
-                    # A commit is already in flight on this connection. A generic
-                    # ``error`` is not necessarily terminal server-side (unlike
-                    # ``response.failed``), so cancel before breaking — otherwise
-                    # we stop draining while the server keeps synthesizing for a
-                    # reader that is gone, pinning the backend/Metal lock.
+                    if kind == P.EVT_RESPONSE_CREATED:
+                        continue  # confirms our id; no action needed.
+                    if kind == P.EVT_RESPONSE_AUDIO_DELTA:
+                        pcm = base64.b64decode(ev["audio"])
+                        if not pcm:
+                            continue
+                        if not started_audio:
+                            await self.stop_ttfb_metrics()
+                            started_audio = True
+                        yield TTSAudioRawFrame(
+                            audio=pcm,
+                            sample_rate=self._server_rate,
+                            num_channels=_NUM_CHANNELS,
+                        )
+                    elif kind == P.EVT_RESPONSE_AUDIO_DONE:
+                        break
+                    elif kind == P.EVT_RESPONSE_CANCELLED:
+                        # Barge-in took effect; no further audio for this response.
+                        break
+                    else:  # EVT_RESPONSE_FAILED for THIS response — terminal.
+                        yield ErrorFrame(error=f"tts_server {kind}: {ev!r}")
+                        break
+                elif kind == P.EVT_ERROR:
+                    # A generic ``error`` is command-scoped, not response-scoped.
+                    # If it correlates to a PRIOR commit (``previous_event_id`` set
+                    # and not ours), it is stale — skip it. Otherwise it concerns
+                    # this commit (or is connection-level): it is not necessarily
+                    # terminal server-side (unlike ``response.failed``), so cancel
+                    # before breaking — else we stop draining while the server keeps
+                    # synthesizing for a reader that is gone, pinning the lock.
+                    prev = ev.get("previous_event_id")
+                    if prev is not None and prev != commit_event_id:
+                        continue
                     await self._send_cancel()
                     yield ErrorFrame(error=f"tts_server {kind}: {ev!r}")
                     break

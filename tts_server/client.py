@@ -148,6 +148,7 @@ class TTSClient:
         voice: str | None = None,
         language: str | None = None,
         extras: dict | None = None,
+        event_id: str | None = None,
     ) -> None:
         assert self._ws is not None
         msg: dict[str, Any] = {"type": P.EVT_TEXT_COMMIT}
@@ -157,6 +158,13 @@ class TTSClient:
             msg["language"] = language
         if extras is not None:
             msg["extras"] = extras
+        # A caller-supplied ``event_id`` is echoed back by the server as
+        # ``previous_event_id`` on this commit's ``input_text.committed`` (and on
+        # any ``error`` that rejects the commit), letting the caller correlate the
+        # ack to THIS commit rather than trusting whichever committed/created frame
+        # happens to arrive first on a persistent connection.
+        if event_id is not None:
+            msg["event_id"] = event_id
         await self._ws.send(json.dumps(msg))
 
     async def clear(self) -> None:
