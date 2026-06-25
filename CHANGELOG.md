@@ -83,6 +83,15 @@ Not yet tagged or published; landing here as it is validated.
   abstract protocol types.
 - **Client checks `server.hello.protocol_version`** and warns on a mismatch
   (protocol §8 SHOULD).
+- **`examples` extra pins `pipecat-ai==1.4.0`** (same policy as the `mlx-audio`
+  pin) — the reference adapter overrides pipecat's read-only `sample_rate`
+  property by writing its private `_sample_rate` backing field (no public
+  post-handshake setter), so a version skew could silently mis-negotiate the
+  audio rate. `LocalTTSService._update_sample_rate` now guards the write and
+  raises loudly if the field is gone, and a dedicated `test-examples` CI job runs
+  the adapter tests against the pinned version in isolation (importing pipecat
+  pulls numpy/audioop, which would pollute the lean job's import-safety
+  invariants).
 
 ### Fixed
 
@@ -122,3 +131,12 @@ Not yet tagged or published; landing here as it is validated.
   ack before any commit is sent (a rejected config surfaced after a commit would
   otherwise abandon a live response and pin the backend lock), and a mid-synthesis
   server `error` cancels the response before breaking.
+- **Outbound sends are bounded by a per-send wall-clock timeout** — a reader that
+  stops draining mid-send (the socket write buffer fills *while* the drain loop
+  awaits `ws.send`) is not caught by the pre-send high-water guard, which samples
+  pending bytes only *before* the send. An unbounded wedge parked the drain loop,
+  backed up the bounded backend→session bridge, and left the backend worker
+  holding the process-wide synthesis lock — stalling every other session. Each
+  send is now wrapped in `send_timeout_seconds` (default 5 s); on timeout the
+  session is marked closed and the socket closed (1011) so the drain loop frees
+  the lock.

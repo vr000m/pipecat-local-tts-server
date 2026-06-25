@@ -185,7 +185,7 @@ sub-segment cancel promptness is yield-boundary best-effort.
   the async `tts_server.client.TTSClient` so a bot pipeline can speak through a
   running server. Streams `TTSAudioRawFrame`s at the server-advertised rate and
   sends `response.cancel` on interruption. Requires the Pipecat framework
-  (`pip install pipecat-ai`, or `uv sync --extra examples`).
+  (`uv sync --extra examples`, which pins `pipecat-ai==1.4.0`).
 
 ## Layout
 
