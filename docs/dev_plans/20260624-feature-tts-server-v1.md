@@ -297,15 +297,19 @@ own backend module, tests, packaging, and a verified streaming-cadence default �
 module constant baked into its `_gen_factory()` `generate()` call** — exactly how `kokoro.py`
 hardcodes `lang_code`/`speed` — NOT a new constructor param, CLI flag, or client `extras` key.
 
-**`voice=None` handling (applies to all 5a/5b/5c).** The server forwards
-`voice=msg.get("voice", config.get("voice"))`, which is **`None` when the client omits voice**
-(`server.py`). The model defaults differ per backend (voxtral `'casual_male'`, pocket/dia `None`
-with dialogue-tag semantics), so each backend's adapter MUST **omit `voice` from the `generate()`
-call when it is `None`** (let the model default stand) rather than forwarding `voice=None`. Kokoro's
-`_gen_factory` does this for `speed`; replicate the pattern for `voice`.
+**`voice=None` handling (applies to all 5a/5b/5c).** The server **intentionally forwards**
+`voice=msg.get("voice", config.get("voice"))` — i.e. `voice=None` — straight into `open_stream`
+(`server.py`, the `open_stream(..., voice=voice)` call is unconditional **by design**; do NOT add an
+omit there). The model defaults differ per backend (voxtral `'casual_male'`, pocket/dia `None` with
+dialogue-tag semantics), so **the omit-when-None logic lives in each backend's `_gen_factory`/
+`open_stream` (the TTSStream layer), not the server**: when the resolved `voice is None`, omit the
+`voice` kwarg from the `generate()` call so the model's own default stands rather than forwarding
+`voice=None`. Kokoro's `_gen_factory` does this for `speed`; replicate the pattern for `voice`. A
+per-backend test spies the `generate()` kwargs and asserts `voice` is absent when the client omits it
+(same `open_stream`-spy harness as the negative-guard test — see per-sub-phase tests).
 
 **`ToneBackend` streaming fixture (5a prerequisite, lean CI).** `ToneBackend.capabilities()` is
-hardcoded `"streaming": False` (`tts_server/backend.py:223`). Add a `streaming: bool` constructor
+hardcoded `"streaming": False` (`tts_server/backend.py:261`). Add a `streaming: bool` constructor
 param (it already parametrizes `extras`/`languages`) so the `streaming:true` capabilities branch and
 the client no-split path are exercisable in **lean CI**, independent of the mlx-gated real backends.
 
@@ -332,10 +336,11 @@ the client no-split path are exercisable in **lean CI**, independent of the mlx-
   never sets it — but exhaustion handles both, so no code change; the bridge contract holds across
   both shapes. **`kyutai` is still not an mlx-audio TTS family**; `moss_tts*` is unrelated to
   Kyutai/Moshi.
-- [ ] `_stream_util` bridge `maxsize`: `_BRIDGE_MAXSIZE=8` (`kokoro.py:96`) is tuned for Kokoro's
-  *few large* per-segment chunks; voxtral emits *many small* sub-segment chunks (~one per
-  `streaming_interval`). Set a per-backend `maxsize` with a streaming-cadence rationale; do not copy
-  Kokoro's bound or comment verbatim.
+- [ ] `_stream_util` bridge `maxsize`: `_BRIDGE_MAXSIZE=8` is a **module constant in `kokoro.py`**
+  (passed into `stream_generate(maxsize=...)`), tuned for Kokoro's *few large* per-segment chunks;
+  voxtral emits *many small* sub-segment chunks (~one per `streaming_interval`). **Each backend module
+  declares its OWN `_BRIDGE_MAXSIZE`** with a streaming-cadence rationale — do not parameterize or
+  edit Kokoro's, and do not copy its bound/comment verbatim.
 - [ ] Tests:
   - **Lean (no mlx, `ToneBackend(streaming=True)`):** assert `capabilities()["streaming"] is True`
     and the `streaming:true` no-split client path.
@@ -345,9 +350,13 @@ the client no-split path are exercisable in **lean CI**, independent of the mlx-
     `ToneBackend` — `AudioEvent` carries only `{kind, pcm}` (`backend.py:47-48`), so the model flag
     never reaches it; the bridge is the only layer that sees `is_final_chunk`. (Closes the "both
     shapes" claim — the existing EOF guard only covers Kokoro's `is_final_chunk=False`.)
-  - **Backend-unit (no model load):** assert the backend's effective `streaming_interval` is the
-    chosen small default (e.g. `0.3 <= value <= 0.5`) and that `streaming_interval` is **not** in
-    `capabilities()["extras"]`.
+  - **Backend-unit (no model load):** assert `streaming_interval` is **not** in
+    `capabilities()["extras"]` (it is backend config, not a client knob). For the *value* itself the
+    assertion is **provisional and must cite the measured Findings value** — assert the backend's
+    effective `streaming_interval` equals the value recorded by the measurement step (above), NOT a
+    hard-coded `0.3 <= value <= 0.5` band: if measurement lands the floor at e.g. 0.7s, the test
+    follows the measurement rather than contradicting it. Until measured, the band is a placeholder
+    updated in the same sub-phase.
   - **mlx-gated — sub-segment streaming proven at the NATIVE boundary, not the wire:** a wire
     `response.audio.delta` count is meaningless — the 20 ms re-chunker (`server.py::_run_drain`)
     splits even one large *non-streaming* native chunk into many 20 ms deltas, so "≥2 deltas" passes
@@ -391,6 +400,11 @@ the client no-split path are exercisable in **lean CI**, independent of the mlx-
   `generate()` call boundary, as in 5b) for `{ref_audio, ref_text}`. Multi-speaker dialogue model
   (`[S1]`/`[S2]` tags) — its `voice`/text semantics differ from single-voice backends, so defer
   until that mapping is designed.
+- [ ] **Cancel latency caveat (inherited from Kokoro):** dia is segment-level (`split_pattern`), so a
+  long single segment cannot be cancelled until `generate()` completes — it inherits Kokoro's measured
+  ~51s single-segment cancel limitation (Findings → *Phase 2 measured results*). Carry Kokoro's
+  resolution: hard guarantee is "no more deltas after `response.cancelled`"; prompt barge-in requires
+  the client to chunk at sentence/newline boundaries.
 
 #### Per sub-phase (5a/5b/5c)
 - [ ] **Wire the backend into the resolver AND the CLI choices** in the same commit — two separate
@@ -408,20 +422,30 @@ the client no-split path are exercisable in **lean CI**, independent of the mlx-
   advertises the true model rate in `server.hello.audio.rate`; decouple it from warmup per R3. Add an
   mlx-gated test asserting `hello.audio.rate` equals the loaded model's rate **before any synth runs**
   (voxtral/pocket/dia rates are per-model and unverified — Kokoro's is 24000; do NOT assume these match).
+  The test MUST read the rate from `model.sample_rate` (the config property), **not** from a backend
+  literal — otherwise a wrong hardcoded constant satisfies both sides of `hello == model` and the test
+  passes while the advertised rate is wrong (R1 resample-correctness bug).
 - [ ] Packaging/CI update in the **same commit** as each new backend: add the `pyproject.toml`
-  optional dependency extra **and append `--extra <name>` to the macOS job's sync line**
-  (`.github/workflows/test.yml:81` is `uv sync --extra client --extra kokoro` — a hardcoded list,
-  **not** `--all-extras`; a forgotten `--extra` leaves the backend uninstalled and its mlx-gated test
-  silently `importorskip`-skipped, shipping zero CI coverage while green). *Alternative (preferred,
-  do once): switch line 81 to `uv sync --all-extras` so it cannot drift per-backend.* Keep lean CI
-  free of those heavy deps, and decide model-download/network gating (same constraint that made
-  Phase 2 environment-gated; larger weights than Kokoro — confirm runner access before 5a).
+  optional dependency extra, and **switch the macOS job's sync to `uv sync --all-extras`** (do this
+  once in 5a so it cannot drift per-backend) — the line is `.github/workflows/test.yml:84`
+  (`uv sync --extra client --extra kokoro`), inside the **`test-macos-smoke`** job. **Reality check
+  (decided):** that job is an **import smoke that deliberately runs NO pytest**, so installing a new
+  extra there does NOT run any backend synthesis test in CI — and that is **accepted, not a gap**:
+  backend synth tests stay **local/mlx-gated only**, exactly as the Phase-2 Kokoro decision already
+  established (Kokoro's synth tests don't run in CI either). So `--all-extras` here only proves the
+  runner can *resolve/install* the extra (an install-smoke), it is not a synthesis-coverage path.
+  Keep lean CI free of those heavy deps, and decide model-download/network gating (same constraint
+  that made Phase 2 environment-gated; larger weights than Kokoro — confirm runner access before 5a).
 - [ ] **If a sub-phase adds a NEW lean test file, extend the lean allow-list
   (`.github/workflows/test.yml:40-55`) in the same commit** (`pytest` errors on a missing
   allow-listed path — the discipline Phases 1–3 each followed). Folding the negative-guard assertion
   into the already-allow-listed `tests/test_capabilities_extras.py` avoids this edit.
 - [ ] **Update the Phase-4 README/protocol-doc capabilities & extras table** for the new backend
   (they were Kokoro-only when first written) — including its `streaming` flag.
+- [ ] **If Phase 6 (launchd ops) is already in place**, add the backend's `(label, port)` row to the
+  justfile `_resolve` map + the README port-table row **in the same commit** — otherwise the Phase-6
+  drift test (`tests/test_justfile_recipes.py`) goes red between phases. (If Phase 6 has not landed
+  yet, skip this; Phase 6 adds the row when it lands.)
 - [ ] **Re-verify the live `generate()` signature via `inspect.signature` before wiring** if the
   `mlx-audio` pin is bumped past 0.4.4 (R7/R8).
 
@@ -746,7 +770,7 @@ Phase 3:
 ## Companion plan
 gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.
 
-<!-- reviewed: 2026-06-24 @ 7b0e7a6a38f5c92458503132042188eb140d3022 -->
+<!-- reviewed: 2026-06-24 @ 63c2e6d5aab158b3e947f2c92232104a1f9ecb61 -->
 
 ## Progress
 
@@ -874,6 +898,13 @@ The **Unix socket stays the default** for a single ad-hoc server / README quick-
 old open question** ("does `tone` get its own canonical label?"): with ports making multi-agent the
 norm, `tone` gets its own agent (a dependency-free smoke agent) at 8665.
 
+**One `serve` process = one backend = one port.** `make_backend` resolves a single backend per
+process (`backends/__init__.py`), so a model is never shared across backends in one server —
+multi-backend means *multiple agents*, one per row above. The `voxtral_tts`/`pocket_tts`/`dia` rows
+are **conducted only after their Phase 5 sub-phase lands** (the `dia` row in particular waits on the
+deferred Phase 5c); a top-to-bottom conductor must not stand up an agent for a backend that has no
+`--backend` choice yet.
+
 **Impl files**
 - `scripts/render_tts_plist.py` — emits a user-agent plist: `Label`, `ProgramArguments`
   (`… python -m tts_server serve --backend B --host H --port P [--model M] [--auth-token-file F]`),
@@ -895,6 +926,10 @@ via `--auth-token-file` in the plist (the cleartext-remote guard warns otherwise
 `tests/test_justfile_recipes.py` asserting README table ↔ justfile `_resolve` map ↔
 `render_tts_plist.py` defaults agree (the stt repo's drift test is the model). Point
 `la_dir`/`cache_dir` at a temp `$HOME`, as the stt tests do.
+**Scope at Phase-6 merge:** the drift test asserts only the rows that exist at merge time — **`tone`
+and `kokoro`** (the backends shipped by Phase 4). Each of 5a/5b/5c **extends the test** (and the
+table + `_resolve` map) with its own row in the same commit it lands (see the Phase-5 per-sub-phase
+checklist). The test must not assert rows for not-yet-built backends, or it goes red between phases.
 Test command: `uvx pytest tests/test_justfile_recipes.py -v`.
 
 **Sequencing — Phase 6 does NOT block on Phase 5.** It needs only the serve binding (exists) + a
@@ -902,7 +937,15 @@ backend module. It can be conducted right after Phase 4 for `tone`/`kokoro`; eac
 adds exactly one map row + one README row + one `--backend` choice when it lands. (Numbered 6 for
 ordering, but independent of 5.)
 
-**Acceptance.** `just tts-install kokoro` loads the agent; `RunAtLoad` brings it up on
+**Pre-promotion verify (launchd is ported on faith).** Phase 6 ports the stt installer/plist
+mechanism (`RunAtLoad`/`KeepAlive`/`bootstrap`/`bootout`/`kickstart`) assuming it works; those are
+launchctl environmental facts, not code we can unit-test. Before conducting, **confirm the existing
+stt agent actually comes up under `RunAtLoad`** (one `launchctl print gui/$uid/<stt-label>` showing
+`state = running` + a pid) so the port rests on observed behaviour, not plist keys alone.
+
+**Acceptance (install/lifecycle is manual-only — NOT CI-covered).** Only the drift test is automated;
+the lifecycle below is an **operator/manual check** (it bootstraps real launchd agents and binds
+ports, which CI does not do). `just tts-install kokoro` loads the agent; `RunAtLoad` brings it up on
 `127.0.0.1:8765`; `just tts-list` shows running + pid; `just tts-status kokoro` prints
 `backend=kokoro` + rate; `tts-stop`/`tts-disable`/`tts-uninstall` tear it down cleanly; the drift
 test is green; lean CI is unaffected (recipes/scripts are not python runtime).
