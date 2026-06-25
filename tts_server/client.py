@@ -90,6 +90,18 @@ class TTSClient:
         hello = await self._recv_json()
         if hello.get("type") != P.EVT_SERVER_HELLO:
             raise RuntimeError(f"expected server.hello, got {hello.get('type')}")
+        # protocol.md §8 (Versioning): clients SHOULD check the server's
+        # ``protocol_version``. Warn (rather than raise) on a mismatch so a newer
+        # client still talks to an older server where it can, but the operator is
+        # told the contract differs.
+        server_version = hello.get("protocol_version")
+        if server_version != P.PROTOCOL_VERSION:
+            logger.warning(
+                "tts_server.client: server protocol_version %r != client %r; "
+                "wire contract may differ",
+                server_version,
+                P.PROTOCOL_VERSION,
+            )
         return hello
 
     async def _recv_json(self) -> dict:
