@@ -791,7 +791,7 @@ Phase 3:
 - `dia` dialogue backend (formerly Phase 5c, split out 2026-06-25):
   `docs/dev_plans/20260625-feature-tts-dia-backend.md`.
 
-<!-- reviewed: 2026-06-25 @ 2cf9eb4b97b5cc727db57856d3c622142a30ca23 -->
+<!-- reviewed: 2026-06-25 @ a0cff09acf15d7296db05735e63471649d8bce03 -->
 
 ## Progress
 
@@ -804,6 +804,48 @@ Phase 3:
 - [x] Post-v1 ops: operator `justfile` (`tts-list`, `tts-status`) — mirrors the stt justfile; smoke-tested with a live tone server. Launchd install/enable/disable/uninstall recipes deferred (no tts install path yet — see *Operator justfile (post-review)* below).
 
 ## Findings
+
+### /review-plan pass — 2026-06-25 (5 lenses; advisory, not applied to the reviewed contract)
+Re-ran `/review-plan --auto-fix` after the marker went stale from the smoke-test-doc edit
+(`f32bbc4` added a Phase 5b checkbox above the marker). No Critical findings. Recorded here in
+the workspace (below the marker, outside the hash) per the "don't edit the reviewed contract"
+decision; address the actionable ones when Phase 5 is conducted. Auto-fix applied nothing — every
+fixable line-drift sits inside `#### Phase 5*` sections that the scope-forbid list protects.
+Reconciliation: raw=18 merged=0 unique=18 related=1 (line 290).
+
+**Important**
+- **Line-anchor drift (CI):** `test.yml:84` is a comment — the real macOS `uv sync` step is
+  **line 109**; the lean allow-list range is **40-56**, not 40-55. Fix when next editing those
+  Phase-5 / per-sub-phase tasks (they live in the reviewed zone, so not auto-fixed).
+- **Testing gap (R4 cadence):** streaming-cadence/TTFB has no *automated* gate — 5a asserts only
+  the locked `streaming_interval` + no-NaN; the "deltas incremental, not all-at-end" check lives
+  only in manually-run smoke scripts. Add an mlx-gated pytest cadence assertion in 5a/5b.
+- **Testing gap (smoke cadence under-specified):** the 5b "extend smoke" checkbox has no concrete
+  threshold and the smoke drivers have no timestamp instrumentation. Specify: capture per-delta
+  receive timestamps; assert ≥2 deltas spaced ≥ a fraction of `streaming_interval` before `done`;
+  fail if all deltas land within X ms of `done`.
+- **Assumption (gamealerts contract):** R1/R4's two load-bearing client claims (resample driven
+  *solely* by `hello.audio.rate`; a mid-response stall starves playback) were never confirmed
+  against a real client — Phase 4 shipped only the `examples/` reference adapter, not the gamealerts
+  integration, so the plan's "confirm before Phase 4 integration" gate is still open. Confirm at
+  real integration time before treating R1/R4 as validated.
+
+**Minor**
+- **Line-anchor drift:** `backend.py:282`→283 (ToneBackend streaming hardcode); `_validate_extras`
+  `server.py:614-646`→615-647; `duration_ms` `server.py:1137`→1138.
+- **Architecture:** the plan's `stream_generate` signature omits the live `worker_done` param that
+  `kokoro.py` already passes; 5a/5b `_gen_factory` kwargs assembly under-specified; streaming
+  model-load blocks the first `server.hello` (handshake latency scales with load); per-backend
+  `_BRIDGE_MAXSIZE` vs Metal-lock-hold fairness interaction unanalyzed.
+- **Sequencing:** the prescribed lean construction test routes through `make_backend` and never
+  asserts argparse *rejects* an unknown `--backend` — the choices-tuple half of the dual-wire is
+  untested (make it parse argv). Phase-boundary 5a→5b commit safety confirmed sound.
+- **Testing:** no `capabilities()` shape test for 5a/5b R7 keys; `duration_ms` over many small
+  sub-segment chunks untested; 5a TTFB selection criterion under-specified (no rule ties measured
+  numbers to the single locked value).
+- **Assumption:** "VERIFIED via `inspect.signature`" (line 818) but the committed
+  `verify_mlx_tts_api.py` uses source-regex — provenance, not correctness (signatures do match
+  installed 0.4.4).
 
 ### Phase 2 measured results (Apple Silicon, mlx-audio 0.4.4, Kokoro-82M-bf16)
 - **Kokoro long single-segment cancellation latency ≈ 51 s** (measured 2026-06-24, arm64). Kokoro yields a no-newline segment as ONE delta only at the END of `generate()`, and the bridge checks the cancel flag at the per-result boundary — so a single-segment cancel cannot take effect until `generate()` completes. This confirms the plan's documented **"yield-boundary best effort"** limitation: long single-segment cancellation far exceeds any barge-in target. **Resolution (per plan R3/Phase-2 fallback): the client MUST chunk at sentence/newline boundaries for Kokoro to get prompt barge-in.** The server's hard guarantee remains "no more deltas after `response.cancelled`" (asserted in tests).
