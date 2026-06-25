@@ -75,16 +75,17 @@ Exit code is `0` only if every **required** case passed. Known-gap cases
 
 ## Language support: advertised vs. as-shipped
 
-`server.hello.capabilities.languages` advertises **8** languages, derived from
-the Kokoro voice-name prefixes:
+`server.hello.capabilities.languages` advertises only the languages this
+deployment can actually synthesize. With the default `kokoro` extra
+(`misaki[en]` only) that is **6**:
 
 ```
-["en", "es", "fr", "hi", "it", "ja", "pt", "zh"]
+["en", "es", "fr", "hi", "it", "pt"]
 ```
 
-That list reflects the **model's** voices, not what the default `kokoro` extra
-can actually phonemize. The extra pins `misaki[en]` only. Verified live
-(mlx-community/Kokoro-82M-bf16, mlx-audio 0.4.4):
+`ja` and `zh` are dropped by default — the model ships voices for them, but their
+G2P needs a package the extra does not install (see below). The table below was
+verified live (mlx-community/Kokoro-82M-bf16, mlx-audio 0.4.4):
 
 | Lang | Voice tested | Result | G2P path |
 |---|---|---|---|
@@ -94,18 +95,21 @@ can actually phonemize. The extra pins `misaki[en]` only. Verified live
 | it | if_sara   | ✅ works | espeak-ng |
 | pt | pf_dora   | ✅ works | espeak-ng |
 | hi | hf_alpha  | ✅ works | espeak-ng (slow first call — needs a long client timeout) |
-| ja | jf_alpha  | ❌ `backend_error` | needs **`misaki[ja]`** (`ModuleNotFoundError: pyopenjtalk`) |
-| zh | zf_xiaoxiao| ❌ `backend_error` | needs **`misaki[zh]`** (`ModuleNotFoundError: ordered_set`) |
+| ja | jf_alpha  | ⛔ not advertised | needs **`misaki[ja]`** (`ModuleNotFoundError: pyopenjtalk`) |
+| zh | zf_xiaoxiao| ⛔ not advertised | needs **`misaki[zh]`** (`ModuleNotFoundError: ordered_set`) |
 
-**Out of the box, ja and zh fail at synthesis time** with
-`response.failed / code=backend_error`. The server handles this gracefully (no
-crash; the session stays usable), but a client trusting the advertised language
-list would hit a runtime failure for those two.
+**Out of the box, ja and zh are not advertised**, so a request for them is
+rejected up front with `invalid_config` (before a synthesis slot is consumed)
+rather than failing mid-response with `backend_error`. The smoke driver reports
+them as `SKIP`.
 
-To enable them, install the extra G2P backends, e.g.:
+To enable them — a two-step, build-time decision:
 
 ```sh
+# 1. install the extra G2P backend(s)
 uv pip install "misaki[ja]" "misaki[zh]"
+# 2. opt the language(s) into the advertised set
+export PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh
 ```
 
 `hi` works but its **first** call loads espeak-ng's Hindi G2P lazily and can

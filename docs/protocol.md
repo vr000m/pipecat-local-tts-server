@@ -141,7 +141,7 @@ Built **per backend** — never copied across backends. Kokoro example (fields V
   "streaming": false,            // no sub-segment streaming (segment-level still streams)
   "binary_audio": false,         // base64-in-JSON for v1
   "text_formats": ["plain"],     // ssml/ipa not yet supported for Kokoro
-  "languages": ["en","ja","zh","fr","es","it","pt","hi"],  // VERIFIED via voice-prefix→lang_code mapping
+  "languages": ["en","es","fr","hi","it","pt"],  // synthesizable set; ja/zh off by default (need extra G2P — opt in via PIPECAT_TTS_KOKORO_EXTRA_LANGS)
   "voice_count": 54,             // VERIFIED (mlx-community/Kokoro-82M-bf16)
   "extras": ["speed"],           // Kokoro's effective generate() kwargs ONLY
   "ideal_words": 40,             // soft target; client rounds UP to a sentence boundary (chosen default)

@@ -49,6 +49,7 @@ jobs:
             tests/test_server_cleartext_guard.py \
             tests/test_pcm16_clip.py \
             tests/test_kokoro_lazy_import.py \
+            tests/test_kokoro_language_advertise.py \
             tests/test_status.py \
             tests/test_auth.py \
             tests/test_resource_limits.py \

@@ -56,6 +56,18 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
+def env_str_set(name: str) -> set[str]:
+    """Parse a comma-separated env var into a set of lowercased, stripped tokens.
+
+    Empty / unset → empty set. Blank entries (e.g. trailing comma) are dropped.
+    Used for opt-in lists like ``PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh``.
+    """
+    val = os.environ.get(name)
+    if not val:
+        return set()
+    return {tok.strip().lower() for tok in val.split(",") if tok.strip()}
+
+
 def is_cleartext_remote(uri: str) -> bool:
     """True if ``uri`` is ``ws://`` pointing at a non-loopback host.
 

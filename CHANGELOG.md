@@ -140,3 +140,13 @@ Not yet tagged or published; landing here as it is validated.
   send is now wrapped in `send_timeout_seconds` (default 5 s); on timeout the
   session is marked closed and the socket closed (1011) so the drain loop frees
   the lock.
+- **Kokoro no longer advertises languages it cannot synthesize** — the advertised
+  `languages` set was derived from voice-name prefixes, so `ja`/`zh` were listed
+  even though their G2P needs a package (`misaki[ja]`/`misaki[zh]`) the `kokoro`
+  extra does not install. A client trusting the capability contract could pick
+  `ja`, pass validation, consume a synthesis slot, then get `backend_error`.
+  `ja`/`zh` are now dropped from the advertised set by default, so a request for
+  them is rejected up front with `invalid_config` (before a slot is consumed).
+  An operator who installs the extra G2P package re-enables a language via
+  `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
+  startup. (Reported by adversarial review.)

@@ -41,6 +41,7 @@ import threading
 from typing import Any, AsyncGenerator
 
 from ..backend import AudioEvent, TTSStream
+from ..env import env_str_set
 from ._stream_util import stream_generate
 
 logger = logging.getLogger("tts_server.backends.kokoro")
@@ -174,6 +175,32 @@ _ISO_TO_LANG_CODE = {
     "pt": "p",
     "zh": "z",
 }
+
+# Languages whose Kokoro G2P needs a dedicated misaki package BEYOND the
+# ``misaki[en]`` the ``kokoro`` extra installs: ``ja`` needs ``misaki[ja]``
+# (pyopenjtalk), ``zh`` needs ``misaki[zh]``. Verified by live smoke tests
+# (tests/smoke/README.md): without those packages, synthesis fails at
+# ``generate()`` with ``backend_error`` (ModuleNotFoundError). The model SHIPS
+# voices for them, so prefix-based discovery would otherwise advertise them —
+# advertising a language that fails at synthesis violates the capability
+# contract (a client picks it, passes validation, consumes a slot, then fails).
+# So these are DROPPED from the advertised set by default; an operator who has
+# installed the package opts a language back in via
+# ``PIPECAT_TTS_KOKORO_EXTRA_LANGS`` (e.g. ``ja,zh``). ``es/fr/it/pt`` route
+# through the espeak-ng bundled with ``misaki[en]`` and ``hi`` works (its first
+# call's G2P load is just slow), so none of those need an extra package.
+_REQUIRES_EXTRA_G2P = frozenset({"ja", "zh"})
+
+
+def _filtered_languages(discovered: list[str], extra_languages: set[str]) -> list[str]:
+    """Drop languages that need an extra G2P package, unless the operator opted
+    them back in. Opt-in only RETAINS a language already in ``discovered`` (the
+    model has voices for it); it cannot add one the model lacks. Order preserved."""
+    extras = {lang.lower() for lang in extra_languages}
+    return [
+        lang for lang in discovered if lang not in _REQUIRES_EXTRA_G2P or lang.lower() in extras
+    ]
+
 
 # Chunk-size hints (R7). Soft client target / hard server cap; chosen defaults,
 # not model facts (see capabilities example in the plan).
@@ -316,8 +343,21 @@ class KokoroBackend:
 
     backend_name = "kokoro"
 
-    def __init__(self, *, model: str = DEFAULT_KOKORO_MODEL) -> None:
+    def __init__(
+        self,
+        *,
+        model: str = DEFAULT_KOKORO_MODEL,
+        extra_languages: set[str] | None = None,
+    ) -> None:
         self._model_id = model
+        # Languages the operator has opted back in after installing their extra
+        # G2P package (see ``_REQUIRES_EXTRA_G2P``). Resolved from the env at
+        # call time so tests can pass the set directly. A language here is only
+        # *retained* if the model actually ships voices for it — it cannot
+        # conjure a language the model has no voices for.
+        if extra_languages is None:
+            extra_languages = env_str_set("PIPECAT_TTS_KOKORO_EXTRA_LANGS")
+        self._extra_languages = extra_languages
         # Public identity for ``server.hello`` / ``server.status``.
         self.model = model
         # The loaded mlx-audio model. ``None`` until ``start()``.
@@ -372,6 +412,18 @@ class KokoroBackend:
         # static set if the voices dir is not locatable (e.g. an unusual local
         # model layout).
         self._voice_count, self._languages = await loop.run_in_executor(None, self._discover_voices)
+        # Surface the advertised set so an operator can see which languages this
+        # deployment serves. Languages needing an extra G2P package are excluded
+        # unless opted in via PIPECAT_TTS_KOKORO_EXTRA_LANGS (see _discover_voices).
+        skipped = sorted(_REQUIRES_EXTRA_G2P - {lang.lower() for lang in self._languages})
+        logger.info(
+            "kokoro: serving %d voices, languages %s%s",
+            self._voice_count,
+            self._languages,
+            f" (install the misaki G2P package + set PIPECAT_TTS_KOKORO_EXTRA_LANGS to enable: {', '.join(skipped)})"
+            if skipped
+            else "",
+        )
 
         # Warmup-generate to pay the Metal JIT cost off the hot path. Decoupled
         # from rate discovery (the rate is already set above). Best-effort: a
@@ -383,9 +435,17 @@ class KokoroBackend:
         model's ``voices/`` directory (cache-only, no network).
 
         Returns ``(voice_count, languages)``. On any failure, falls back to the
-        verified static facts (54 voices; the 8-language ISO set).
+        verified static facts (54 voices; the advertised ISO set).
+
+        Languages whose G2P needs an extra package (``_REQUIRES_EXTRA_G2P``) are
+        dropped here unless opted in, so the advertised set never lists a
+        language that would fail at synthesis. Filtering ``static_languages`` at
+        the source makes every return path (fallbacks + discovered) honest:
+        ``ordered`` is built by iterating it, so it inherits the filter too.
         """
-        static_languages = ["en", "es", "fr", "hi", "it", "ja", "pt", "zh"]
+        static_languages = _filtered_languages(
+            ["en", "es", "fr", "hi", "it", "ja", "pt", "zh"], self._extra_languages
+        )
         try:
             import pathlib
 

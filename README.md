@@ -83,6 +83,7 @@ Endpoint precedence (server and client both): **URI > socket > host+port**. The
 | `TTS_WS_TOKEN` | client | Bearer token the client/probe sends. Never falls back to the server var. |
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer token the server requires (optional auth). |
+| `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to advertise after installing their extra G2P package. See [Kokoro language support](#kokoro-language-support-advertised--synthesizable). |
 
 Auth notes: the server reads `PIPECAT_TTS_AUTH_TOKEN`; the client/probe reads
 `TTS_WS_TOKEN` (the two are deliberately separate so a probe can never mask a
@@ -139,27 +140,40 @@ mlx-community/Kokoro-82M-bf16 (mlx-audio 0.4.4):
 | `streaming` | `false` | no sub-segment streaming; segments still stream per `\n+` |
 | `binary_audio` | `false` | base64-in-JSON for v1 |
 | `text_formats` | `["plain"]` | ssml/ipa not supported |
-| `languages` | `["en","ja","zh","fr","es","it","pt","hi"]` | advertised from voice prefixes — **`ja`/`zh` fail at synthesis** without extra G2P (see below) |
+| `languages` | `["en","es","fr","hi","it","pt"]` | from voice prefixes, minus languages needing extra G2P — **`ja`/`zh` are off by default** (opt-in, see below) |
 | `voice_count` | `54` | full list via `status` |
 | `extras` | `["speed"]` | Kokoro's only effective `generate()` kwarg |
 | `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
 | `max_text_chars` | `2000` | hard server cap |
 
-### Kokoro language support (advertised vs. as-shipped)
+### Kokoro language support (advertised = synthesizable)
 
-The advertised `languages` list is derived from the model's voice-name prefixes,
-not from what the default `kokoro` extra can phonemize. That extra pins
-`misaki[en]` only. Verified live against mlx-community/Kokoro-82M-bf16:
+The advertised `languages` list reflects what this deployment can actually
+synthesize, not just what voices the model ships. The default `kokoro` extra
+pins `misaki[en]` only; verified live against mlx-community/Kokoro-82M-bf16:
 
 - **`en`** uses misaki[en]; **`es`/`fr`/`it`/`pt`/`hi`** route through the
-  espeak-ng G2P bundled with misaki[en] — all synthesize fine. (`hi`'s first
-  call loads its G2P lazily and can exceed a 60 s client timeout.)
-- **`ja` and `zh` fail at synthesis** (`response.failed`, `code=backend_error`)
-  out of the box: they need `misaki[ja]` (`pyopenjtalk`) and `misaki[zh]`
-  (`ordered_set`) respectively, which the extra does not install. The server
-  degrades gracefully — the session stays usable — but a client trusting the
-  advertised list hits a runtime failure. Enable with
-  `uv pip install "misaki[ja]" "misaki[zh]"`.
+  espeak-ng G2P bundled with misaki[en] — all synthesize fine and are advertised.
+  (`hi`'s first call loads its G2P lazily and can exceed a 60 s client timeout.)
+- **`ja` and `zh` need an extra G2P package** — `misaki[ja]` (`pyopenjtalk`) and
+  `misaki[zh]` (`ordered_set`) respectively, which the `kokoro` extra does not
+  install. Because synthesis would fail at runtime (`response.failed`,
+  `code=backend_error`) without them, **they are not advertised by default** and
+  a request for them is rejected up front with `invalid_config` (before a
+  synthesis slot is consumed) rather than failing mid-response.
+
+**Enabling `ja` / `zh`** is a two-step, build-time decision:
+
+1. Install the G2P package(s):
+   `uv pip install "misaki[ja]" "misaki[zh]"`
+2. Opt the language(s) back into the advertised set:
+   `export PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh`
+
+The server logs its advertised language set at startup (including a reminder of
+any languages left disabled). The opt-in only *re-adds* a language the model
+already ships voices for; it cannot advertise one the model lacks. If you set the
+env var without installing the package, that language is advertised again and
+will fail at synthesis — install first.
 
 See [`tests/smoke/`](tests/smoke/) for the live end-to-end smoke scripts that
 verify this (`just smoke-tone` / `just smoke-kokoro` / `just smoke-multilingual`).
