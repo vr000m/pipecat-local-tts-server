@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -67,6 +68,53 @@ def _session_id() -> str:
 
 def _response_id() -> str:
     return f"resp_{uuid.uuid4().hex[:16]}"
+
+
+def _clear_stale_unix_socket(path: Path) -> None:
+    """Make ``path`` bindable, handling a socket left behind by a crashed server.
+
+    ``unix_serve`` (the documented local mode) cannot bind a path that already
+    exists, so after a crash or ``SIGKILL`` the stale ``tts.sock`` would make the
+    very next ``serve`` fail with ``OSError: Address already in use`` until an
+    operator removed it by hand. We resolve the safe cases and refuse the unsafe
+    ones:
+
+    - **Non-socket file** at the path: refuse. A regular file / directory there is
+      not ours to delete — surface it instead of clobbering operator data.
+    - **Live socket** (something is listening): refuse. Never steal another
+      server instance's socket; that path is genuinely in use.
+    - **Stale socket** (a socket file with no listener — connect is refused):
+      unlink it. This is the crash-restart case.
+    - **Dangling symlink**: unlink it (``exists()`` is False through a broken
+      link, but ``bind`` would still fail).
+    """
+    if path.is_symlink() and not path.exists():
+        path.unlink()  # broken symlink: bind() would fail on it
+        return
+    if not path.exists():
+        return
+    if not path.is_socket():
+        raise RuntimeError(
+            f"refusing to bind: {path} exists and is not a socket; "
+            "remove it or choose a different --socket-path"
+        )
+    # A socket file is present. Probe whether a server is actually listening:
+    # a successful connect means a live instance owns it; a refused connect means
+    # the listener is gone and the file is a stale leftover we can safely remove.
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(str(path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        path.unlink(missing_ok=True)  # stale socket from a crash — safe to clear
+        logger.warning("tts_server: removed stale socket at %s", path)
+        return
+    except OSError as exc:
+        raise RuntimeError(f"cannot probe existing socket {path}: {exc}") from exc
+    finally:
+        probe.close()
+    # connect() succeeded: a live server owns this socket.
+    raise RuntimeError(f"address already in use: a server is already listening on {path}")
 
 
 def _error_object(code: P.ErrorCode, message: str) -> dict[str, Any]:
@@ -331,6 +379,7 @@ class TTSServer:
         if self._config.socket_path:
             socket_path = Path(self._config.socket_path)
             socket_path.parent.mkdir(parents=True, exist_ok=True)
+            _clear_stale_unix_socket(socket_path)
             prior_umask = os.umask(0o077)
             try:
                 self._server = await ws_unix_serve(
