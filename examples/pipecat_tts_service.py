@@ -262,6 +262,31 @@ class LocalTTSService(TTSService):
         except Exception:
             pass
 
+    async def _drop_buffer(self) -> None:
+        """Best-effort ``input_text.clear`` of any uncommitted server-side text.
+
+        Sent when a ``run_tts`` appended text that was never consumed by an
+        *admitted* commit — cancelled before the commit, or a pre-admission
+        rejection (e.g. ``BUSY``, ``payload_too_large``) where the server
+        deliberately leaves the buffer intact for retry. ``response.cancel``
+        cannot help here: it targets a *response*, and no response was registered,
+        so the appended text would otherwise stay buffered on the persistent
+        connection and be synthesized as part of the NEXT, unrelated utterance.
+
+        Fire-and-forget: the server processes a connection's frames in order, so
+        this clear is guaranteed to land before the next ``run_tts``'s
+        ``input_text.append``; we needn't await the ``input_text.cleared`` ack
+        (the next event loop ignores it as an unhandled type). Swallows errors —
+        on a broken connection the session and its buffer are already gone.
+        """
+        client = self._client
+        if client is None:
+            return
+        try:
+            await client.clear()
+        except Exception:
+            pass
+
     # --- synthesis ---------------------------------------------------------
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Synthesize ``text`` as one commit and yield its audio frames.
@@ -290,6 +315,11 @@ class LocalTTSService(TTSService):
         # a persistent connection. See the gating comment below for why.
         commit_event_id = uuid.uuid4().hex
         started_audio = False
+        # Whether the server admitted THIS commit (we read our correlated
+        # ``input_text.committed``). False ⇔ the server buffer may still hold the
+        # text we appended (commit not yet admitted, or rejected pre-admission),
+        # which must be cleared on any exit so it cannot leak into the next commit.
+        commit_admitted = False
         # ONE try spans the commit AND the drain so a cancellation anywhere from
         # the commit onward (barge-in / teardown) reaches the cancel handler. The
         # bare cancel it sends travels the SAME connection AFTER the commit, and the
@@ -306,6 +336,11 @@ class LocalTTSService(TTSService):
                     event_id=commit_event_id,
                 )
             except Exception as exc:  # send-side failure before any audio
+                # ``append`` may have reached the server before ``commit`` failed,
+                # leaving uncommitted text in the buffer. Best-effort clear so it
+                # cannot leak into the next utterance; on a broken connection this
+                # is a harmless no-op (the session and its buffer are already gone).
+                await self._drop_buffer()
                 yield ErrorFrame(error=f"tts_server commit failed: {exc}")
                 yield TTSStoppedFrame(context_id=context_id)
                 return
@@ -327,6 +362,9 @@ class LocalTTSService(TTSService):
                     # the exact corruption this guard exists to prevent.
                     if ev.get("previous_event_id") == commit_event_id:
                         self._current_response_id = ev.get("response_id")
+                        # Server consumed our buffer and registered the response;
+                        # buffer is now empty, so no clear is owed on exit.
+                        commit_admitted = True
                     # else: a stale committed for a prior response — ignore it.
                 elif kind in (
                     P.EVT_RESPONSE_CREATED,
@@ -381,11 +419,22 @@ class LocalTTSService(TTSService):
                         prev = ev["error"].get("event_id")
                     if prev is not None and prev != commit_event_id:
                         continue
-                    # Ours (or uncorrelated/connection-level): not necessarily
-                    # terminal server-side (unlike ``response.failed``), so cancel
-                    # before breaking — else we stop draining while the server keeps
-                    # synthesizing for a reader that is gone, pinning the lock.
-                    await self._send_cancel()
+                    # Ours (or uncorrelated/connection-level), and not retried here.
+                    # The cleanup depends on whether our commit was ever admitted:
+                    #   - admitted (response in flight): an ``error`` is not
+                    #     necessarily terminal server-side (unlike
+                    #     ``response.failed``), so cancel before breaking — else we
+                    #     stop draining while the server keeps synthesizing for a
+                    #     reader that is gone, pinning the lock.
+                    #   - NOT admitted (a pre-admission rejection such as ``BUSY``
+                    #     or ``payload_too_large``): there is no response to cancel,
+                    #     and the server left our appended text in the buffer for a
+                    #     retry we will not make. Clear it so it cannot be
+                    #     synthesized as part of the next utterance.
+                    if commit_admitted:
+                        await self._send_cancel()
+                    else:
+                        await self._drop_buffer()
                     yield ErrorFrame(error=f"tts_server {kind}: {ev!r}")
                     break
                 # Ignore other event types (session.*, server.status).
@@ -396,6 +445,14 @@ class LocalTTSService(TTSService):
             # after our commit on this connection, so it reliably targets the
             # registered response even when we never learned its id.
             await self._send_cancel()
+            # If the commit was never admitted, the cancellation may have landed
+            # after ``append`` but before (or without) an admitted commit, leaving
+            # our text uncommitted in the server buffer. Drop it so it cannot be
+            # synthesized into the next utterance. Ordered AFTER the cancel on this
+            # connection: if the commit actually did land, the cancel still targets
+            # the response and this clear is a no-op on the now-empty buffer.
+            if not commit_admitted:
+                await self._drop_buffer()
             raise
         finally:
             self._current_response_id = None

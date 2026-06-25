@@ -45,6 +45,7 @@ class _FakeClient:
     def __init__(self, events: list[dict]) -> None:
         self._events = events
         self.cancels: list[str | None] = []
+        self.clears = 0
         self.commit_event_id: str | None = None
 
     async def events(self):
@@ -66,6 +67,9 @@ class _FakeClient:
 
     async def cancel(self, *, response_id: str | None = None) -> None:
         self.cancels.append(response_id)
+
+    async def clear(self) -> None:
+        self.clears += 1
 
 
 class _CancelOnCommitClient(_FakeClient):
@@ -403,3 +407,76 @@ async def test_cancel_during_commit_still_cancels_server_side():
 
     # The widened try routed the CancelledError through the cancel handler.
     assert client.cancels == [None], "cancel during commit must still send response.cancel"
+
+
+# --- dirty-buffer cleanup (adversarial-review: stale text leak) ----------------
+# The server consumes the text buffer ONLY when a commit is admitted. If a commit
+# is rejected pre-admission (BUSY/payload_too_large), or the task is cancelled
+# after ``append`` but before an admitted commit, the appended text stays buffered
+# on the persistent connection. ``response.cancel`` targets a *response*, never the
+# buffer, so the adapter must send ``input_text.clear`` on those paths — otherwise
+# the orphaned text is synthesized as part of the NEXT, unrelated utterance.
+
+
+async def test_busy_rejection_clears_dirty_buffer():
+    # A pre-admission BUSY rejection: the server left our appended text in the
+    # buffer for a retry the adapter will not make. The adapter must clear it, not
+    # send a no-op response.cancel against a response that was never registered.
+    client = _FakeClient([_error_frame(correlated=True, code="busy")])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert client.clears == 1, "a pre-admission rejection must clear the dirty buffer"
+    assert client.cancels == [], "no response exists to cancel before admission"
+
+
+async def test_cancel_before_commit_clears_dirty_buffer():
+    # CancelledError raised from commit() models a barge-in after ``append`` reached
+    # the server but before the commit was admitted: the buffer holds our text with
+    # no response registered. The adapter must clear it (and still send the cancel,
+    # which targets the response if the commit happened to land after all).
+    client = _CancelOnCommitClient(events=[])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _drain_run_tts(svc)
+
+    assert client.cancels == [None], "cancel must still target any registered response"
+    assert client.clears == 1, "uncommitted text must be cleared so it cannot leak"
+
+
+async def test_admitted_error_cancels_not_clears():
+    # An error AFTER our commit was admitted: a response is in flight and the buffer
+    # is already empty server-side. The adapter must cancel the response (it may be
+    # non-terminal server-side) and must NOT send a redundant clear.
+    client = _FakeClient([_committed("new"), _error_frame(correlated=True, code="internal")])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert client.cancels, "an admitted in-flight error must cancel the response"
+    assert client.clears == 0, "buffer already consumed by admission; no clear owed"
+
+
+async def test_successful_run_does_not_clear_buffer():
+    # The happy path consumes the buffer via admission; no clear must be sent.
+    client = _FakeClient(
+        [
+            _committed("new"),
+            {"type": P.EVT_RESPONSE_CREATED, "response_id": "new"},
+            _audio_delta("new"),
+            {"type": P.EVT_RESPONSE_AUDIO_DONE, "response_id": "new"},
+        ]
+    )
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    await _drain_run_tts(svc)
+
+    assert client.clears == 0, "an admitted, fully-drained commit owes no buffer clear"
