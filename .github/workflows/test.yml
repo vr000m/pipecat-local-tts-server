@@ -55,6 +55,31 @@ jobs:
             tests/test_backpressure.py \
             tests/test_multiconn_fairness.py
 
+  # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
+  # reference Pipecat adapter tests. These are NOT in the lean allow-list above:
+  # importing pipecat pulls numpy/audioop, which would pollute sys.modules and
+  # break the lean job's mlx-free / numpy-free import-safety invariants. Isolated
+  # in its own job they run cleanly. This guards the documented bot adapter (the
+  # private-attr rate override in LocalTTSService) against a pipecat version skew —
+  # the reason the extra pins pipecat-ai==1.4.0. Pure-Python pipecat runs on Linux;
+  # no mlx / Apple Silicon needed.
+  test-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Sync (examples extra — pinned pipecat-ai for the reference adapter)
+        run: uv sync --extra examples
+      - name: Run the reference Pipecat adapter tests
+        run: uv run pytest -x tests/test_pipecat_adapter.py
+
   # macOS / Apple-Silicon smoke: the mlx-audio (Kokoro) wheels are
   # Apple-Silicon-only, so this job verifies — on macos-14 (arm64) — that the
   # `kokoro` extra RESOLVES and IMPORTS. It deliberately does NOT run pytest:

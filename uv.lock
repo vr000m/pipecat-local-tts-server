@@ -1877,7 +1877,7 @@ dev = [
 requires-dist = [
     { name = "misaki", extras = ["en"], marker = "extra == 'kokoro'" },
     { name = "mlx-audio", marker = "extra == 'kokoro'", specifier = "==0.4.4" },
-    { name = "pipecat-ai", marker = "extra == 'examples'" },
+    { name = "pipecat-ai", marker = "extra == 'examples'", specifier = "==1.4.0" },
     { name = "websockets", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'client'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'examples'", specifier = ">=13.0" },

@@ -227,11 +227,26 @@ class LocalTTSService(TTSService):
         the rate is only known after the handshake, which happens after ``start()``
         has already resolved a provisional rate.
         """
-        # FRAGILE: depends on a private attribute of pipecat's TTSService
-        # (``self._sample_rate``), verified against pipecat-ai as tested for this
-        # example. Pipecat could rename/relocate it without a semver bump — re-check
-        # this assignment (and prefer a public set-rate hook if one is added) when
-        # bumping the pipecat dependency.
+        # FRAGILE: pipecat's ``TTSService.sample_rate`` is a READ-ONLY property
+        # (verified against the pinned pipecat-ai==1.4.0 in the examples extra);
+        # there is no public post-handshake setter, so we override the private
+        # backing field it reads. Pipecat could rename/relocate it without a semver
+        # bump — and a silent rename is the dangerous failure: our write would land
+        # on a dead attribute while the property kept returning the old value, so
+        # playback would pitch/speed-distort with NO error. Guard it: the field is
+        # initialised in ``TTSService.__init__`` (and re-resolved in ``start()``),
+        # so if it is absent the installed pipecat is incompatible — fail LOUDLY
+        # here instead of mis-negotiating the rate. The pin makes this defence in
+        # depth; re-check this assignment (and prefer a public set-rate hook if one
+        # is added) when widening the pipecat dependency.
+        if not hasattr(self, "_sample_rate"):
+            raise RuntimeError(
+                "pipecat TTSService no longer exposes the private '_sample_rate' "
+                "field this adapter overrides to apply the server-advertised rate; "
+                "the installed pipecat-ai is incompatible with this example. Pin "
+                "pipecat-ai to the tested range (pyproject 'examples' extra) or "
+                "update LocalTTSService._update_sample_rate to the new API."
+            )
         self._sample_rate = rate
 
     # --- interruption / barge-in ------------------------------------------

@@ -54,7 +54,15 @@ kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a
 # dependency of the server or the lean client; a consumer that already has
 # Pipecat installed does not need this extra.
-examples = ["websockets>=13.0", "pipecat-ai"]
+#
+# pipecat-ai is pinned to ==1.4.0 (same policy as mlx-audio): the adapter must
+# override TTSService's READ-ONLY ``sample_rate`` property by writing its private
+# ``_sample_rate`` backing field (no public post-handshake setter exists), so a
+# version skew can silently mis-negotiate the audio rate. 1.4.0 is the version
+# verified by tests/test_pipecat_adapter.py and exercised by the test-examples CI
+# job. LocalTTSService._update_sample_rate also guards the write at runtime
+# (raises if the field is gone). Re-run the adapter tests before widening this pin.
+examples = ["websockets>=13.0", "pipecat-ai==1.4.0"]
 
 [dependency-groups]
 dev = [

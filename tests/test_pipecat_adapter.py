@@ -480,3 +480,25 @@ async def test_successful_run_does_not_clear_buffer():
     await _drain_run_tts(svc)
 
     assert client.clears == 0, "an admitted, fully-drained commit owes no buffer clear"
+
+
+# --- private-attr rate override guard (adversarial-review: version skew) -------
+# pipecat's TTSService.sample_rate is a read-only property; the adapter overrides
+# the private ``_sample_rate`` backing field to apply the server-advertised rate.
+# A future pipecat that renames/removes that field would make the write silently
+# land on a dead attribute (wrong playback rate, no error). The override must fail
+# LOUDLY instead — and must still work on the pinned/tested pipecat.
+
+
+async def test_update_sample_rate_applies_on_supported_pipecat():
+    svc = _service()
+    svc._update_sample_rate(24000)
+    assert svc.sample_rate == 24000, "override must drive the public sample_rate property"
+
+
+async def test_update_sample_rate_raises_if_private_field_removed():
+    svc = _service()
+    # Simulate a pipecat version that no longer exposes the backing field.
+    del svc._sample_rate
+    with pytest.raises(RuntimeError, match="_sample_rate"):
+        svc._update_sample_rate(24000)
