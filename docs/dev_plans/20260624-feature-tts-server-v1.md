@@ -405,6 +405,13 @@ the client no-split path are exercisable in **lean CI**, independent of the mlx-
   refactor. Place in the already-lean-allow-listed `tests/test_capabilities_extras.py` (or add a new
   lean file AND extend the allow-list in the same commit — see *Per sub-phase*).
 - [ ] **Streaming-flag assert:** `capabilities()["streaming"] is True`.
+- [ ] **Re-run + extend the live smoke tests against a `streaming:true` backend** (after 5a and 5b
+  land). `tests/smoke/` today only covers `streaming:false` backends (tone/Kokoro), so the steady
+  sub-segment streaming cadence (R4) and the `streaming:true` client **no-split** path are never
+  exercised end-to-end. Re-run `tests/smoke/run_smoke.sh --backend voxtral_tts`/`pocket_tts` and the
+  multi-connection driver, and add a streaming-cadence assertion (deltas arrive at roughly
+  `streaming_interval`, not all-at-end) plus a check that interleaving + BUSY + max-buffer still hold
+  when audio streams incrementally. See `tests/smoke/README.md` → *Future work*.
 
 #### Phase 5c — `dia` (dialogue, NON-streaming) — SPLIT OUT to its own plan (2026-06-25)
 `dia` is no longer part of this v1 plan. It carries an **unsolved design** — the `[S1]`/`[S2]`

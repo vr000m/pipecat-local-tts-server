@@ -111,3 +111,22 @@ uv pip install "misaki[ja]" "misaki[zh]"
 `hi` works but its **first** call loads espeak-ng's Hindi G2P lazily and can
 exceed the reference client's 60 s default timeout — the smoke driver uses 180 s
 for kokoro for this reason.
+
+## Future work — streaming backends (Phase 5a/5b)
+
+Every script here currently runs against a **`streaming:false`** backend (tone,
+Kokoro), where each model segment is emitted as one delta. Once the streaming
+backends land — **Phase 5a `voxtral_tts`** and **Phase 5b `pocket_tts`**, both
+`streaming:true` — these smoke tests should be **re-run and extended**:
+
+- Run `run_smoke.sh --backend voxtral_tts` / `pocket_tts` and `run_multiconn.sh
+  --backend voxtral_tts`.
+- Add a **streaming-cadence** assertion: `response.audio.delta` frames should
+  arrive incrementally at roughly `streaming_interval`, not all at the end (the
+  R4 steady-stream contract). The current drivers only check frames > 0.
+- Re-confirm interleaving, the 429/BUSY in-flight cap, and the max-buffer guard
+  still hold when audio streams sub-segment (the `streaming:true` client
+  **no-split** path changes how much text a single commit carries).
+
+Tracked as checkboxes under Phase 5b in
+`docs/dev_plans/20260624-feature-tts-server-v1.md`.
