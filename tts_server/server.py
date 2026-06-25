@@ -296,6 +296,9 @@ class _SynthScheduler:
                     await self._wake.wait()
                 continue
             nxt.started = True
+            # Signal that synthesis is starting so a waiting ``session.close``
+            # can begin its bounded drain wait from here (not from enqueue time).
+            nxt.start_event.set()
             try:
                 await self._run_drain(nxt)
             finally:
@@ -1188,11 +1191,25 @@ class TTSServer:
             if self._shutdown_event.is_set():
                 await self._cancel_response(response)
             else:
+                # Two-phase bounded wait so the drain timeout covers SYNTHESIS,
+                # not time spent queued behind other connections' commits (a
+                # "drain" request asked to let this response finish, not to be
+                # cancelled for head-of-line waiting):
+                #   1. Wait for the dispatcher to START this commit (``start_event``).
+                #      Under round-robin a queued commit starts after at most the
+                #      currently-running synthesis, so bound this by the drain
+                #      timeout too. While we wait here, only the dispatcher can
+                #      complete the response, and it sets ``start_event`` before
+                #      doing so — so ``done`` is never set without ``start_event``.
+                #   2. Once started, wait for completion (``done``) within a fresh
+                #      drain timeout covering the actual synthesis.
+                # A timeout in either phase cancels (degrade, never hang).
+                timeout = self._config.drain_timeout_seconds
                 try:
-                    await asyncio.wait_for(
-                        response.done.wait(),
-                        timeout=self._config.drain_timeout_seconds,
-                    )
+                    if not response.start_event.is_set():
+                        await asyncio.wait_for(response.start_event.wait(), timeout=timeout)
+                    if not response.done.is_set():
+                        await asyncio.wait_for(response.done.wait(), timeout=timeout)
                 except asyncio.TimeoutError:
                     await self._cancel_response(response)
         state.closed = True
