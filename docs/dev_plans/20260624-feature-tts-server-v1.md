@@ -393,12 +393,16 @@ the client no-split path are exercisable in **lean CI**, independent of the mlx-
   until that mapping is designed.
 
 #### Per sub-phase (5a/5b/5c)
-- [ ] **Wire the backend into the resolver** (`tts_server/backends/__init__.py::make_backend`) in the
-  same commit — it currently resolves only `tone`/`kokoro` and `raise SystemExit` otherwise, so
-  without a new branch `--backend voxtral_tts|pocket_tts|dia` is dead end-to-end even though the
-  backend module and its unit tests pass. Add a **lazy-import** branch (mirror Kokoro's: import inside
-  the branch, `mlx_audio` only in `start()`) and a **lean construction/lazy-import test** asserting
-  the name resolves and the module imports without `mlx_audio` present.
+- [ ] **Wire the backend into the resolver AND the CLI choices** in the same commit — two separate
+  call sites, both required, or `--backend <new>` is dead end-to-end:
+  (1) `tts_server/backends/__init__.py::make_backend` currently resolves only `tone`/`kokoro` and
+  `raise SystemExit` otherwise — add a **lazy-import** branch (mirror Kokoro's: import inside the
+  branch, `mlx_audio` only in `start()`);
+  (2) the argparse **`--backend choices` tuple** (`__main__.py:299`, today `("tone", "kokoro")`) —
+  add the new name, else argparse rejects `--backend voxtral_tts|pocket_tts|dia` before the resolver
+  is ever reached (a passing `make_backend` unit test will NOT catch this).
+  Add a **lean construction/lazy-import test** asserting the name is an accepted `--backend` choice,
+  resolves via `make_backend`, and imports without `mlx_audio` present.
 - [ ] **Per-backend `sample_rate` discovery** (R1/R3 rate contract): each backend must expose
   `sample_rate` after `start()`/load so `server.start()` (`server.py:323-362`, connect→load→hello)
   advertises the true model rate in `server.hello.audio.rate`; decouple it from warmup per R3. Add an
@@ -742,7 +746,7 @@ Phase 3:
 ## Companion plan
 gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.
 
-<!-- reviewed: 2026-06-24 @ f9c8513e3885a32cba75042082f2dd2c5435b82f -->
+<!-- reviewed: 2026-06-24 @ 7b0e7a6a38f5c92458503132042188eb140d3022 -->
 
 ## Progress
 
