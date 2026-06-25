@@ -74,17 +74,12 @@ def _put_eof(queue: "asyncio.Queue") -> None:
 
 # How long a producer put blocks before re-checking the cancel flag. Bounds the
 # window between ``cancel`` being set and the producer thread noticing while it
-# is parked on a full queue.
+# is parked on a full queue. ALL puts (audio chunks AND the terminal EOF) re-poll
+# ``cancel`` at this granularity, so no put is ever truly pinned: the consumer's
+# ``finally: cancel.set()`` (run on break, exception, ``aclose``, or async-gen
+# finalization) releases a parked producer within one timeout. This is why the
+# EOF put can stay unbounded without risking a hung worker.
 _PUT_TIMEOUT_SECONDS = 0.5
-
-# Max attempts for the FINAL EOF enqueue (normal-exhaustion path). A live
-# consumer drains the sentinel in one or two attempts; this bound only matters
-# when a consumer is abandoned WITHOUT ever setting ``cancel`` (e.g. its async
-# generator is GC-deferred), where an unbounded retry would otherwise pin the
-# daemon worker thread forever. At ~0.5 s/attempt this caps the worst case to a
-# few seconds, after which the worker falls back to the non-blocking EOF path and
-# exits. Audio chunk puts stay unbounded (that is the backpressure contract).
-_EOF_PUT_MAX_ATTEMPTS = 12
 
 # How a result's audio is extracted. mlx-audio ``GenerationResult`` exposes
 # ``.audio`` as a float32 mono ``mx.array``; ``list(...)`` materializes Python
@@ -133,23 +128,19 @@ async def stream_generate(
     queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
     error_box: dict[str, BaseException] = {}
 
-    def _put_blocking(item: object, *, max_attempts: int | None = None) -> bool:
+    def _put_blocking(item: object) -> bool:
         """Put ``item`` onto the async queue from the worker thread, applying
         backpressure. Returns False if cancelled while waiting (so the worker
         breaks out and releases the lock).
 
-        ``max_attempts`` bounds the number of timeout-retries. ``None`` (the
-        default, used for audio chunks) retries until the consumer drains or
-        ``cancel`` is set — the backpressure contract. A finite bound is used for
-        the terminal EOF put so a consumer abandoned without setting ``cancel``
-        cannot pin this worker thread forever; on exhausting the bound it returns
-        False and the caller falls back to the non-blocking EOF path.
+        Retries until the consumer drains a slot or ``cancel`` is set — the
+        backpressure contract, used for both audio chunks and the terminal EOF.
+        It re-polls ``cancel`` every ``_PUT_TIMEOUT_SECONDS``, so a parked
+        producer is never pinned: the consumer's ``finally: cancel.set()``
+        releases it on any teardown (break / exception / ``aclose`` / async-gen
+        finalization).
         """
-        attempts = 0
         while not cancel.is_set():
-            if max_attempts is not None and attempts >= max_attempts:
-                return False
-            attempts += 1
             fut = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
             try:
                 fut.result(timeout=_PUT_TIMEOUT_SECONDS)
@@ -204,15 +195,18 @@ async def stream_generate(
             # EOF is ALWAYS enqueued (exhaustion/error/cancel) — never keyed off
             # ``.is_final_chunk``. The PATH matters:
             #  - NORMAL exhaustion / worker error: the consumer is STILL draining,
-            #    so EOF goes in WITH backpressure (``_put_blocking``). A full queue
-            #    must WAIT for a slot — dropping a buffered chunk here would
-            #    silently truncate the tail of the audio.
-            #  - CANCEL (consumer has stopped reading): fall back to the
-            #    non-blocking ``_put_eof``, which drops one now-dead buffered item
-            #    if the queue is full so teardown can never block on a queue that
-            #    nobody is draining.
+            #    so EOF goes in WITH backpressure (unbounded ``_put_blocking``). A
+            #    full queue must WAIT for a slot — dropping a buffered chunk here
+            #    would silently truncate the tail of the audio, however SLOW the
+            #    consumer is. The put is not pinned: ``_put_blocking`` re-polls
+            #    ``cancel`` every ``_PUT_TIMEOUT_SECONDS`` and the consumer's
+            #    ``finally: cancel.set()`` releases it on any teardown.
+            #  - CANCEL (consumer has stopped reading), or cancel set WHILE the
+            #    EOF put is parked: fall back to the non-blocking ``_put_eof``,
+            #    which drops one now-dead buffered item if the queue is full so
+            #    teardown can never block on a queue that nobody is draining.
             try:
-                if cancel.is_set() or not _put_blocking(_EOF, max_attempts=_EOF_PUT_MAX_ATTEMPTS):
+                if cancel.is_set() or not _put_blocking(_EOF):
                     try:
                         loop.call_soon_threadsafe(_put_eof, queue)
                     except RuntimeError:

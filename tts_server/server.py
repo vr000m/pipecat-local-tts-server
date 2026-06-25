@@ -52,7 +52,13 @@ from websockets.asyncio.server import (
 )
 
 from . import protocol as P
-from .backend import SupportsVoices, SupportsWaitClosed, TTSBackend, TTSStream
+from .backend import (
+    SupportsExtrasValidation,
+    SupportsVoices,
+    SupportsWaitClosed,
+    TTSBackend,
+    TTSStream,
+)
 from .backends import make_backend
 from .env import is_loopback_host
 
@@ -374,6 +380,10 @@ class TTSServer:
         # contract), so snapshot them once instead of rebuilding the dict on
         # every hello/commit/append/status. Populated in ``start()``.
         self._caps: dict[str, Any] = {}
+        # Advertised voices as a frozenset, cached once in ``start()`` so the
+        # security ``_validate_voice`` check is O(1) on the per-commit hot path
+        # (the set is fixed post-start). Empty until ``start()``.
+        self._voice_set: frozenset[str] = frozenset()
         self._server: Server | None = None
         self._active_handlers: set[asyncio.Task] = set()
         self._active_drains: set[asyncio.Task] = set()
@@ -395,6 +405,9 @@ class TTSServer:
         await self._backend.start()
         # Snapshot capabilities once (static post-start); hot paths read this.
         self._caps = self._backend.capabilities()
+        # Cache the advertised voices as a frozenset for O(1) validation. Fixed
+        # after ``start()`` — the backend has finished voice discovery.
+        self._voice_set = frozenset(self._backend_voices())
         if self._config.socket_path:
             socket_path = Path(self._config.socket_path)
             socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -621,6 +634,15 @@ class TTSServer:
                 logger.debug("tts_server: dropping unknown extra %r", key)
                 continue
             validated[key] = value
+        # Value-level validation at the trust boundary (optional backend hook):
+        # reject e.g. a non-numeric / non-finite ``speed`` HERE as INVALID_CONFIG,
+        # so it never reaches ``open_stream`` and surfaces as a misleading
+        # BACKEND_ERROR after the commit has already consumed a scheduler slot.
+        backend = self._backend
+        if isinstance(backend, SupportsExtrasValidation):
+            value_err = backend.validate_extras(validated)
+            if value_err is not None:
+                return {}, value_err
         return validated, None
 
     def _validate_language(self, language: Any) -> str | None:
@@ -642,7 +664,7 @@ class TTSServer:
         return None
 
     def _validate_voice(self, voice: Any) -> str | None:
-        """Reject a ``voice`` not in the backend's advertised voice list.
+        """Reject a ``voice`` not in the backend's advertised voice set.
 
         Returns an error message, or ``None`` if the voice is unset or
         advertised. This is a SECURITY boundary, not just UX: an unvalidated
@@ -653,18 +675,38 @@ class TTSServer:
         network egress). Restricting ``voice`` to the advertised set closes both
         vectors at the trust boundary — mirroring ``_validate_language``.
 
-        If the backend cannot enumerate its voices (``voices()`` returns empty —
-        e.g. Kokoro's discovery fallback), validation is skipped so a legitimate
-        voice is not spuriously rejected; the membership check only fires when an
-        advertised list is actually available.
+        When the advertised set is empty there are two DISTINCT cases, and the
+        boundary must FAIL CLOSED for the dangerous one:
+
+        - The backend has voices but could not enumerate them (``voice_count`` >
+          0 — e.g. Kokoro's discovery fallback returns ``54`` while leaving the
+          name list empty). We cannot verify a client voice is one of the model's
+          own, so an unverified string would reach the loader unchecked. REJECT
+          any client-supplied voice; the client must omit it and take the server
+          default. (Skipping the check here is the fail-OPEN bug this guards.)
+        - The backend has no voice concept at all (``voice_count`` falsy / no
+          ``SupportsVoices``): there is nothing to validate, so accept.
+
+        Membership is checked against ``self._voice_set`` — a ``frozenset`` cached
+        once after ``start()`` so this per-commit/per-update call is O(1) and
+        allocation-free rather than rebuilding+scanning the list each time.
         """
         if voice is None:
             return None
         if not isinstance(voice, str):
             return "voice must be a string"
-        advertised = self._backend_voices()
-        if advertised and voice not in advertised:
-            return f"unsupported voice {voice!r}; query server.status for the advertised voices"
+        if self._voice_set:
+            if voice not in self._voice_set:
+                return f"unsupported voice {voice!r}; query server.status for the advertised voices"
+            return None
+        # No enumerable voice set. Fail closed if the backend nonetheless HAS
+        # voices (count > 0); accept only when the backend has no voice concept.
+        voice_count = self._caps.get("voice_count")
+        if isinstance(voice_count, int) and voice_count > 0:
+            return (
+                "voice cannot be validated (the backend could not enumerate its "
+                "voices); omit voice to use the server default"
+            )
         return None
 
     async def _on_session_update(
@@ -964,16 +1006,25 @@ class TTSServer:
             await self._await_worker_release(response)
 
     async def _await_worker_release(self, response: _Response) -> None:
-        """Block until ``response``'s backend worker has exited (GPU lock free).
+        """Block (BOUNDED) until ``response``'s backend worker has exited (GPU
+        lock free).
 
         Optional capability (``SupportsWaitClosed``): a backend stream that does
         not implement ``wait_closed`` has no worker/lock to wait on.
+
+        This runs inside the SINGLE dispatcher's per-commit path, so an UNBOUNDED
+        wait here would wedge every other connection's commit if a worker never
+        released (a wedged native ``generate`` that never reaches a yield). Bound
+        it by ``drain_timeout_seconds`` — the same "degrade, never hang" budget
+        ``session.close`` uses. On timeout the slot is freed anyway; the next
+        commit then serializes on the still-held lock (correct, just not
+        pre-counted) instead of hanging the dispatcher.
         """
         stream = response.synth_stream
         if not isinstance(stream, SupportsWaitClosed):
             return
         try:
-            await stream.wait_closed()
+            await stream.wait_closed(timeout=self._config.drain_timeout_seconds)
         except Exception:
             logger.exception("tts_server: wait_closed failed during slot release")
 
@@ -1191,19 +1242,27 @@ class TTSServer:
             if self._shutdown_event.is_set():
                 await self._cancel_response(response)
             else:
-                # Two-phase bounded wait so the drain timeout covers SYNTHESIS,
-                # not time spent queued behind other connections' commits (a
-                # "drain" request asked to let this response finish, not to be
-                # cancelled for head-of-line waiting):
-                #   1. Wait for the dispatcher to START this commit (``start_event``).
-                #      Under round-robin a queued commit starts after at most the
-                #      currently-running synthesis, so bound this by the drain
-                #      timeout too. While we wait here, only the dispatcher can
-                #      complete the response, and it sets ``start_event`` before
-                #      doing so — so ``done`` is never set without ``start_event``.
+                # Two-phase bounded wait so the drain timeout covers the actual
+                # SYNTHESIS in full, not time this commit spent queued behind
+                # other connections' commits (a "drain" request asked to let this
+                # response finish, not to be cut short by queue waiting):
+                #   1. Wait for the dispatcher to START this commit (``start_event``),
+                #      bounded by the drain timeout. NOTE this is a patience bound,
+                #      not a correctness guarantee that the commit WILL start: under
+                #      round-robin across N busy connections this commit can sit
+                #      behind up to one commit per other connection, so the wait may
+                #      legitimately exceed one synthesis. If the timeout elapses
+                #      first we cancel (we will not wait unboundedly in the queue).
+                #      While we wait, only the dispatcher can complete the response,
+                #      and it sets ``start_event`` before doing so — so ``done`` is
+                #      never set without ``start_event``.
                 #   2. Once started, wait for completion (``done``) within a fresh
                 #      drain timeout covering the actual synthesis.
-                # A timeout in either phase cancels (degrade, never hang).
+                # Each phase gets its OWN ``drain_timeout_seconds`` budget (so a
+                # commit that waited a long time to start still gets a full
+                # synthesis budget) — hence the worst-case TOTAL close latency is
+                # up to 2x ``drain_timeout_seconds``, by design. A timeout in
+                # either phase cancels (degrade, never hang).
                 timeout = self._config.drain_timeout_seconds
                 try:
                     if not response.start_event.is_set():

@@ -57,15 +57,26 @@ Not yet tagged or published; landing here as it is validated.
   mlx-audio's loader, which treats a `*.safetensors` value as a filesystem path
   (arbitrary-file load) and otherwise triggers a Hugging Face download
   (client-driven network egress); both are now rejected with `invalid_config`.
+  The check **fails closed**: when a backend advertises voices (`voice_count` >
+  0) but cannot enumerate them (e.g. Kokoro's discovery fallback returns a count
+  with an empty name list), a client-supplied voice is rejected rather than
+  waved through — the client must omit it and take the server default. Only a
+  backend with no voice concept at all skips the check. Membership is checked
+  against a `frozenset` cached after `start()` (O(1) on the per-commit path).
 - **`speed` extra is bounded** — finite values are clamped to `[0.5, 2.0]` and
   non-finite (`NaN`/`inf`) or non-numeric values are rejected, so a degenerate
-  rate can no longer drive very-long synthesis while holding the Metal lock.
+  rate can no longer drive very-long synthesis while holding the Metal lock. The
+  rejection happens at the `session.update` / `input_text.commit` boundary (via
+  the optional `validate_extras` backend hook) as `invalid_config`, **before** a
+  scheduler slot is consumed — instead of raising deep inside `open_stream` and
+  surfacing as a misleading `backend_error` after the commit was dispatched.
 
 ### Changed
 
 - **Optional backend capabilities are now explicit protocols** (`SupportsVoices`,
-  `SupportsWaitClosed`) checked via `isinstance`, instead of methods declared on
-  the base protocol but accessed through `getattr`.
+  `SupportsWaitClosed`, `SupportsExtrasValidation`) checked via `isinstance`,
+  instead of methods declared on the base protocol but accessed through `getattr`.
+  `SupportsWaitClosed.wait_closed` takes an optional `timeout`.
 - **`make_backend` raises `ValueError`** (not `SystemExit`) for an unknown
   backend name; the CLI translates it to a clean exit. The default server backend
   is built through `make_backend("tone")` so the server depends only on the
@@ -78,11 +89,16 @@ Not yet tagged or published; landing here as it is validated.
 - **`session.close` drain timeout now covers synthesis, not queue waiting** — a
   commit still queued behind other connections' work is given the drain budget
   for its actual synthesis (waiting for dispatch first), instead of being
-  cancelled for head-of-line waiting it did not control.
-- **Bounded the terminal EOF enqueue in the streaming bridge** — a consumer
-  abandoned without setting the cancel flag can no longer pin the daemon synth
-  thread indefinitely; the worker falls back to the non-blocking EOF path after a
-  few attempts and exits.
+  cancelled for head-of-line waiting it did not control. The two phases each get
+  their own `drain_timeout_seconds` budget (so a long queue wait does not eat the
+  synthesis budget), so worst-case close latency is up to 2× that timeout.
+- **Terminal EOF enqueue no longer truncates a slow consumer's audio tail** — on
+  normal exhaustion the bridge enqueues EOF with full backpressure (never drops a
+  buffered chunk), however slow the consumer is. The put is not pinned: it
+  re-polls the cancel flag every `_PUT_TIMEOUT_SECONDS`, and the consumer's
+  `finally` sets cancel on any teardown (break / exception / `aclose` / async-gen
+  finalization), so an abandoned consumer still releases the daemon worker. (An
+  earlier attempt-bounded EOF put could drop the tail of a merely-slow consumer.)
 - **Kokoro vocoder `broadcast_shapes` bug** — worked around an upstream mlx-audio
   defect (mlx-audio [#803](https://github.com/Blaizzy/mlx-audio/issues/803)) via a
   scoped vocoder-fix shim.
@@ -94,7 +110,10 @@ Not yet tagged or published; landing here as it is validated.
   lock before freeing a commit's scheduler slot. Previously a cancelled-but-still-
   draining Kokoro `generate` could keep the lock until its next yield boundary
   while admission / `queue_depth` advertised free capacity, so the next commit
-  silently blocked on the held lock.
+  silently blocked on the held lock. This wait is **bounded** by
+  `drain_timeout_seconds`: a wedged native `generate` that never releases can no
+  longer hang the single dispatcher (and every other connection's commit) — on
+  timeout the slot is freed and the next commit serializes on the lock normally.
 - **Stale Unix socket no longer blocks the documented restart** — on start the
   server unlinks a leftover socket from a crashed instance, refuses to clobber a
   non-socket file at the path, and refuses to steal a socket a live server is

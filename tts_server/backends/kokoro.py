@@ -247,18 +247,28 @@ class _KokoroStream:
         self._external_cancel = True
         self._cancel.set()
 
-    async def wait_closed(self) -> None:
-        """Block until the synthesis worker has exited and released the Metal
-        lock. The server awaits this before freeing a cancelled commit's
-        scheduler slot: ``cancel()`` only *requests* a break (honoured at the
-        next yield boundary), so a long single-segment ``generate`` can keep the
-        process-wide lock for tens of seconds after the drain task is cancelled.
-        Without this wait, admission / ``queue_depth`` would advertise free
-        capacity while the next commit blocks on that still-held lock."""
+    async def wait_closed(self, timeout: float | None = None) -> None:
+        """Block (up to ``timeout`` seconds) until the synthesis worker has
+        exited and released the Metal lock. The server awaits this before freeing
+        a cancelled commit's scheduler slot: ``cancel()`` only *requests* a break
+        (honoured at the next yield boundary), so a long single-segment
+        ``generate`` can keep the process-wide lock for tens of seconds after the
+        drain task is cancelled. Without this wait, admission / ``queue_depth``
+        would advertise free capacity while the next commit blocks on that
+        still-held lock.
+
+        ``timeout`` bounds the wait: ``threading.Event.wait(timeout)`` returns
+        (releasing the executor thread) even if the worker never sets
+        ``worker_done`` — so a wedged native ``generate`` cannot hang the server's
+        single dispatcher forever. On timeout the next commit simply serializes on
+        the still-held lock (correct, just not pre-counted) — degrade, never hang.
+        ``None`` waits indefinitely (used by tests that need the exact release)."""
         if not self._worker_started:
             return
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._worker_done.wait)
+        # ``Event.wait`` takes the timeout positionally; pass it through the
+        # executor so a timed-out wait reclaims the thread instead of leaking it.
+        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole
@@ -474,6 +484,22 @@ class KokoroBackend:
         # Decided default #4: full voice list via ``server.status`` (the count
         # alone goes in ``server.hello``). Empty until ``start()`` discovers them.
         return list(self._voice_names)
+
+    def validate_extras(self, extras: dict) -> str | None:
+        """``SupportsExtrasValidation``: reject a malformed ``speed`` at the trust
+        boundary (commit/update) so the client gets a clean ``INVALID_CONFIG``
+        instead of a ``BACKEND_ERROR`` raised from ``open_stream`` after the
+        commit has already consumed a scheduler slot. Mirrors the coercion that
+        ``open_stream`` performs (non-numeric / non-finite is rejected; in-range
+        is clamped), but runs BEFORE admission rather than mid-synthesis."""
+        raw = extras.get("speed")
+        if raw is None:
+            return None
+        try:
+            _coerce_speed(raw)
+        except ValueError as exc:
+            return str(exc)
+        return None
 
     async def open_stream(
         self,

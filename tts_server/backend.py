@@ -75,9 +75,31 @@ class SupportsWaitClosed(Protocol):
     The server checks ``isinstance(stream, SupportsWaitClosed)`` before awaiting
     it, so a backend with no worker/lock (e.g. a pure event-loop backend) simply
     omits the method. Implemented by Kokoro (real Metal lock); ToneBackend
-    implements a no-op so the same call site is a harmless await."""
+    implements a no-op so the same call site is a harmless await.
 
-    async def wait_closed(self) -> None: ...
+    ``timeout`` (seconds) bounds the wait so a worker that never releases (a
+    wedged native ``generate``) cannot hang the caller forever; ``None`` waits
+    indefinitely. On timeout the method returns normally — the caller treats the
+    slot as released and lets the next commit serialize on the lock — so the
+    server degrades rather than wedging its single dispatcher."""
+
+    async def wait_closed(self, timeout: float | None = None) -> None: ...
+
+
+@runtime_checkable
+class SupportsExtrasValidation(Protocol):
+    """Optional backend capability: validate the VALUES of advertised extras at
+    the trust boundary (commit/update), before a slot is consumed.
+
+    The server filters extras KEYS against ``capabilities()["extras"]`` itself;
+    this hook lets a backend reject a malformed VALUE (e.g. a non-numeric or
+    non-finite ``speed``) as a clean ``INVALID_CONFIG`` at admission, instead of
+    raising deep inside ``open_stream`` and surfacing as a misleading
+    ``BACKEND_ERROR`` after the commit has already been dispatched. Returns an
+    error message, or ``None`` if every value is acceptable. A backend that
+    forwards extras verbatim (or ignores them) simply omits this method."""
+
+    def validate_extras(self, extras: dict) -> str | None: ...
 
 
 @runtime_checkable
@@ -166,12 +188,13 @@ class _ToneStream:
     async def cancel(self) -> None:
         self._cancelled.set()
 
-    async def wait_closed(self) -> None:
+    async def wait_closed(self, timeout: float | None = None) -> None:
         # ToneBackend runs entirely on the event loop — no worker thread, no
         # process-wide GPU lock — so there is nothing to wait for. Present so the
         # server's optional ``wait_closed`` call (used to hold a cancelled
         # commit's slot until a real backend's worker releases the Metal lock)
-        # is a harmless no-op here.
+        # is a harmless no-op here. ``timeout`` is accepted (and ignored) to
+        # match the ``SupportsWaitClosed`` signature the server calls with.
         return None
 
     def _segment_pcm(self, segment_idx: int) -> bytes:
