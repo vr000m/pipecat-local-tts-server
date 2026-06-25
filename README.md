@@ -139,11 +139,30 @@ mlx-community/Kokoro-82M-bf16 (mlx-audio 0.4.4):
 | `streaming` | `false` | no sub-segment streaming; segments still stream per `\n+` |
 | `binary_audio` | `false` | base64-in-JSON for v1 |
 | `text_formats` | `["plain"]` | ssml/ipa not supported |
-| `languages` | `["en","ja","zh","fr","es","it","pt","hi"]` | ISO → Kokoro `lang_code` mapping |
+| `languages` | `["en","ja","zh","fr","es","it","pt","hi"]` | advertised from voice prefixes — **`ja`/`zh` fail at synthesis** without extra G2P (see below) |
 | `voice_count` | `54` | full list via `status` |
 | `extras` | `["speed"]` | Kokoro's only effective `generate()` kwarg |
 | `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
 | `max_text_chars` | `2000` | hard server cap |
+
+### Kokoro language support (advertised vs. as-shipped)
+
+The advertised `languages` list is derived from the model's voice-name prefixes,
+not from what the default `kokoro` extra can phonemize. That extra pins
+`misaki[en]` only. Verified live against mlx-community/Kokoro-82M-bf16:
+
+- **`en`** uses misaki[en]; **`es`/`fr`/`it`/`pt`/`hi`** route through the
+  espeak-ng G2P bundled with misaki[en] — all synthesize fine. (`hi`'s first
+  call loads its G2P lazily and can exceed a 60 s client timeout.)
+- **`ja` and `zh` fail at synthesis** (`response.failed`, `code=backend_error`)
+  out of the box: they need `misaki[ja]` (`pyopenjtalk`) and `misaki[zh]`
+  (`ordered_set`) respectively, which the extra does not install. The server
+  degrades gracefully — the session stays usable — but a client trusting the
+  advertised list hits a runtime failure. Enable with
+  `uv pip install "misaki[ja]" "misaki[zh]"`.
+
+See [`tests/smoke/`](tests/smoke/) for the live end-to-end smoke scripts that
+verify this (`just smoke-tone` / `just smoke-kokoro` / `just smoke-multilingual`).
 
 ### Kokoro cancellation caveat
 

@@ -96,3 +96,18 @@ tts-status socket=(cache_dir / "tts.sock"):
     #!/usr/bin/env bash
     set -uo pipefail
     exec uv run python -m tts_server status --socket-path {{quote(socket)}}
+
+# --- Live smoke tests (start a real server on an isolated socket) -----------
+# See tests/smoke/README.md. These never touch the canonical operator socket.
+
+# Tone backend end-to-end (no model; fast). Verifies the protocol + rate contract.
+smoke-tone *args:
+    tests/smoke/run_smoke.sh --backend tone {{args}}
+
+# Kokoro backend, English. Auto-syncs the kokoro extra if missing.
+smoke-kokoro *args:
+    tests/smoke/run_smoke.sh --backend kokoro {{args}}
+
+# Kokoro, one utterance per supported language (ja/zh report SKIP — see README).
+smoke-multilingual *args:
+    tests/smoke/run_smoke.sh --backend kokoro --multilingual {{args}}
