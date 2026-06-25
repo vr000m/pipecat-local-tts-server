@@ -77,3 +77,39 @@ async def test_unsupported_language_rejected_on_commit():
             ev = await next_event(client, _ACK_OR_ERR_COMMIT)
             assert ev["type"] == "error"
             assert ev["error"]["code"] == "invalid_config"
+
+
+# --- voice validation (security boundary) -----------------------------------
+# An unadvertised voice must be rejected, not forwarded to the backend: for
+# Kokoro an arbitrary voice string reaches mlx-audio's voice loader, which treats
+# a ``*.safetensors`` value as a filesystem path (arbitrary-file load) and
+# otherwise triggers a Hugging Face download (client-driven network egress).
+# ToneBackend advertises voices == ["tone"].
+
+
+async def test_unsupported_voice_rejected_on_update():
+    async with running_server(ToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.update(voice="/etc/passwd.safetensors")
+            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+            assert ev["type"] == "error"
+            assert ev["error"]["code"] == "invalid_config"
+            assert "voice" in ev["error"]["message"]
+
+
+async def test_supported_voice_accepted_on_update():
+    async with running_server(ToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.update(voice="tone")
+            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+            assert ev["type"] in ("session.created", "session.updated")
+
+
+async def test_unsupported_voice_rejected_on_commit():
+    async with running_server(ToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.append("hi")
+            await client.commit(voice="bogus_voice")
+            ev = await next_event(client, _ACK_OR_ERR_COMMIT)
+            assert ev["type"] == "error"
+            assert ev["error"]["code"] == "invalid_config"

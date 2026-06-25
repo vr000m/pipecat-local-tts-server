@@ -50,3 +50,41 @@ def test_default_model_constant_importable_lean():
 
     assert isinstance(DEFAULT_KOKORO_MODEL, str) and DEFAULT_KOKORO_MODEL
     assert not _mlx_offenders()
+
+
+def test_make_backend_unknown_name_raises_valueerror():
+    """``make_backend`` is a library-level resolver: an unknown name must raise
+    ``ValueError`` (not ``SystemExit``), so callers outside the CLI are not
+    terminated. The CLI translates this to a clean exit itself."""
+    import pytest
+
+    from tts_server.backends import make_backend
+
+    with pytest.raises(ValueError):
+        make_backend("nope")
+
+
+def test_coerce_speed_clamps_and_rejects_non_finite():
+    """``speed`` is forwarded to generate() under the Metal lock, so it is
+    clamped to a safe range and non-finite/non-numeric values are rejected (a
+    DoS guard). Pure function — importable without mlx."""
+    import math
+
+    import pytest
+
+    from tts_server.backends.kokoro import _SPEED_MAX, _SPEED_MIN, _coerce_speed
+
+    # In-range values pass through unchanged.
+    assert _coerce_speed(1.0) == 1.0
+    assert _coerce_speed("1.25") == 1.25
+    # Out-of-range finite values clamp to the bounds (no DoS via speed=0/huge).
+    assert _coerce_speed(0) == _SPEED_MIN
+    assert _coerce_speed(-3) == _SPEED_MIN
+    assert _coerce_speed(1000) == _SPEED_MAX
+    # Non-finite and non-numeric are rejected outright.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            _coerce_speed(bad)
+    with pytest.raises(ValueError):
+        _coerce_speed("fast")
+    assert math.isfinite(_SPEED_MIN) and math.isfinite(_SPEED_MAX)

@@ -33,17 +33,19 @@ pytestmark = pytest.mark.asyncio
 async def test_session_update_acks_created_then_updated():
     async with running_server(ToneBackend()) as srv:
         async with connected_client(srv) as (client, _hello):
-            await client.update(voice="af_heart")
+            # "tone" is ToneBackend's only advertised voice; voice is validated
+            # against the advertised list (see test_config_validation).
+            await client.update(voice="tone")
             created = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED})
             assert created["type"] == P.EVT_SESSION_CREATED
-            assert created["session"]["voice"] == "af_heart"
+            assert created["session"]["voice"] == "tone"
 
             await client.update(language="en")
             updated = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED})
             assert updated["type"] == P.EVT_SESSION_UPDATED
             assert updated["session"]["language"] == "en"
             # earlier voice preserved across updates
-            assert updated["session"]["voice"] == "af_heart"
+            assert updated["session"]["voice"] == "tone"
 
 
 async def test_input_text_clear_round_trip_drops_buffer():

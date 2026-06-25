@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from typing import Any, AsyncGenerator
 
@@ -53,6 +54,37 @@ DEFAULT_KOKORO_MODEL = "mlx-community/Kokoro-82M-bf16"
 # only model-effective tunable. Anything else is swallowed by ``**kwargs`` and
 # ignored, so it MUST NOT be advertised and MUST be dropped before the call.
 _KOKORO_EXTRAS = ["speed"]
+
+# Accepted range for the ``speed`` extra. ``generate(speed=...)`` is forwarded
+# under the process-wide Metal lock, so an unbounded value is a denial-of-service
+# vector: ``speed=0`` / negative / huge drives degenerate or very-long synthesis
+# that stalls every other connection's commit. Finite values are CLAMPED to this
+# range; non-finite (NaN/inf) or non-numeric values are rejected outright.
+_SPEED_MIN = 0.5
+_SPEED_MAX = 2.0
+
+
+def _coerce_speed(raw: Any) -> float:
+    """Validate + clamp a client-supplied ``speed`` before it reaches generate().
+
+    Rejects non-numeric and non-finite values (raising ``ValueError``); clamps
+    finite values into ``[_SPEED_MIN, _SPEED_MAX]`` so a degenerate rate can
+    never pin the Metal lock.
+    """
+    try:
+        speed = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"speed must be a number, got {raw!r}") from None
+    if not math.isfinite(speed):
+        raise ValueError(f"speed must be a finite number, got {raw!r}")
+    if speed < _SPEED_MIN:
+        logger.debug("kokoro: clamping speed %s up to %s", speed, _SPEED_MIN)
+        return _SPEED_MIN
+    if speed > _SPEED_MAX:
+        logger.debug("kokoro: clamping speed %s down to %s", speed, _SPEED_MAX)
+        return _SPEED_MAX
+    return speed
+
 
 # --- Upstream mlx-audio Kokoro vocoder fix --------------------------------------
 # Bug (present in mlx-audio 0.4.4 — the latest PyPI release — AND on mlx-audio
@@ -460,7 +492,7 @@ class KokoroBackend:
         if extras:
             raw = extras.get("speed")
             if raw is not None:
-                speed = float(raw)
+                speed = _coerce_speed(raw)
         return _KokoroStream(
             model=self._loaded_model,
             voice=voice,

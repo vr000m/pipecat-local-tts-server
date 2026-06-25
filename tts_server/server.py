@@ -638,6 +638,32 @@ class TTSServer:
             return f"unsupported language {language!r}; supported: {', '.join(advertised)}"
         return None
 
+    def _validate_voice(self, voice: Any) -> str | None:
+        """Reject a ``voice`` not in the backend's advertised voice list.
+
+        Returns an error message, or ``None`` if the voice is unset or
+        advertised. This is a SECURITY boundary, not just UX: an unvalidated
+        voice string is forwarded to the backend's ``open_stream`` and, for
+        Kokoro, into mlx-audio's voice loader, which treats a ``*.safetensors``
+        value as a direct filesystem path (arbitrary-file load) and otherwise
+        falls through to a Hugging Face ``snapshot_download`` (client-driven
+        network egress). Restricting ``voice`` to the advertised set closes both
+        vectors at the trust boundary — mirroring ``_validate_language``.
+
+        If the backend cannot enumerate its voices (``voices()`` returns empty —
+        e.g. Kokoro's discovery fallback), validation is skipped so a legitimate
+        voice is not spuriously rejected; the membership check only fires when an
+        advertised list is actually available.
+        """
+        if voice is None:
+            return None
+        if not isinstance(voice, str):
+            return "voice must be a string"
+        advertised = self._backend_voices()
+        if advertised and voice not in advertised:
+            return f"unsupported voice {voice!r}; query server.status for the advertised voices"
+        return None
+
     async def _on_session_update(
         self,
         ws: ServerConnection,
@@ -678,6 +704,13 @@ class TTSServer:
         if lang_err is not None:
             await self._error(
                 ws, state, P.ErrorCode.INVALID_CONFIG, lang_err, client_event_id=client_event_id
+            )
+            return
+
+        voice_err = self._validate_voice(msg.get("voice"))
+        if voice_err is not None:
+            await self._error(
+                ws, state, P.ErrorCode.INVALID_CONFIG, voice_err, client_event_id=client_event_id
             )
             return
 
@@ -783,6 +816,12 @@ class TTSServer:
         if lang_err is not None:
             await self._error(
                 ws, state, P.ErrorCode.INVALID_CONFIG, lang_err, client_event_id=client_event_id
+            )
+            return
+        voice_err = self._validate_voice(msg.get("voice"))
+        if voice_err is not None:
+            await self._error(
+                ws, state, P.ErrorCode.INVALID_CONFIG, voice_err, client_event_id=client_event_id
             )
             return
         if not state.buffer:
