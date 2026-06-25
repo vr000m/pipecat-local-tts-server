@@ -111,3 +111,7 @@ smoke-kokoro *args:
 # Kokoro, one utterance per supported language (ja/zh report SKIP — see README).
 smoke-multilingual *args:
     tests/smoke/run_smoke.sh --backend kokoro --multilingual {{args}}
+
+# Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
+smoke-multiconn *args:
+    tests/smoke/run_multiconn.sh {{args}}

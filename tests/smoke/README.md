@@ -32,7 +32,43 @@ Or via `just`:
 just smoke-tone
 just smoke-kokoro
 just smoke-multilingual
+just smoke-multiconn
 ```
+
+## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)
+
+Two (or more) clients share one backend and **interleave** their requests, so
+this exercises the server's concurrency + backpressure machinery that the
+single-client flow never touches. Defaults to the **tone** backend: the
+scheduler/caps live in the server (backend-agnostic), and tone is fast and
+deterministic. `--backend kokoro` also works.
+
+```sh
+just smoke-multiconn                                  # 2 conns x 5 turns, tone
+tests/smoke/run_multiconn.sh --connections 3 --turns 8
+tests/smoke/run_multiconn.sh --backend kokoro
+```
+
+It asserts three things, and exits non-zero unless all hold:
+
+1. **Interleaved turns** — N connections take strict round-robin turns
+   (conn A turn 1, conn B turn 1, conn A turn 2, …), each fully synthesized and
+   verified before the next, proving two sessions share the backend without
+   cross-talk or starvation.
+2. **Max-buffer guard** — each round's sentence grows (scaled to the advertised
+   `max_text_chars`, default 2000); the final round exceeds the cap and MUST be
+   rejected with `PAYLOAD_TOO_LARGE`. (The cap is enforced at `input_text.append`
+   time, so the oversized turn never reaches synthesis.)
+3. **429 / BUSY** — one connection fires two commits back-to-back without
+   waiting for the first to finish. The second exceeds the **per-connection
+   in-flight cap** (`PER_CONNECTION_INFLIGHT_MAX = 1`, checked before the global
+   `SYNTHESIS_QUEUE_MAX = 8`) and MUST come back `BUSY` — the websocket-native
+   429 (`error.type == rate_limit_error`, `retry_after_ms = 250`).
+
+Note on "connection refused": there is **no max-connection cap** — the server
+accepts unbounded sessions, so a true TCP refusal only happens if the server
+isn't listening. The driver catches `ConnectionRefusedError` at connect and
+reports it; the in-band overload signal is `BUSY`, not a refused connection.
 
 Exit code is `0` only if every **required** case passed. Known-gap cases
 (ja/zh, see below) report as `SKIP`, not failure.
