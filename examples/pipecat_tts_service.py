@@ -289,21 +289,29 @@ class LocalTTSService(TTSService):
         # never from whichever committed/created frame happens to arrive first on
         # a persistent connection. See the gating comment below for why.
         commit_event_id = uuid.uuid4().hex
-        try:
-            await client.append(text)
-            await client.commit(
-                extras=self._params.to_extras() or None,
-                event_id=commit_event_id,
-            )
-        except Exception as exc:  # send-side failure before any audio
-            yield ErrorFrame(error=f"tts_server commit failed: {exc}")
-            yield TTSStoppedFrame(context_id=context_id)
-            return
-
-        await self.start_tts_usage_metrics(text)
-
         started_audio = False
+        # ONE try spans the commit AND the drain so a cancellation anywhere from
+        # the commit onward (barge-in / teardown) reaches the cancel handler. The
+        # bare cancel it sends travels the SAME connection AFTER the commit, and the
+        # server processes a connection's frames in order, so by then the response
+        # is registered and gets cancelled (K=1 ⇒ unambiguous). Previously the
+        # commit had its own try; a cancel raised during/just after it skipped
+        # cleanup and exited without cancelling, leaving the registered response to
+        # synthesize with no reader and pin the backend/Metal lock.
         try:
+            try:
+                await client.append(text)
+                await client.commit(
+                    extras=self._params.to_extras() or None,
+                    event_id=commit_event_id,
+                )
+            except Exception as exc:  # send-side failure before any audio
+                yield ErrorFrame(error=f"tts_server commit failed: {exc}")
+                yield TTSStoppedFrame(context_id=context_id)
+                return
+
+            await self.start_tts_usage_metrics(text)
+
             async for ev in client.events():
                 kind = ev.get("type")
                 if kind == P.EVT_TEXT_COMMITTED:
@@ -362,22 +370,31 @@ class LocalTTSService(TTSService):
                         break
                 elif kind == P.EVT_ERROR:
                     # A generic ``error`` is command-scoped, not response-scoped.
-                    # If it correlates to a PRIOR commit (``previous_event_id`` set
-                    # and not ours), it is stale — skip it. Otherwise it concerns
-                    # this commit (or is connection-level): it is not necessarily
+                    # If it correlates to a PRIOR command (its id is set and not
+                    # ours), it is stale — skip it, else a stale BUSY/invalid_config
+                    # error from an earlier commit on this persistent connection
+                    # would abort our freshly-committed response. The correlation id
+                    # is the top-level ``previous_event_id`` (newer servers); fall
+                    # back to the nested ``error.event_id`` for older ones.
+                    prev = ev.get("previous_event_id")
+                    if prev is None and isinstance(ev.get("error"), dict):
+                        prev = ev["error"].get("event_id")
+                    if prev is not None and prev != commit_event_id:
+                        continue
+                    # Ours (or uncorrelated/connection-level): not necessarily
                     # terminal server-side (unlike ``response.failed``), so cancel
                     # before breaking — else we stop draining while the server keeps
                     # synthesizing for a reader that is gone, pinning the lock.
-                    prev = ev.get("previous_event_id")
-                    if prev is not None and prev != commit_event_id:
-                        continue
                     await self._send_cancel()
                     yield ErrorFrame(error=f"tts_server {kind}: {ev!r}")
                     break
                 # Ignore other event types (session.*, server.status).
         except asyncio.CancelledError:
-            # Pipeline cancelled the run_tts task (interruption). Tell the server
-            # to stop synthesizing so it does not pin the model lock.
+            # Pipeline cancelled the run_tts task (interruption) — possibly during
+            # the commit, before any event was read. Tell the server to stop
+            # synthesizing so it does not pin the model lock; the cancel is ordered
+            # after our commit on this connection, so it reliably targets the
+            # registered response even when we never learned its id.
             await self._send_cancel()
             raise
         finally:

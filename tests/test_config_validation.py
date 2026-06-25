@@ -39,6 +39,23 @@ async def test_session_update_unknown_field_rejected():
             assert "pitch" in ev["error"]["message"]
 
 
+async def test_error_echoes_client_event_id_at_top_level():
+    # Request correlation: an error MUST echo the offending frame's event_id as a
+    # TOP-LEVEL previous_event_id (the field every other reply uses), not only as
+    # the nested error.event_id. Otherwise a client cannot tell an error for THIS
+    # command apart from a stale error left by an earlier command on a persistent
+    # connection (adversarial-review finding).
+    async with running_server(ToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await _send_raw(
+                client, {"type": "session.update", "pitch": 2, "event_id": "evt_corr_1"}
+            )
+            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+            assert ev["type"] == "error"
+            assert ev["previous_event_id"] == "evt_corr_1"
+            assert ev["error"]["event_id"] == "evt_corr_1"  # nested kept for compat
+
+
 async def test_commit_unknown_field_rejected():
     async with running_server(ToneBackend()) as srv:
         async with connected_client(srv) as (client, _hello):

@@ -12,6 +12,7 @@ not installed these tests skip.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import pytest
@@ -52,6 +53,9 @@ class _FakeClient:
             if ev.get("previous_event_id") == _MATCH:
                 # Correlate to the commit the adapter actually sent.
                 ev["previous_event_id"] = self.commit_event_id
+            err = ev.get("error")
+            if isinstance(err, dict) and err.get("event_id") == _MATCH:
+                ev["error"] = {**err, "event_id": self.commit_event_id}
             yield ev
 
     async def append(self, text: str, **kwargs) -> None:
@@ -64,12 +68,40 @@ class _FakeClient:
         self.cancels.append(response_id)
 
 
+class _CancelOnCommitClient(_FakeClient):
+    """Raises CancelledError from commit() to model a barge-in that cancels the
+    run_tts task during the commit, before any event is read."""
+
+    async def commit(self, *, event_id: str | None = None, **kwargs) -> None:
+        self.commit_event_id = event_id
+        raise asyncio.CancelledError
+
+
 def _committed(rid: str, *, correlated: bool = True, previous_event_id: str | None = None) -> dict:
     """A scripted ``input_text.committed``. ``correlated`` marks it as the ack for
     the commit just sent (its ``previous_event_id`` is rewritten to the real id);
     otherwise it carries an unrelated/stale ``previous_event_id``."""
     ev: dict = {"type": P.EVT_TEXT_COMMITTED, "response_id": rid}
     ev["previous_event_id"] = _MATCH if correlated else previous_event_id
+    return ev
+
+
+def _error_frame(
+    *,
+    correlated: bool = True,
+    previous_event_id: str | None = None,
+    nested: bool = False,
+    code: str = "busy",
+) -> dict:
+    """A scripted top-level ``error``. ``correlated`` marks it as the reply to the
+    commit just sent. ``nested=True`` puts the correlation id only in
+    ``error.event_id`` (the older-server shape the adapter falls back to)."""
+    err: dict = {"code": code, "message": "x"}
+    ev: dict = {"type": P.EVT_ERROR, "error": err}
+    if nested:
+        err["event_id"] = _MATCH if correlated else previous_event_id
+    else:
+        ev["previous_event_id"] = _MATCH if correlated else previous_event_id
     return ev
 
 
@@ -286,3 +318,88 @@ async def test_uncorrelated_committed_alone_is_ignored():
     audio = [f for f in frames if isinstance(f, TTSAudioRawFrame)]
     assert len(audio) == 1
     assert audio[0].audio == b"\x03\x00"
+
+
+# --- error correlation (adversarial-review: stale error frame) ----------------
+# A generic ``error`` is command-scoped. The adapter correlates it to the commit
+# it sent (top-level ``previous_event_id``, falling back to nested
+# ``error.event_id``). A stale error from a PRIOR command must not abort this
+# utterance; an error for THIS command must surface.
+
+
+async def test_stale_error_does_not_terminate_new_utterance():
+    client = _FakeClient(
+        [
+            _error_frame(correlated=False, previous_event_id="old-commit-evt", code="busy"),
+            _committed("new"),
+            {"type": P.EVT_RESPONSE_CREATED, "response_id": "new"},
+            _audio_delta("new", pcm=b"\x04\x00"),
+            {"type": P.EVT_RESPONSE_AUDIO_DONE, "response_id": "new"},
+        ]
+    )
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert not any(isinstance(f, ErrorFrame) for f in frames)
+    audio = [f for f in frames if isinstance(f, TTSAudioRawFrame)]
+    assert len(audio) == 1 and audio[0].audio == b"\x04\x00"
+    assert client.cancels == [], "a stale error must not trigger a cancel"
+
+
+async def test_stale_error_via_nested_event_id_is_ignored():
+    # Older-server shape: correlation only in nested error.event_id. A stale one
+    # must still be skipped via the fallback.
+    client = _FakeClient(
+        [
+            _error_frame(correlated=False, previous_event_id="old-commit-evt", nested=True),
+            _committed("new"),
+            {"type": P.EVT_RESPONSE_CREATED, "response_id": "new"},
+            _audio_delta("new", pcm=b"\x05\x00"),
+            {"type": P.EVT_RESPONSE_AUDIO_DONE, "response_id": "new"},
+        ]
+    )
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert not any(isinstance(f, ErrorFrame) for f in frames)
+    assert len([f for f in frames if isinstance(f, TTSAudioRawFrame)]) == 1
+
+
+async def test_correlated_error_surfaces_and_cancels():
+    # An error for THIS commit must surface as an ErrorFrame and cancel (the error
+    # may be non-terminal server-side, so we stop the backend before breaking).
+    client = _FakeClient(
+        [
+            _committed("new"),
+            _error_frame(correlated=True, code="internal"),
+        ]
+    )
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    frames = await _drain_run_tts(svc)
+
+    assert any(isinstance(f, ErrorFrame) for f in frames)
+    assert client.cancels, "a correlated error must cancel the in-flight response"
+
+
+# --- cancellation during commit (adversarial-review finding #2) ---------------
+# A barge-in that cancels the run_tts task DURING the commit (before any event is
+# read) must still cancel the server-side response, not exit silently and leave it
+# synthesizing with no reader.
+
+
+async def test_cancel_during_commit_still_cancels_server_side():
+    client = _CancelOnCommitClient(events=[])
+    svc = _service()
+    _wire_for_run_tts(svc, client)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _drain_run_tts(svc)
+
+    # The widened try routed the CancelledError through the cancel handler.
+    assert client.cancels == [None], "cancel during commit must still send response.cancel"

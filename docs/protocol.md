@@ -169,14 +169,18 @@ additions:
 
 The wire envelope is **nested**, mirroring OpenAI-Realtime: the top-level frame carries
 `type: "error"` and an `error` object that repeats an OpenAI-style `type` (derived from the
-code) alongside `code`/`message`. `event_id` echoes the offending client frame's id when one
-was supplied. For `busy`, `retry_after_ms` appears **both** at the top level and inside the
-`error` object:
+code) alongside `code`/`message`. When the offending client frame supplied an `event_id`, the
+error echoes it **both** at the top level as `previous_event_id` (the same request→response
+correlation field every other reply uses — so a client can tell an error for *this* command
+apart from a stale error left by an earlier command on a persistent connection) and inside the
+`error` object as `event_id` (for OpenAI-shaped readers). For `busy`, `retry_after_ms` appears
+**both** at the top level and inside the `error` object:
 
 ```json
 {
   "type": "error",
   "event_id": "evt_a1b2c3",
+  "previous_event_id": "<client frame id, if any>",
   "error": {
     "type": "rate_limit_error",
     "code": "busy",

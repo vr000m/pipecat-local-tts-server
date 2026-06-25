@@ -1438,6 +1438,15 @@ class TTSServer:
             "event_id": _event_id(),
             "error": error_obj,
         }
+        # Carry the request correlation at the TOP level too, exactly like every
+        # other correlated reply (session.updated, input_text.committed/cleared).
+        # Without this an error is indistinguishable from a stale error left by an
+        # earlier command on a persistent connection, so a client correlating by
+        # ``previous_event_id`` could let a stale BUSY/invalid_config error abort a
+        # freshly-committed response. The nested ``error.event_id`` is kept for
+        # OpenAI-shaped readers.
+        if client_event_id:
+            payload["previous_event_id"] = client_event_id
         # ``retry_after_ms`` is carried at the top level when present (BUSY,
         # Phase 3). Mirror it inside the error object too for OpenAI-shaped
         # readers.
