@@ -113,3 +113,48 @@ async def test_unsupported_voice_rejected_on_commit():
             ev = await next_event(client, _ACK_OR_ERR_COMMIT)
             assert ev["type"] == "error"
             assert ev["error"]["code"] == "invalid_config"
+
+
+# --- model validation (no silent wrong-model) -------------------------------
+# session.update accepts a `model` field, but v1 loads ONE model at process
+# start and synthesis has no per-request model parameter. Acking a model the
+# server will not synthesize with is a silent wrong-model failure, so a model
+# that does not match the loaded one MUST be rejected. ToneBackend.model is
+# None (no selectable model), so any client-supplied model is rejected.
+
+
+class _ModelToneBackend(ToneBackend):
+    """ToneBackend that advertises a concrete model name, to exercise the
+    accept-on-exact-match path of ``_validate_model``."""
+
+    model = "tone-v1"
+
+
+async def test_model_mismatch_rejected_on_update():
+    async with running_server(_ModelToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.update(model="some-other-model")
+            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+            assert ev["type"] == "error"
+            assert ev["error"]["code"] == "invalid_config"
+            assert "some-other-model" in ev["error"]["message"]
+
+
+async def test_matching_model_accepted_on_update():
+    async with running_server(_ModelToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.update(model="tone-v1")
+            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+            assert ev["type"] in ("session.created", "session.updated")
+            assert ev["session"]["model"] == "tone-v1"
+
+
+async def test_model_rejected_when_backend_has_no_model():
+    # ToneBackend.model is None: no selectable model, so any model is rejected.
+    async with running_server(ToneBackend()) as srv:
+        async with connected_client(srv) as (client, _hello):
+            await client.update(model="anything")
+            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+            assert ev["type"] == "error"
+            assert ev["error"]["code"] == "invalid_config"
+            assert "anything" in ev["error"]["message"]

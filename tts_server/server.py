@@ -709,6 +709,39 @@ class TTSServer:
             )
         return None
 
+    def _validate_model(self, model: Any) -> str | None:
+        """Reject a ``model`` this server cannot actually honor.
+
+        v1 loads exactly ONE model at process start (advertised as
+        ``server.hello.backend.model``) and every commit synthesizes with it —
+        the backend ``open_stream`` contract has no per-request model parameter,
+        so there is no per-session model switching. ``model`` stays in the
+        protocol schema for a future multi-model server, but accepting an
+        arbitrary value here would be a SILENT wrong-model failure: the client
+        gets ``session.updated`` echoing the requested model while all audio
+        still comes from the loaded one. So accept ``model`` only when it names
+        the loaded model (a harmless no-op); reject anything else loudly with
+        ``invalid_config`` instead of acking a switch that never happens.
+
+        Returns an error message, or ``None`` if ``model`` is unset or matches.
+        """
+        if model is None:
+            return None
+        if not isinstance(model, str):
+            return "model must be a string"
+        loaded = self._backend.model
+        if model == loaded:
+            return None
+        # Fail closed for every mismatch, including a backend with no selectable
+        # model (``loaded is None``): a client-supplied model can never be
+        # honored there either, so it must not be silently acked.
+        if loaded is None:
+            return f"unsupported model {model!r}; this backend has no selectable model (omit model)"
+        return (
+            f"unsupported model {model!r}; this server loaded {loaded!r} and "
+            "does not support per-session model switching"
+        )
+
     async def _on_session_update(
         self,
         ws: ServerConnection,
@@ -756,6 +789,13 @@ class TTSServer:
         if voice_err is not None:
             await self._error(
                 ws, state, P.ErrorCode.INVALID_CONFIG, voice_err, client_event_id=client_event_id
+            )
+            return
+
+        model_err = self._validate_model(msg.get("model"))
+        if model_err is not None:
+            await self._error(
+                ws, state, P.ErrorCode.INVALID_CONFIG, model_err, client_event_id=client_event_id
             )
             return
 
