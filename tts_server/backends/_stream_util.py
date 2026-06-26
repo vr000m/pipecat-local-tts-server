@@ -82,9 +82,10 @@ def _put_eof(queue: "asyncio.Queue") -> None:
 _PUT_TIMEOUT_SECONDS = 0.5
 
 # How a result's audio is extracted. mlx-audio ``GenerationResult`` exposes
-# ``.audio`` as a float32 mono ``mx.array``; ``list(...)`` materializes Python
-# floats so the stdlib converter (no numpy/mlx) can map them. Kept here so a
-# backend yields raw ``GenerationResult``s and the bridge owns conversion.
+# ``.audio`` as a float32 mono ``mx.array``. It MUST be bulk-materialized to
+# Python floats in one transfer before the stdlib converter walks it — see the
+# sync-per-element trap in ``_audio_to_pcm``. Kept here so a backend yields raw
+# ``GenerationResult``s and the bridge owns conversion.
 
 
 def _audio_to_pcm(result: Any) -> bytes:
@@ -94,10 +95,15 @@ def _audio_to_pcm(result: Any) -> bytes:
     or a bare iterable of floats (so tests can drive the bridge without mlx).
     """
     audio = getattr(result, "audio", result)
-    # ``float_to_pcm16`` iterates ``audio`` exactly once; pass it straight through
-    # (an mx.array / numpy array / list all iterate into Python scalars) instead
-    # of materializing an intermediate ``list`` and walking the data twice. Stays
-    # numpy-free at import time (we never import numpy/mlx here).
+    # CRITICAL: ``audio`` is an ``mx.array`` (float32 mono). Iterating it
+    # element-by-element (which ``float_to_pcm16`` does) forces a device->host
+    # sync PER element — O(samples) syncs, ~500x slower (a 3 s utterance took
+    # ~40 s). Materialize it to a Python list in ONE bulk transfer first.
+    # ``.tolist()`` exists on ``mx.array`` / numpy arrays; a bare list/iterable
+    # (tests) has none and passes through unchanged. Duck-typed, so this stays
+    # numpy/mlx-free at import time.
+    if hasattr(audio, "tolist"):
+        audio = audio.tolist()
     return float_to_pcm16(audio)
 
 

@@ -140,6 +140,16 @@ Not yet tagged or published; landing here as it is validated.
   send is now wrapped in `send_timeout_seconds` (default 5 s); on timeout the
   session is marked closed and the socket closed (1011) so the drain loop frees
   the lock.
+- **~400× faster Kokoro synthesis (RTF 12× → 0.03×)** — the streaming bridge's
+  `_audio_to_pcm` passed mlx-audio's `GenerationResult.audio` (an `mx.array`)
+  straight into the stdlib `float_to_pcm16`, which iterates element-by-element —
+  forcing a device→host sync **per sample** (~78k syncs for a 3 s line ≈ 40 s of
+  pure overhead, scaling linearly with audio length). The neural synthesis itself
+  was always fast (~0.08 s; raw `model.generate()` runs at ~0.03× realtime). Fix:
+  bulk-materialize the array with `.tolist()` (one transfer) before conversion.
+  Kokoro now synthesizes ~33× faster than realtime (viable for live use); guarded
+  by `tests/test_stream_util_audio_conversion.py`. Profilers live in
+  `scripts/profiling/`. (Surfaced by client-side latency reports.)
 - **Kokoro no longer advertises languages it cannot synthesize** — the advertised
   `languages` set was derived from voice-name prefixes, so `ja`/`zh` were listed
   even though their G2P needs a package (`misaki[ja]`/`misaki[zh]`) the `kokoro`
