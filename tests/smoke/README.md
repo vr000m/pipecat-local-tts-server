@@ -116,6 +116,39 @@ export PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh
 exceed the reference client's 60 s default timeout — the smoke driver uses 180 s
 for kokoro for this reason.
 
+## Reconnect (`run_reconnect.sh` + `reconnect_smoke.py`)
+
+The single-endpoint crash-restart-reconnect cycle the unit suite skips. The
+driver owns the server lifecycle: start → synthesize → **SIGKILL** → restart →
+client **reconnect-with-backoff** → synthesize again, then compares the audio
+returned before the kill vs. after.
+
+```sh
+just smoke-reconnect                              # tone (fast)
+tests/smoke/run_reconnect.sh --backend kokoro     # real voice samples
+```
+
+Design notes:
+
+- **SIGKILL, not SIGINT.** A graceful Ctrl-C unlinks the socket on exit, so the
+  restart never touches the auto-clear path. SIGKILL leaves the socket file
+  behind (the crash / power-loss case the server's stale-socket reclaim exists
+  FOR), so the restart must clear it — the stricter test. The driver asserts the
+  socket is left stale and that a connect is refused while the server is down.
+- **The backoff loop lives in the driver, not `TTSClient`.** `TTSClient` is
+  connect-once by design — reconnect-with-backoff is the consumer's
+  responsibility (R4). The driver's capped-exponential loop doubles as a
+  reference for how a consumer reconnects, and it must ride out the **model
+  reload on restart** (≈40 s for Kokoro; larger for voxtral/pocket — hence the
+  180 s / 40-attempt defaults).
+- **Per-backend, extensible.** Add a row to `DEFAULT_VOICE` in
+  `reconnect_smoke.py` as new backends land. The before/after **sample-count**
+  comparison (verified identical, 78000=78000, for Kokoro `af_heart`) is what
+  catches reload-logic errors specific to each backend's implementation — a
+  restart that returns no audio, fewer samples, or a different rate fails the
+  verdict. Extending it to voxtral_tts/pocket_tts when they ship will surface any
+  reconnect regressions from their streaming differences.
+
 ## Future work — streaming backends (Phase 5a/5b)
 
 Every script here currently runs against a **`streaming:false`** backend (tone,

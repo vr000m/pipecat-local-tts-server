@@ -115,3 +115,7 @@ smoke-multilingual *args:
 # Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
 smoke-multiconn *args:
     tests/smoke/run_multiconn.sh {{args}}
+
+# Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
+smoke-reconnect *args:
+    tests/smoke/run_reconnect.sh {{args}}
