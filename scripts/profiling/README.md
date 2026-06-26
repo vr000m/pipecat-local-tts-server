@@ -69,3 +69,31 @@ per-segment streaming. **Kokoro is viable for live commentary.**
 Lesson for Phase 5: any MLX backend that hands audio through the bridge must
 return arrays we bulk-materialize — never iterate an `mx.array` in Python. Re-run
 `rtf_benchmark.py --backend <name>` on each new backend to confirm RTF < 1.
+
+## Baseline numbers — Kokoro (for Phase 5 comparison)
+
+Recorded 2026-06-26 on M4 Max (16-core), mlx-audio 0.4.4, `mlx-community/Kokoro-82M-bf16`,
+post throughput-fix. **Re-run the same commands against `voxtral_tts` / `pocket_tts`
+once Phase 5 lands and compare against this table.**
+
+| Metric | Kokoro (2026-06-26) | How to reproduce |
+|---|---|---|
+| Cold load + warmup (`start()`) | ~2.4 s | `rtf_benchmark.py --backend kokoro` |
+| RTF, 1-sentence (3.25 s audio), warm | **0.03×** | `rtf_benchmark.py` |
+| RTF, 2-sentence single-seg (5.58 s), warm | **0.03×** | `rtf_benchmark.py` |
+| RTF, 3-seg newlines (6.62 s), warm | **0.03×** | `rtf_benchmark.py` |
+| TTFB, 1-sentence (warm) | ~0.08 s | `rtf_benchmark.py` |
+| TTFB, 3-seg (sub-segment streaming) | ~0.04 s | `rtf_benchmark.py` |
+| Full single-segment synth, ~1700 chars (commit→done) | **~2.9 s** | cancel-latency harness, no-cancel ceiling |
+| Client-visible cancel (`response.cancel`→`response.cancelled`) | **~1 ms** | cancel-latency harness; constant across cancels fired 0/0.5/1.0/2.0 s into synth |
+| Multiconn 2×5 turns (incl. cold load), ~380 s of audio total | **~15 s wall** (PASS) | `tests/smoke/run_multiconn.sh --backend kokoro` |
+
+Notes for the comparison:
+- `voxtral_tts` / `pocket_tts` are `streaming:true`, so **TTFB** is the headline number to
+  beat — sub-segment streaming should push it well below `wall_s`.
+- Cancellation latency is two separate numbers: **client-visible cancel** (~1 ms here,
+  decoupled from the worker) vs **Metal-lock/slot release** (waits for `generate()`'s yield
+  boundary, bounded by `drain_timeout_seconds` ≈ the full single-segment synth time). A
+  streaming backend that yields more often should cut the lock-release ceiling too.
+- The original "≈ 51 s single-segment cancel" figure (dev plan, 2026-06-24) was a bridge-bug
+  artifact and is superseded — do not compare against it.

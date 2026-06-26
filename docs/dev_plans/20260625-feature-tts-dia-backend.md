@@ -59,10 +59,13 @@ Resolve these (a short design pass + `/review-plan` refresh) before implementing
   must cover `ref_text` too — assert at **both** layers (capabilities exclusion **and** absence at the
   `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`.
 - [ ] **Cancel latency caveat (inherited from Kokoro):** dia is segment-level, so a long single
-  segment cannot be cancelled until `generate()` completes — it inherits Kokoro's measured ~51 s
-  single-segment cancel limitation (v1 plan Findings → *Phase 2 measured results*). Carry Kokoro's
-  resolution: hard guarantee is "no more deltas after `response.cancelled`"; prompt barge-in requires
-  the client to chunk at sentence/newline boundaries.
+  segment's backend `generate()` runs to its yield boundary before the Metal lock frees for the next
+  commit. Per Kokoro's re-measurement (v1 plan Findings → *Phase 2 measured results*, 2026-06-26):
+  the **client-visible cancel** (`response.cancel` → `response.cancelled`) is prompt (**~1 ms**,
+  decoupled from the worker); only the **lock/slot release** waits for `generate()`'s yield boundary
+  (bounded by `drain_timeout_seconds`). Carry Kokoro's resolution: hard guarantee is "no more deltas
+  after `response.cancelled`"; chunking at sentence/newline boundaries still helps free the Metal lock
+  faster for the NEXT commit (no longer needed for prompt client-visible barge-in).
 - [ ] **Dialogue-mapping tests** (net-new, the reason this is its own plan): cover whatever the design
   question resolves to — e.g. `[S1]`/`[S2]` text passes through to `generate()` intact, speaker
   switching produces the expected multi-voice output, and chunking does not split mid-turn.
