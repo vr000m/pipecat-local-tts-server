@@ -15,6 +15,7 @@ Unix-socket paths are capped (104 chars on macOS), so these tests bind under
 
 from __future__ import annotations
 
+import os
 import socket
 import uuid
 from pathlib import Path
@@ -22,7 +23,12 @@ from pathlib import Path
 import pytest
 
 from tts_server.backend import ToneBackend
-from tts_server.server import ServerConfig, TTSServer, _clear_stale_unix_socket
+from tts_server.server import (
+    ServerConfig,
+    TTSServer,
+    _assert_parent_dir_safe,
+    _clear_stale_unix_socket,
+)
 
 
 @pytest.fixture
@@ -87,6 +93,39 @@ def test_clear_stale_unix_socket_refuses_live_socket(sock_path):
         assert sock_path.is_socket(), "a live server's socket must be left intact"
     finally:
         listener.close()
+
+
+# --- parent-directory safety guard ----------------------------------------
+
+
+def test_parent_dir_safe_accepts_owner_only_dir(tmp_path):
+    d = tmp_path / "private"
+    d.mkdir(mode=0o700)
+    os.chmod(d, 0o700)  # mkdir mode is masked by umask; force it
+    _assert_parent_dir_safe(d / "tts.sock")  # must not raise
+
+
+def test_parent_dir_safe_accepts_world_writable_sticky_dir(tmp_path):
+    d = tmp_path / "tmplike"
+    d.mkdir()
+    os.chmod(d, 0o1777)  # world-writable + sticky, /tmp semantics
+    _assert_parent_dir_safe(d / "tts.sock")  # only the owner may unlink -> ok
+
+
+def test_parent_dir_safe_refuses_world_writable_non_sticky(tmp_path):
+    d = tmp_path / "open"
+    d.mkdir()
+    os.chmod(d, 0o0777)  # world-writable, no sticky bit -> swap vector
+    with pytest.raises(RuntimeError, match="group/world-writable"):
+        _assert_parent_dir_safe(d / "tts.sock")
+
+
+def test_parent_dir_safe_refuses_group_writable_non_sticky(tmp_path):
+    d = tmp_path / "groupwrite"
+    d.mkdir()
+    os.chmod(d, 0o0770)  # group-writable, no sticky bit
+    with pytest.raises(RuntimeError, match="group/world-writable"):
+        _assert_parent_dir_safe(d / "tts.sock")
 
 
 # --- end-to-end through the server ----------------------------------------

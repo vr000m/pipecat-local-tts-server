@@ -36,6 +36,7 @@ import logging
 import os
 import signal
 import socket
+import stat
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -122,6 +123,38 @@ def _clear_stale_unix_socket(path: Path) -> None:
         probe.close()
     # connect() succeeded: a live server owns this socket.
     raise RuntimeError(f"address already in use: a server is already listening on {path}")
+
+
+def _assert_parent_dir_safe(path: Path) -> None:
+    """Refuse to bind a UDS under a directory other local users can write to.
+
+    The socket inode is created 0600 (umask), but 0600 protects the *inode*,
+    not the *name*. If the parent directory is group/world-writable, another
+    local user can ``unlink`` our socket and ``bind`` their own at the same
+    path; clients then resolve the name to an impostor. The 0600 mode does not
+    defend against that — the parent directory's write permission does.
+
+    Accept exactly two safe shapes:
+
+    - parent writable only by its owner (e.g. ``0700`` — the dir we create), or
+    - world/group-writable **with the sticky bit** (``/tmp`` semantics, where
+      only a file's owner may unlink it, so the swap is blocked).
+
+    Anything else (group/world-writable, not sticky) is refused at bind time —
+    the symmetric server-side mirror of a client-side parent-dir check, closing
+    the plant/swap vector at the source rather than via a TOCTOU inode check.
+    """
+    parent = path.parent
+    mode = parent.stat().st_mode
+    other_writable = mode & (stat.S_IWGRP | stat.S_IWOTH)
+    sticky = mode & stat.S_ISVTX
+    if other_writable and not sticky:
+        raise RuntimeError(
+            f"refusing to bind: socket parent dir {parent} is group/world-writable "
+            f"(mode {oct(mode & 0o7777)}) without the sticky bit; another local user "
+            "could replace the socket. Use a directory writable only by you (0700) "
+            "or one with the sticky bit set."
+        )
 
 
 def _error_object(code: P.ErrorCode, message: str) -> dict[str, Any]:
@@ -411,10 +444,15 @@ class TTSServer:
         self._voice_set = frozenset(self._backend_voices())
         if self._config.socket_path:
             socket_path = Path(self._config.socket_path)
-            socket_path.parent.mkdir(parents=True, exist_ok=True)
-            _clear_stale_unix_socket(socket_path)
+            # Set the umask BEFORE mkdir so a parent dir we create is 0700, not
+            # the process default (~0755). Hold it through ws_unix_serve so the
+            # socket inode is born 0600. The parent-dir guard covers the
+            # exist_ok=True case where the dir already existed with loose perms.
             prior_umask = os.umask(0o077)
             try:
+                socket_path.parent.mkdir(parents=True, exist_ok=True)
+                _assert_parent_dir_safe(socket_path)
+                _clear_stale_unix_socket(socket_path)
                 self._server = await ws_unix_serve(
                     self._handle_connection,
                     path=str(socket_path),

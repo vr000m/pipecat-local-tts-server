@@ -127,6 +127,14 @@ Not yet tagged or published; landing here as it is validated.
   server unlinks a leftover socket from a crashed instance, refuses to clobber a
   non-socket file at the path, and refuses to steal a socket a live server is
   still listening on (asyncio's own bind would silently unlink it).
+- **UDS parent-directory hardening** — the `0o600` socket mode protects the
+  inode but not the *name*: under a group/world-writable parent dir, another
+  local user could `unlink` the socket and `bind` an impostor at the same path.
+  Two changes close this: the `umask(0o077)` is now set *before* `mkdir`, so a
+  parent dir the server creates is `0700` (not the process default ~`0755`); and
+  the server refuses to bind when the parent is group/world-writable without the
+  sticky bit (a `/tmp`-style sticky dir, where only the owner may unlink, is
+  still accepted).
 - **Reference Pipecat adapter** — `_connect()` now drains the `session.update`
   ack before any commit is sent (a rejected config surfaced after a commit would
   otherwise abandon a live response and pin the backend lock), and a mid-synthesis
