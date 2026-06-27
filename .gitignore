@@ -1,1 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+dist/
+
+# uv / virtualenv
+.venv/
+
+# OS
 .DS_Store
+
+# conduct skill state (local, run-specific — must not be committed)
+.conduct/

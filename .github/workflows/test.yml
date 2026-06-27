@@ -1,0 +1,123 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Lean job: client-only install on Linux. Proves the lean base (websockets
+  # only, no mlx-audio / numpy) resolves, the package imports without pulling
+  # any TTS runtime, lint is clean, and the explicit allow-list of lean test
+  # files passes. The ruff step is a deliberate addition over stt's CI.
+  #
+  # The lean allow-list grows with the tests: pytest errors on a missing
+  # allow-listed path, so each phase that adds a lean test extends this list in
+  # the same commit. Phase 0's allow-list contains ONLY the import-safety test.
+  test-lean:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Sync (client only — never kokoro, keeps torch out of lean)
+        run: uv sync --extra client
+      - name: Lint (ruff check + format)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Import-safety (lean base imports with no mlx-audio / numpy)
+        run: uv run python -c "import tts_server; print('import tts_server OK')"
+      - name: Run lean test allow-list
+        run: |
+          uv run pytest -x \
+            tests/test_import_safety.py \
+            tests/test_protocol_version.py \
+            tests/test_protocol.py \
+            tests/test_tone_end_to_end.py \
+            tests/test_streaming_and_cancel.py \
+            tests/test_stream_util_audio_conversion.py \
+            tests/test_session_lifecycle.py \
+            tests/test_capabilities_extras.py \
+            tests/test_config_validation.py \
+            tests/test_endpoint_resolution.py \
+            tests/test_server_cleartext_guard.py \
+            tests/test_pcm16_clip.py \
+            tests/test_kokoro_lazy_import.py \
+            tests/test_kokoro_language_advertise.py \
+            tests/test_status.py \
+            tests/test_auth.py \
+            tests/test_resource_limits.py \
+            tests/test_backpressure.py \
+            tests/test_multiconn_fairness.py
+
+  # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
+  # reference Pipecat adapter tests. These are NOT in the lean allow-list above:
+  # importing pipecat pulls numpy/audioop, which would pollute sys.modules and
+  # break the lean job's mlx-free / numpy-free import-safety invariants. Isolated
+  # in its own job they run cleanly. This guards the documented bot adapter (the
+  # private-attr rate override in LocalTTSService) against a pipecat version skew —
+  # the reason the extra pins pipecat-ai==1.4.0. Pure-Python pipecat runs on Linux;
+  # no mlx / Apple Silicon needed.
+  test-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Sync (examples extra — pinned pipecat-ai for the reference adapter)
+        run: uv sync --extra examples
+      - name: Run the reference Pipecat adapter tests
+        run: uv run pytest -x tests/test_pipecat_adapter.py
+
+  # macOS / Apple-Silicon smoke: the mlx-audio (Kokoro) wheels are
+  # Apple-Silicon-only, so this job verifies — on macos-14 (arm64) — that the
+  # `kokoro` extra RESOLVES and IMPORTS. It deliberately does NOT run pytest:
+  #
+  #   - The lean-import-invariant tests (test_import_safety / test_kokoro_lazy_import
+  #     / test_pcm16_clip) assert mlx_audio is ABSENT from sys.modules. They belong
+  #     to the lean (mlx-free) job above and FAIL in a full install, because pytest
+  #     collection imports mlx_audio via test_kokoro_backend's module-level
+  #     `importorskip` — polluting sys.modules for the whole process.
+  #   - The Kokoro *synthesis* tests (test_kokoro_backend.py) need model
+  #     weights/network: slow and flaky in CI. Synthesis is verified locally on
+  #     Apple Silicon (`uv run pytest tests/test_kokoro_backend.py`).
+  #
+  # So this job stays fast, free, and reliable while still catching packaging /
+  # import breakage of the heavy backend — and it guards that our vocoder-fix
+  # monkeypatch target (SineGen._f02sine, see backends/kokoro.py) still exists
+  # upstream, so an mlx-audio restructure can't silently disable the shim.
+  test-macos-smoke:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync (all declared extras — verifies the runner can uv sync TTS extras)
+        run: uv sync --extra client --extra kokoro
+      - name: Import smoke (kokoro extra installs + imports on Apple Silicon)
+        run: |
+          uv run python - <<'PY'
+          import mlx_audio
+          from mlx_audio.tts.utils import load  # the entry point kokoro start() uses
+          from mlx_audio.tts.models.kokoro import istftnet
+          assert hasattr(istftnet.SineGen, "_f02sine"), (
+              "SineGen._f02sine missing — the kokoro vocoder-fix shim target moved upstream"
+          )
+          import tts_server.backends.kokoro as k
+          print("OK: mlx_audio imports; kokoro backend module loads;", k.DEFAULT_KOKORO_MODEL)
+          PY

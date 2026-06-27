@@ -70,8 +70,7 @@ async def synthesize(
     if rate <= 0:
         raise ProtocolError(f"server.hello did not advertise a usable rate: {audio!r}")
     print(
-        f"hello: backend={hello.get('backend')} rate={rate} "
-        f"caps={hello.get('capabilities')}",
+        f"hello: backend={hello.get('backend')} rate={rate} caps={hello.get('capabilities')}",
         file=sys.stderr,
     )
 
@@ -143,12 +142,8 @@ async def _connect(args: argparse.Namespace) -> Any:
     if args.uri:
         return await websockets.connect(args.uri, additional_headers=headers)
     if args.socket_path:
-        return await websockets.unix_connect(
-            args.socket_path, additional_headers=headers
-        )
-    return await websockets.connect(
-        f"ws://{args.host}:{args.port}", additional_headers=headers
-    )
+        return await websockets.unix_connect(args.socket_path, additional_headers=headers)
+    return await websockets.connect(f"ws://{args.host}:{args.port}", additional_headers=headers)
 
 
 async def _main(args: argparse.Namespace) -> int:
@@ -180,7 +175,11 @@ def main() -> int:
     ap.add_argument("--text", required=True, help="text to synthesize")
     ap.add_argument("--voice", help="voice name (e.g. af_heart)")
     ap.add_argument("--language", help="ISO language code (e.g. en)")
-    ap.add_argument("--speed", type=float, help="Kokoro 'speed' extra")
+    ap.add_argument(
+        "--speed",
+        type=float,
+        help="Kokoro 'speed' extra (server clamps to [0.5, 2.0]; non-finite is rejected as invalid_config)",
+    )
     ap.add_argument("--out", help="output WAV path")
     ap.add_argument("--token", help="bearer token (else $TTS_WS_TOKEN)")
     ap.add_argument("--timeout", type=float, default=60.0)

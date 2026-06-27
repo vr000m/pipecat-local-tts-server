@@ -1,6 +1,6 @@
 # Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)
 
-**Status**: Planned — design locked on paper; no code yet. mlx-audio API claims
+**Status**: In Progress — Phases 0–4 complete (merged on `feature/tts-server-phases-0-4`); Phase 5 pending. mlx-audio API claims
 verified against installed **0.4.4** via `scripts/verify_mlx_tts_api.py` — including the
 runtime `--load` path and `scripts/prosody_check.py`, **executed 2026-06-24 on
 arm64/vr000m-manganese, mlx-audio 0.4.4** (so the runtime facts below — rate, audio range,
@@ -9,7 +9,7 @@ drifted from 0.3.0 — see R8).
 **Component**: tts-server (server, protocol, backends, client)
 **Assigned to**: Varun Singh
 **Priority**: High (unblocks gamealerts TTS-server migration)
-**Branch**: main (founding work) → feature branches per phase
+**Branch**: `feature/tts-server-phases-0-4` (PR #2)
 **Created**: 2026-06-24
 
 ## Objective
@@ -237,65 +237,235 @@ server is app-agnostic.
 ## Implementation Checklist
 
 ### Phase 0 — Scaffold
-- [ ] `pyproject.toml` (uv-build), package layout `tts_server/{__init__,__main__,protocol,backend,client,server,env}.py` + `backends/` (incl. `backends/_stream_util.py` shipped as a **stdlib-only stub** in Phase 0 — the daemon-thread→`asyncio.Queue` bridge logic lands in Phase 1 — so the import-safety test stays green; see Architecture & Call Flow), extras `client`/`kokoro` (pin `mlx-audio==0.4.4`), lean base. Runtime package code stays **stdlib + websockets only** outside backend extras; `numpy` is dev-only for verification scripts/tests that explicitly opt into it, not a dependency of `ToneBackend` or the shared pcm16 converter.
-- [ ] CI: stand up the **two-job split now** (structure mirrors stt's `.github/workflows/test.yml`): a **lean job** that syncs **only `--extra client`** (never `kokoro` — keeps torch out of "lean") and runs an **explicit allow-list of lean test files**, **plus a ruff step — which stt's CI does not have** (a deliberate addition, not part of the mirror); a **full macOS/Apple-Silicon job** that syncs all declared extras and runs everything that is not explicitly network/model-gated. Phase 2's mlx-gated tests are simply *not* on the lean allow-list — no runtime skip-marker reliance. **The Phase-0 allow-list contains only the import-safety test** (the only lean test that exists yet); Phases 1, 2, and 3 each **extend the allow-list in the same commit** that adds their lean tests (`pytest` errors on a missing allow-listed path, so the list must grow with the tests, not ahead of them). Before relying on the full macOS job as acceptance evidence, add a Phase-0 CI verification note or separate smoke step proving the runner can `uv sync` the intended TTS extras; if Kokoro model download/weights/network are unavailable in CI, mark Kokoro synth tests as manual or gated and document that in the workflow.
-- [ ] Phase-0 **import-safety test** asserts only that base install (no mlx) `import tts_server` succeeds. (Constructing `ToneBackend` moves to Phase 1, where it first exists — a Phase-0 commit must stay green.)
+- [x] `pyproject.toml` (uv-build), package layout `tts_server/{__init__,__main__,protocol,backend,client,server,env}.py` + `backends/` (incl. `backends/_stream_util.py` shipped as a **stdlib-only stub** in Phase 0 — the daemon-thread→`asyncio.Queue` bridge logic lands in Phase 1 — so the import-safety test stays green; see Architecture & Call Flow), extras `client`/`kokoro` (pin `mlx-audio==0.4.4`), lean base. Runtime package code stays **stdlib + websockets only** outside backend extras; `numpy` is dev-only for verification scripts/tests that explicitly opt into it, not a dependency of `ToneBackend` or the shared pcm16 converter.
+- [x] CI: stand up the **two-job split now** (structure mirrors stt's `.github/workflows/test.yml`): a **lean job** that syncs **only `--extra client`** (never `kokoro` — keeps torch out of "lean") and runs an **explicit allow-list of lean test files**, **plus a ruff step — which stt's CI does not have** (a deliberate addition, not part of the mirror); a **full macOS/Apple-Silicon job** that syncs all declared extras and runs everything that is not explicitly network/model-gated. Phase 2's mlx-gated tests are simply *not* on the lean allow-list — no runtime skip-marker reliance. **The Phase-0 allow-list contains only the import-safety test** (the only lean test that exists yet); Phases 1, 2, and 3 each **extend the allow-list in the same commit** that adds their lean tests (`pytest` errors on a missing allow-listed path, so the list must grow with the tests, not ahead of them). Before relying on the full macOS job as acceptance evidence, add a Phase-0 CI verification note or separate smoke step proving the runner can `uv sync` the intended TTS extras; if Kokoro model download/weights/network are unavailable in CI, mark Kokoro synth tests as manual or gated and document that in the workflow.
+- [x] Phase-0 **import-safety test** asserts only that base install (no mlx) `import tts_server` succeeds. (Constructing `ToneBackend` moves to Phase 1, where it first exists — a Phase-0 commit must stay green.)
 
 ### Phase 1 — Protocol + Tone end-to-end (no model)
-- [ ] `protocol.py` events/constants/ErrorCode.
-- [ ] `backend.py` Protocols + `ToneBackend` (deterministic sine of N ms); `backends/_stream_util.py` (daemon thread + bounded queue bridge with producer-side blocking/cooperative put + EOF sentinel + cancel) so Kokoro and the streaming backends share one bridge.
-- [ ] `server.py` session loop, handshake, append/commit, 20 ms re-chunker, cancel.
+- [x] `protocol.py` events/constants/ErrorCode.
+- [x] `backend.py` Protocols + `ToneBackend` (deterministic sine of N ms); `backends/_stream_util.py` (daemon thread + bounded queue bridge with producer-side blocking/cooperative put + EOF sentinel + cancel) so Kokoro and the streaming backends share one bridge.
+- [x] `server.py` session loop, handshake, append/commit, 20 ms re-chunker, cancel.
   **Per-connection `_SessionState` isolation is built here** (no shared mutable session
   state — mirrors stt); endpoint resolution plus the cleartext-remote warning/guard land here
   so the Phase-1 endpoint tests pass. Only auth enforcement, resource-limit caps, and synthesis
   backpressure *caps* are deferred to Phase 3.
-- [ ] `client.py` async client.
-- [ ] **Extend the lean CI allow-list** with the Phase-1 test files added below.
-- [ ] **Move here:** the import-safety test that constructs `ToneBackend` with no mlx (lean CI).
-- [ ] Tests (all lean-CI on `ToneBackend`, no mlx): tone end-to-end; cancel mid-stream **asserting no `response.audio.delta` for that `response_id` after `response.cancelled`, acknowledged within one segment-delay**; protocol round-trip **asserting `hello.protocol_version=="0.1"` and per-`ErrorCode` error paths** (unknown event, invalid JSON, empty-buffer commit, bad extras); **endpoint precedence** (URI>socket>host+port) + cleartext-remote guard; **`session.update`→`updated` and `input_text.clear`→`cleared`** round-trips; **`response.failed`** via a raising `ToneBackend` (carries `{code,message}`, session stays usable); **capabilities** shape + **unknown-extras dropped not errored** + an extra colliding with a fixed param (`voice`/`language`) rejected before the `**extras` call; **`seq` monotonicity** — `seq` starts at 0, increments by 1 with no gaps across a multi-segment utterance, and resets per new `response_id` (the client reassembles ordered PCM off `seq`; a gap silently corrupts audio); **standalone `PROTOCOL_VERSION=="0.1"` trip-wire** (a constant-pin test separate from the handshake round-trip — mirrors stt; catches bumps the round-trip would not); **`session.update.audio_format` reject** — any value other than the advertised pcm16-at-model-rate → `error {code: UNSUPPORTED_FORMAT}`; **unknown `input_text.commit.audio_format` reject** — because commit has no format field in v1, this is an invalid/unknown-field protocol error rather than format negotiation; **`text_format` reject** — a non-`plain` `text_format` (e.g. `ssml`) is rejected (only `plain` advertised); **`session.cancel` vs `session.close`** — distinct semantics (close = drain, cancel = discard) and both distinct from `response.cancel`.
+- [x] `client.py` async client.
+- [x] **Extend the lean CI allow-list** with the Phase-1 test files added below.
+- [x] **Move here:** the import-safety test that constructs `ToneBackend` with no mlx (lean CI).
+- [x] Tests (all lean-CI on `ToneBackend`, no mlx): tone end-to-end; cancel mid-stream **asserting no `response.audio.delta` for that `response_id` after `response.cancelled`, acknowledged within one segment-delay**; protocol round-trip **asserting `hello.protocol_version=="0.1"` and per-`ErrorCode` error paths** (unknown event, invalid JSON, empty-buffer commit, bad extras); **endpoint precedence** (URI>socket>host+port) + cleartext-remote guard; **`session.update`→`updated` and `input_text.clear`→`cleared`** round-trips; **`response.failed`** via a raising `ToneBackend` (carries `{code,message}`, session stays usable); **capabilities** shape + **unknown-extras dropped not errored** + an extra colliding with a fixed param (`voice`/`language`) rejected before the `**extras` call; **`seq` monotonicity** — `seq` starts at 0, increments by 1 with no gaps across a multi-segment utterance, and resets per new `response_id` (the client reassembles ordered PCM off `seq`; a gap silently corrupts audio); **standalone `PROTOCOL_VERSION=="0.1"` trip-wire** (a constant-pin test separate from the handshake round-trip — mirrors stt; catches bumps the round-trip would not); **`session.update.audio_format` reject** — any value other than the advertised pcm16-at-model-rate → `error {code: UNSUPPORTED_FORMAT}`; **unknown `input_text.commit.audio_format` reject** — because commit has no format field in v1, this is an invalid/unknown-field protocol error rather than format negotiation; **`text_format` reject** — a non-`plain` `text_format` (e.g. `ssml`) is rejected (only `plain` advertised); **`session.cancel` vs `session.close`** — distinct semantics (close = drain, cancel = discard) and both distinct from `response.cancel`.
 
 ### Phase 2 — Kokoro backend
-- [ ] `backends/kokoro.py`: load/generate, float→pcm16, thread executor; rate from `model.sample_rate` (warmup is JIT-only, decoupled from rate discovery — see R3).
-- [ ] `capabilities()` → `streaming:false`, chunk-size hints, voices count, languages; advertised `extras` == Kokoro's effective set `{speed}`.
-- [ ] Tests (gated on mlx / Apple Silicon, not on the lean allow-list): synthesize "GOAL!" → non-empty PCM16 at advertised rate; **assert `hello.audio.rate` is populated from `model.sample_rate` after `load()` with no `generate()` having run** (R3's pre-warmup invariant); assert Kokoro `capabilities()["extras"] == ["speed"]`, advertised voice/language shape, unsupported kwargs excluded, and at least one non-default ISO language maps to the expected Kokoro `lang_code` before `generate()`; run a long single-segment cancellation probe and record the measured `response.cancel` acknowledgement/no-more-delta latency. If long-segment cancellation exceeds the barge-in target, require client sentence/newline chunking for Kokoro or weaken Kokoro cancel semantics to "best effort at generator yield boundaries."
-- [ ] **Clip-invariant unit test (lean-CI, no mlx):** the float→int16 converter is a standalone stdlib helper importable without `mlx_audio` or `numpy`; feed it `±1.5` and assert it **saturates** to `+32767`/`−32768`, not wraps (R3 — the [-1,1] range is observed, not guaranteed). Add this test file to the lean allow-list.
-- [ ] **Kokoro lazy-import lean test:** import or backend-registry-resolve `tts_server.backends.kokoro` with the `kokoro` extra absent and assert module import succeeds without importing `mlx_audio`; actual model startup remains in the mlx-gated suite.
+- [x] `backends/kokoro.py`: load/generate, float→pcm16, thread executor; rate from `model.sample_rate` (warmup is JIT-only, decoupled from rate discovery — see R3).
+- [x] `capabilities()` → `streaming:false`, chunk-size hints, voices count, languages; advertised `extras` == Kokoro's effective set `{speed}`.
+- [x] Tests (gated on mlx / Apple Silicon, not on the lean allow-list): synthesize "GOAL!" → non-empty PCM16 at advertised rate; **assert `hello.audio.rate` is populated from `model.sample_rate` after `load()` with no `generate()` having run** (R3's pre-warmup invariant); assert Kokoro `capabilities()["extras"] == ["speed"]`, advertised voice/language shape, unsupported kwargs excluded, and at least one non-default ISO language maps to the expected Kokoro `lang_code` before `generate()`; run a long single-segment cancellation probe and record the measured `response.cancel` acknowledgement/no-more-delta latency. If long-segment cancellation exceeds the barge-in target, require client sentence/newline chunking for Kokoro or weaken Kokoro cancel semantics to "best effort at generator yield boundaries."
+- [x] **Clip-invariant unit test (lean-CI, no mlx):** the float→int16 converter is a standalone stdlib helper importable without `mlx_audio` or `numpy`; feed it `±1.5` and assert it **saturates** to `+32767`/`−32768`, not wraps (R3 — the [-1,1] range is observed, not guaranteed). Add this test file to the lean allow-list.
+- [x] **Kokoro lazy-import lean test:** import or backend-registry-resolve `tts_server.backends.kokoro` with the `kokoro` extra absent and assert module import succeeds without importing `mlx_audio`; actual model startup remains in the mlx-gated suite.
 
 ### Phase 3 — Ops parity with stt
-- [ ] `status` subcommand; startup model logging.
-- [ ] Optional bearer auth; resource limits + send-queue high-water.
-- [ ] **Backpressure caps** (per-connection `_SessionState` isolation already built in Phase 1): global synthesis-queue cap + per-connection in-flight cap → reject excess `commit` with `error {code: BUSY, retry_after_ms}` (not enqueued).
-- [ ] Tests (mirror stt, lean-CI on `ToneBackend`): `status` round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; **auth** — token-required reject, token-absent TCP startup warning, UDS no-warn, and client `TTS_WS_TOKEN` vs server `PIPECAT_TTS_AUTH_TOKEN` precedence (client must NOT fall back to the server token); **resource limits** — stalled-reader trips send-queue high-water → connection closed (not unbounded), and `max_text_chars` over-limit rejection; **backpressure + isolation** (see Testing Notes) — `BUSY`/`retry_after_ms` on a full synthesis queue (assert `retry_after_ms` is a **positive, bounded integer** — not zero/absurd, else the client hot-loops), per-connection in-flight cap, **cancel frees an in-flight slot** (fill to K, `response.cancel` one, assert a new `commit` is accepted — guards a barge-in-heavy client from self-DoSing into permanent `BUSY`), and the 2-connection no-intermix / round-robin-fairness assertions.
+- [x] `status` subcommand; startup model logging.
+- [x] Optional bearer auth; resource limits + send-queue high-water.
+- [x] **Backpressure caps** (per-connection `_SessionState` isolation already built in Phase 1): global synthesis-queue cap + per-connection in-flight cap → reject excess `commit` with `error {code: BUSY, retry_after_ms}` (not enqueued).
+- [x] Tests (mirror stt, lean-CI on `ToneBackend`): `status` round-trip (connect→hello→status→assert backend/model/rate/queue-depth) + missing-server nonzero exit; **auth** — token-required reject, token-absent TCP startup warning, UDS no-warn, and client `TTS_WS_TOKEN` vs server `PIPECAT_TTS_AUTH_TOKEN` precedence (client must NOT fall back to the server token); **resource limits** — stalled-reader trips send-queue high-water → connection closed (not unbounded), and `max_text_chars` over-limit rejection; **backpressure + isolation** (see Testing Notes) — `BUSY`/`retry_after_ms` on a full synthesis queue (assert `retry_after_ms` is a **positive, bounded integer** — not zero/absurd, else the client hot-loops), per-connection in-flight cap, **cancel frees an in-flight slot** (fill to K, `response.cancel` one, assert a new `commit` is accepted — guards a barge-in-heavy client from self-DoSing into permanent `BUSY`), and the 2-connection no-intermix / round-robin-fairness assertions.
 
 ### Phase 4 — Reference adapter + docs
-- [ ] `examples/pipecat_tts_service.py` (reference `InterruptibleTTSService` wrapper). The
+- [x] `examples/pipecat_tts_service.py` (reference `LocalTTSService`, a `TTSService` subclass — not `InterruptibleTTSService`, which is the cloud-reconnect base; rationale in the module docstring). The
   lightweight `examples/reference_client.py` (stdlib + `websockets`, no pipecat dependency)
   already exists as a testing oracle; the pipecat-framework adapter is the additional Phase-4
   deliverable.
-- [ ] `README.md`; **`docs/protocol.md` already authored** (2026-06-24) — Phase 4 verifies it
+- [x] `README.md`; **`docs/protocol.md` already authored** (2026-06-24) — Phase 4 verifies it
   matches the shipped `protocol.py` and updates the Kokoro-only capabilities/extras table
   (Phase 5 revisits it when the other backends land). `python -m tts_server status` usage.
 
 ### Phase 5 — More backends (later)
-- [ ] **Streaming backend** = `backends/voxtral_tts.py` (verified present in mlx-audio
-  0.4.4; it was NOT in 0.3.0). `voxtral_tts.generate(text, voice, temperature, top_k,
-  top_p, max_tokens, verbose, stream, streaming_interval)` has native `stream`/`streaming_interval`
-  and **no `ref_audio`** — so it's the cleanest streaming backend (exercises the no-split
-  client path with no cloning concern). extras `{temperature, top_k, top_p}`. **`kyutai`
-  is still not an mlx-audio TTS family**; `moss_tts*` exists but is unrelated to Kyutai/Moshi.
-- [ ] `backends/pocket_tts.py` — also native streaming, but exposes `ref_audio` (leave
-  unwired per decision 2); **imports cleanly in 0.4.4** (re-verified 2026-06-24 — the earlier
-  "needs `requests`" note was stale/wrong). `backends/dia.py`
-  (multi-speaker **dialogue** model — `[S1]`/`[S2]` tags, `extras` `{temperature, top_p}`,
-  `ref_audio` unwired; its `voice`/text semantics differ from single-voice backends).
-- [ ] Test (when these backends land): assert each backend's advertised `capabilities["extras"]`
-  **excludes `ref_audio`** and that a client-supplied `ref_audio` cannot be passed through —
-  the negative guard for locked decision #2.
-- [ ] Packaging/CI update in the same commit as each new backend: add the corresponding
-  `pyproject.toml` optional dependency extra, update the full macOS/all-extras sync job to install
-  it, and keep lean CI free of those heavy deps.
-- [ ] **Update the Phase-4 README/protocol-doc capabilities & extras table** for the new
-  backends (they were Kokoro-only when first written).
+
+**Split into independent sub-phases** (each adds a heavy dep + CI extra + model-gating
+decision, so each is its own branch/commit). Signatures and streaming behaviour below are
+**VERIFIED via `inspect.signature` on the live 0.4.4 callables + source read** (2026-06-24,
+arm64; supersedes the earlier source-regex survey — see Findings → *Phase 5 signature
+verification*). The session loop, 20 ms re-chunker, scheduler, and `_stream_util` bridge are
+already backend-agnostic (Phases 1–2), so a new backend is: lazy-import + `generate()` adapter +
+`capabilities()` + extras filtering. **No bridge/queue/re-chunker code changes are needed** —
+sub-segment chunks feed the same bounded queue, and `response.audio.done.duration_ms` is computed
+from the total sample count in the drain path (`server.py::_run_drain`, ~`server.py:1137`; not
+`chunks × interval`), so sub-segment
+chunking changes only the chunk *count*, not the totals. (This is *why* "nothing downstream changes"
+holds — confirmed against the drain path; it is not a bare assertion. Each sub-phase still adds its
+own backend module, tests, packaging, and a verified streaming-cadence default — see below.)
+
+**`streaming_interval` plumbing (applies to 5a/5b).** There is no constructor/CLI channel for it:
+`make_backend(name, model)` (`tts_server/backends/__init__.py:23`) and the CLI take only
+`--backend`/`--model`. So each streaming backend carries `streaming_interval` as a **per-backend
+module constant baked into its `_gen_factory()` `generate()` call** — exactly how `kokoro.py`
+hardcodes `lang_code`/`speed` — NOT a new constructor param, CLI flag, or client `extras` key.
+
+**`voice=None` handling (applies to 5a/5b; `dia` is now its own plan — see Companion plans).** The server **intentionally forwards**
+`voice=msg.get("voice", config.get("voice"))` — i.e. `voice=None` — straight into `open_stream`
+(`server.py`, the `open_stream(..., voice=voice)` call is unconditional **by design**; do NOT add an
+omit there). The model defaults differ per backend (voxtral `'casual_male'`, pocket/dia `None` with
+dialogue-tag semantics), so **the omit-when-None logic lives in each backend's `_gen_factory`/
+`open_stream` (the TTSStream layer), not the server**: when the resolved `voice is None`, omit the
+`voice` kwarg from the `generate()` call so the model's own default stands rather than forwarding
+`voice=None`. Kokoro's `_gen_factory` does this for `speed` (it passes `voice` **unconditionally** —
+there is no existing `voice`-omit to copy); replicate that **`speed`-omit pattern, applied to `voice`**. A
+per-backend test spies the `generate()` kwargs and asserts `voice` is absent when the client omits it
+(same `open_stream`-spy harness as the negative-guard test — see per-sub-phase tests).
+
+**`ToneBackend` streaming fixture (5a prerequisite, lean CI).** `ToneBackend.capabilities()` is
+hardcoded `"streaming": False` (`tts_server/backend.py:282`). Add a `streaming: bool` constructor
+param (it already parametrizes `extras`/`languages`) so the `streaming:true` capabilities branch and
+the client no-split path are exercisable in **lean CI**, independent of the mlx-gated real backends.
+
+#### Phase 5a — `voxtral_tts` (streaming reference) — do first
+- [ ] `backends/voxtral_tts.py`. VERIFIED signature: `generate(text, voice='casual_male',
+  temperature=0.8, top_k=50, top_p=0.95, max_tokens=4096, verbose=False, stream=False,
+  streaming_interval=2.0, **kwargs)`. Native `stream`/`streaming_interval`, **no `ref_audio`**
+  — the cleanest streaming backend (exercises the `streaming:true` no-split client path with no
+  cloning concern). `capabilities()` → `streaming:true`, extras `{temperature, top_k, top_p}`.
+  Apply the `streaming_interval` plumbing and `voice=None` rule above.
+- [ ] **Default `streaming_interval` small — ~0.3–0.5s is a STARTING ESTIMATE, not a measured
+  optimum.** **Observed mechanism (0.4.4 source read, NOT script-asserted — `verify_mlx_tts_api.py`
+  does not compute cadence; `voxtral_tts.py:671-716`, line numbers approximate):** with `stream=True`
+  the model yields
+  a `GenerationResult` every `frames_per_chunk = max(1, int(streaming_interval/0.08))` frames
+  (1 frame = 80 ms), so the model default 2.0s buffers ~2 s before the **first** chunk; the 20 ms
+  re-chunker cannot lower TTFB (it re-frames only *after* a chunk arrives). What is **NOT** verified:
+  (a) that 0.3–0.5s is the floor that still yields clean audio — voxtral adds `context_frames`
+  overlap per chunk to avoid boundary artifacts, so a smaller interval carries a decode-overhead and
+  artifact cost not yet quantified; (b) absolute TTFB — that is dominated by model prefill +
+  first-decode, unmeasured for voxtral. **Measurement step (mirror Phase-2 discipline):** before
+  locking the default, measure TTFB at 0.3 / 0.5 / 1.0s and record the chosen value in Findings.
+  **TTFB is the objective, automatable leg; "audio quality" is a MANUAL listening check recorded in
+  Findings, NOT an automated acceptance gate** (no metric/threshold is defined for it). The automated
+  backend test asserts only the single locked TTFB-driven `streaming_interval` value (below) plus a
+  no-NaN / no-clipping sanity check on a decoded chunk; the subjective quality judgement gates the
+  human's choice of value, not CI. The interval bounds *added buffering* latency, not absolute TTFB.
+- [ ] EOF stays keyed off **generator exhaustion**, not `.is_final_chunk`. **Observed (0.4.4 source
+  read, NOT script-verified — the committed `verify_mlx_tts_api.py` checks only field *presence*, not
+  the set-True behavior; `voxtral_tts.py:781-782`, line numbers approximate):** voxtral *appears to*
+  set `is_final_chunk=True` on its last chunk — unlike Kokoro, which never sets it. **Correctness does
+  NOT depend on this:** exhaustion handles both shapes, so no code change; the bridge contract holds
+  across both. (Optional: add a `--load` assertion to `verify_mlx_tts_api.py` that drains a voxtral
+  generator and inspects the last result's `.is_final_chunk` to upgrade this from observation to
+  verified.) **`kyutai` is still not an mlx-audio TTS family**; `moss_tts*` is unrelated to
+  Kyutai/Moshi.
+- [ ] `_stream_util` bridge `maxsize`: `_BRIDGE_MAXSIZE=8` is a **module constant in `kokoro.py`**
+  (passed into `stream_generate(maxsize=...)`), tuned for Kokoro's *few large* per-segment chunks;
+  voxtral emits *many small* sub-segment chunks (~one per `streaming_interval`). **Each backend module
+  declares its OWN `_BRIDGE_MAXSIZE`** with a streaming-cadence rationale, passed into the
+  already-per-call `stream_generate(maxsize=…)` — the rule is *don't share the value*, **no
+  `_stream_util.py` code change is implied** (the `maxsize` arg already exists); do not edit Kokoro's
+  constant or copy its bound/comment verbatim.
+- [ ] Tests:
+  - **Lean (no mlx, `ToneBackend(streaming=True)`):** assert `capabilities()["streaming"] is True`
+    and the `streaming:true` no-split client path.
+  - **Bridge unit (lean, no mlx) — `is_final_chunk=True` EOF:** drive `_stream_util.stream_generate`
+    **directly** with fake `GenerationResult`s whose last carries `is_final_chunk=True`, and assert
+    EOF still comes from **generator exhaustion** (the flag is advisory). This CANNOT go through
+    `ToneBackend` — `AudioEvent` carries only `{kind, pcm}` (`backend.py:47-48`), so the model flag
+    never reaches it; the bridge is the only layer that sees `is_final_chunk`. (Closes the "both
+    shapes" claim — the existing EOF guard only covers Kokoro's `is_final_chunk=False`.)
+  - **Backend-unit (no model load):** assert `streaming_interval` is **not** in
+    `capabilities()["extras"]` (it is backend config, not a client knob). For the *value* itself the
+    assertion is **provisional and must cite the measured Findings value** — assert the backend's
+    effective `streaming_interval` equals the value recorded by the measurement step (above), NOT a
+    hard-coded `0.3 <= value <= 0.5` band: if measurement lands the floor at e.g. 0.7s, the test
+    follows the measurement rather than contradicting it. The test asserts equality to the **single
+    locked Findings value** (never a range); the `0.3–0.5s` band is only a pre-measurement placeholder,
+    replaced by that one value in the same sub-phase.
+  - **mlx-gated — sub-segment streaming proven at the NATIVE boundary, not the wire:** a wire
+    `response.audio.delta` count is meaningless — the 20 ms re-chunker (`server.py::_run_drain`)
+    splits even one large *non-streaming* native chunk into many 20 ms deltas, so "≥2 deltas" passes
+    for a single Kokoro-style chunk. Instead spy on the backend's **native** yields (count
+    `GenerationResult`/bridge chunks, or the stream's `events()` `"delta"` `AudioEvent`s) and assert
+    **≥2 native chunks** for a single no-newline sentence — the structural difference from Kokoro
+    (which yields once per `\n+` segment). The test MUST assert its input text contains **no newline**
+    as an explicit precondition — an incidental `\n` would let a Kokoro-style multi-segment yield pass
+    falsely and mask a non-streaming regression.
+
+#### Phase 5b — `pocket_tts` (streaming + ref_audio negative guard) — do second
+- [ ] `backends/pocket_tts.py`. VERIFIED signature: `generate(text, voice=None, ref_audio=None,
+  temperature=None, verbose=False, stream=False, streaming_interval=2.0, frames_after_eos=None,
+  **kwargs)`. Native streaming (**observed in 0.4.4 source, not script-asserted; `pocket_tts.py:285-318`,
+  line numbers approximate** — yields per
+  `interval_samples = streaming_interval * sample_rate`); imports cleanly in 0.4.4. `capabilities()`
+  → `streaming:true`, extras `{temperature}` **only**. Apply the `streaming_interval` plumbing,
+  `voice=None` rule, per-backend bridge `maxsize`, and small-interval measurement step from 5a.
+- [ ] **Leave `ref_audio` AND `frames_after_eos` unwired** (decision 2 + undocumented param). This
+  is the backend that exercises the decision-#2 negative guard — voxtral structurally cannot
+  (it has no `ref_audio`).
+- [ ] Negative-guard test — the load-bearing assertion is at the **backend layer, not end-to-end.**
+  The server's `_validate_extras` (`server.py:614-646`) already drops any extra not in the advertised
+  set *before* the backend, so an end-to-end client `extras={"ref_audio": ...}` never reaches
+  `generate()` regardless of backend correctness — a spy on that path passes trivially and proves
+  nothing. Instead: (1) assert `capabilities()["extras"]` **excludes `ref_audio`/`frames_after_eos`**;
+  (2) call the backend's `open_stream(extras={"ref_audio": ..., "frames_after_eos": ...})`
+  **directly** (bypassing server validation, exercising the backend's own last-defense filter —
+  mirror Kokoro's at `kokoro.py:513-521`) and spy the `generate()` kwargs, asserting neither key
+  appears — the real "cannot reach `generate()`" invariant, robust to a future unfiltered `**extras`
+  refactor. Place in the already-lean-allow-listed `tests/test_capabilities_extras.py` (or add a new
+  lean file AND extend the allow-list in the same commit — see *Per sub-phase*).
+- [ ] **Streaming-flag assert:** `capabilities()["streaming"] is True`.
+- [ ] **Re-run + extend the live smoke tests against a `streaming:true` backend** (after 5a and 5b
+  land). `tests/smoke/` today only covers `streaming:false` backends (tone/Kokoro), so the steady
+  sub-segment streaming cadence (R4) and the `streaming:true` client **no-split** path are never
+  exercised end-to-end. Re-run `tests/smoke/run_smoke.sh --backend voxtral_tts`/`pocket_tts` and the
+  multi-connection driver, and add a streaming-cadence assertion (deltas arrive at roughly
+  `streaming_interval`, not all-at-end) plus a check that interleaving + BUSY + max-buffer still hold
+  when audio streams incrementally. See `tests/smoke/README.md` → *Future work*.
+
+#### Phase 5c — `dia` (dialogue, NON-streaming) — SPLIT OUT to its own plan (2026-06-25)
+`dia` is no longer part of this v1 plan. It carries an **unsolved design** — the `[S1]`/`[S2]`
+dialogue speaker-tag mapping changes the single-voice `open_stream(voice=…)` contract that 5a/5b
+share — so it gets its own design + review + test lifecycle. Two `/review-plan` lenses (architecture,
+spec-and-testing) recommended the split. See **`docs/dev_plans/20260625-feature-tts-dia-backend.md`**.
+It follows the 5a/5b backend-add pattern below once its dialogue-mapping design is settled.
+
+#### Per sub-phase (5a/5b)
+- [ ] **Wire the backend into the resolver AND the CLI choices** in the same commit — two separate
+  call sites, both required, or `--backend <new>` is dead end-to-end:
+  (1) `tts_server/backends/__init__.py::make_backend` currently resolves only `tone`/`kokoro` and
+  `raise ValueError` otherwise — add a **lazy-import** branch (mirror Kokoro's: import inside the
+  branch, `mlx_audio` only in `start()`);
+  (2) the argparse **`--backend choices` tuple** (`__main__.py:305`, today `("tone", "kokoro")`) —
+  add the new name, else argparse rejects `--backend voxtral_tts|pocket_tts` before the resolver
+  is ever reached (a passing `make_backend` unit test will NOT catch this).
+  Add a **lean construction/lazy-import test** asserting the name is an accepted `--backend` choice,
+  resolves via `make_backend`, and imports without `mlx_audio` present.
+- [ ] **Per-backend `sample_rate` discovery** (R1/R3 rate contract): each backend must expose
+  `sample_rate` after `start()`/load so `server.start()` (`server.py:400-437`, connect→load→hello)
+  advertises the true model rate in `server.hello.audio.rate`; decouple it from warmup per R3. Add an
+  mlx-gated test asserting `hello.audio.rate` equals the loaded model's rate **before any synth runs**
+  (voxtral/pocket rates are per-model and unverified — Kokoro's is 24000; do NOT assume these match).
+  The test MUST read the rate from `model.sample_rate` (the config property), **not** from a backend
+  literal — otherwise a wrong hardcoded constant satisfies both sides of `hello == model` and the test
+  passes while the advertised rate is wrong (R1 resample-correctness bug).
+- [ ] Packaging/CI update in the **same commit** as each new backend: add the `pyproject.toml`
+  optional dependency extra, and **switch the macOS job's sync to `uv sync --all-extras`** (do this
+  once in 5a so it cannot drift per-backend) — the line is `.github/workflows/test.yml:84`
+  (`uv sync --extra client --extra kokoro`), inside the **`test-macos-smoke`** job.
+  **Ordering edge — 5a MUST merge before 5b:** the `--all-extras` flip lands only in 5a, so if 5b
+  merged first the macOS smoke job would still sync just `--extra client --extra kokoro` and never
+  install-smoke the new `pocket_tts` extra. 5a is the prerequisite that makes every later backend's
+  extra install-smoked; conduct 5a → 5b in order (not in parallel worktrees). **Reality check
+  (decided):** that job is an **import smoke that deliberately runs NO pytest**, so installing a new
+  extra there does NOT run any backend synthesis test in CI — and that is **accepted, not a gap**:
+  backend synth tests stay **local/mlx-gated only**, exactly as the Phase-2 Kokoro decision already
+  established (Kokoro's synth tests don't run in CI either). So `--all-extras` here only proves the
+  runner can *resolve/install* the extra (an install-smoke), it is not a synthesis-coverage path.
+  Keep lean CI free of those heavy deps, and decide model-download/network gating (same constraint
+  that made Phase 2 environment-gated; larger weights than Kokoro — confirm runner access before 5a).
+- [ ] **If a sub-phase adds a NEW lean test file, extend the lean allow-list
+  (`.github/workflows/test.yml:40-55`) in the same commit** (`pytest` errors on a missing
+  allow-listed path — the discipline Phases 1–3 each followed). Folding the negative-guard assertion
+  into the already-allow-listed `tests/test_capabilities_extras.py` avoids this edit.
+- [ ] **Update the Phase-4 README/protocol-doc capabilities & extras table** for the new backend
+  (they were Kokoro-only when first written) — including its `streaming` flag.
+- [ ] **If Phase 6 (launchd ops) is already in place**, add the backend's `(label, port)` row to the
+  justfile `_resolve` map + the README port-table row **in the same commit** — otherwise the Phase-6
+  drift test (`tests/test_justfile_recipes.py`) goes red between phases. (If Phase 6 has not landed
+  yet, skip this; Phase 6 adds the row when it lands.)
+- [ ] **Re-verify the live `generate()` signature via `inspect.signature` before wiring** if the
+  `mlx-audio` pin is bumped past 0.4.4 (R7/R8).
 
 ## Technical Specifications
 
@@ -321,7 +491,7 @@ server is app-agnostic.
 ```jsonc
 { "streaming": false, "binary_audio": false,                  // rate is NOT here — canonical rate is hello.audio.rate (24000, VERIFIED); R1 client reads that
   "text_formats": ["plain"],                                   // ssml/ipa UNVERIFIED for Kokoro — plain confirmed; drop until checked
-  "languages": ["en","ja","zh","fr","es","it","pt","hi"],     // VERIFIED as voice-prefix/lang_code mapping only via --load 2026-06-24: a:20,b:8→en, e:3→es, f:1→fr, h:4→hi, i:2→it, j:5→ja, p:3→pt, z:8→zh; full non-English long-text behaviour needs the Phase-2 language probe
+  "languages": ["en","fr","es","it","pt","hi"],               // SHIPPED set after 08d4f6e (2026-06-25): ja/zh dropped from the advertised set — their G2P needs misaki[ja]/misaki[zh] (not in the kokoro extra), so advertising them would let a client pick a language that fails mid-synthesis. ja/zh voices still load but are opt-in via PIPECAT_TTS_KOKORO_EXTRA_LANGS. Voice-prefix/lang_code mapping VERIFIED via --load 2026-06-24: a:20,b:8→en, e:3→es, f:1→fr, h:4→hi, i:2→it, j:5→ja, p:3→pt, z:8→zh; full non-English long-text behaviour needs the Phase-2 language probe
   "voice_count": 54,                                           // VERIFIED via --load 2026-06-24 (54 distinct voices in mlx-community/Kokoro-82M-bf16)
   "extras": ["speed"],                                         // Kokoro effective set ONLY; temperature/instruct/cfg_scale/ddpm_steps are NOT Kokoro params
   "ideal_words": 40, "max_text_chars": 2000 }                  // ideal_words: soft target, client rounds UP to next sentence boundary; max_text_chars: hard server cap. Values are chosen defaults (not model facts).
@@ -378,7 +548,10 @@ async def stream_generate(
     maxsize: int,                 # bounded async queue; producer blocks/cooperates when full
 ) -> AsyncIterator[bytes]: ...    # yields int16-LE PCM per chunk; EOF sentinel ends iteration
 ```
-A daemon thread acquires `metal_lock`, runs `gen_factory()`, converts each yielded
+A daemon thread acquires `metal_lock` **cancellation-awarely** (bounded-poll `acquire(timeout=…)`
+re-checking `cancel` between slices, with a second `cancel` check right after acquiring — so a
+response cancelled WHILE parked waiting for the lock never constructs or advances its generator),
+runs `gen_factory()`, converts each yielded
 `GenerationResult.audio` (clipped and mapped per R3) to int16-LE PCM, and performs a
 producer-side blocking/cooperative put into the bounded async queue; `call_soon_threadsafe` alone
 is **not** sufficient because it schedules and returns without applying backpressure. The concrete
@@ -587,10 +760,11 @@ Closest of the two to conduct-ready:
 	   cleartext sequencing, exact `audio_format` ownership, asymmetric PCM16 mapping, stdlib-only
 	   Tone/pcm16 runtime, full-extra CI verification, Kokoro cancel/language verification,
 	   scheduler-owned fairness, bridge backpressure, Phase-5 packaging/CI, and concrete
-	   steady-stream gap tests. Re-run `/review-plan` after these edits; its review marker is the
+	   steady-stream gap tests. A **third `/review-plan` pass (2026-06-25)**, focused on Phase 5 conduct-readiness, folded in the 5a-before-5b ordering edge, the audio-quality manual-check reframing, the un-script-verified mlx-audio claims relabelled "observed in 0.4.4 source" (voxtral `is_final_chunk`, cadence formula, external line numbers), the Kokoro `voice`-omit wording, the native ≥2-chunks no-newline precondition, and refreshed in-repo line numbers; **`dia` (formerly 5c) was split into `20260625-feature-tts-dia-backend.md`** (unsolved dialogue-tag design). Its review marker is the
 	   `/conduct` readiness signal.
-2. Phases 0–5 are drafted with per-phase acceptance tightened in review (mlx-gated Kokoro
-   tests vs lean CI split; numpy in the `dev` group; per-phase allow-list extension).
+2. Phases 0–5a/5b are drafted with per-phase acceptance tightened in review (mlx-gated Kokoro
+   tests vs lean CI split; numpy in the `dev` group; per-phase allow-list extension); `dia` lives in
+   its own plan (`20260625-feature-tts-dia-backend.md`).
 3. This plan has **no external blocker** — it can be conducted first; the gamealerts plan
    depends on its Phases 0–2.
 
@@ -615,11 +789,251 @@ Phase 3:
   manual end-to-end checks once the server is up — so the conductor implements to a written
   contract rather than re-deriving it.
 
-## Companion plan
-gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.
+## Companion plans
+- gamealerts client/integration work: `gamealerts/docs/dev_plans/20260624-feature-tts-server-client-integration.md`.
+- `dia` dialogue backend (formerly Phase 5c, split out 2026-06-25):
+  `docs/dev_plans/20260625-feature-tts-dia-backend.md`.
 
-<!-- reviewed: 2026-06-24 @ 01247d4a4906b5570c28030d86a9f0c2e427abb6 -->
+<!-- reviewed: 2026-06-25 @ a0cff09acf15d7296db05735e63471649d8bce03 -->
 
 ## Progress
 
+- [x] Phase 0: Scaffold — committed d56d502 (import-safety 12 passed, ruff clean)
+- [x] Phase 1: Protocol + Tone end-to-end — committed (70 lean tests pass, ruff clean)
+- [x] Phase 2: Kokoro backend — committed (80 lean + 5 mlx-gated tests pass; live synth verified)
+- [x] Phase 3: Ops parity with stt — committed (103 lean tests pass; scheduler/auth/backpressure verified)
+- [x] Phase 4: Reference adapter + docs — committed (pipecat adapter, README, protocol.md reconciled; 183 total: 157 lean + 6 mlx-gated + 20 pipecat-adapter)
+- [ ] Phase 5: More streaming backends — 5a `voxtral_tts`, 5b `pocket_tts` (5a before 5b). `dia` (formerly 5c) split to `20260625-feature-tts-dia-backend.md`.
+- [x] Post-v1 ops: operator `justfile` (`tts-list`, `tts-status`) — mirrors the stt justfile; smoke-tested with a live tone server. Launchd install/enable/disable/uninstall recipes deferred (no tts install path yet — see *Operator justfile (post-review)* below).
+
 ## Findings
+
+### Test-infra: subprocess-based import-safety verification — 2026-06-26
+The lean import-safety checks asserted on **process-global `sys.modules`**, so once
+any earlier test imported a heavy dep (`test_kokoro_backend.py` pulls `mlx_audio`,
+which transitively loads `numpy`), four assertions failed under the full suite while
+passing in isolation — pure test-ordering pollution, not a real lean-base regression.
+Fix: moved the `sys.modules` inspection into a **fresh interpreter** via a new
+`lean_import_offenders()` helper in `tests/_helpers.py` (runs the import/call under
+test in a `sys.executable -c` subprocess, returns offending module names as JSON).
+This both removes the pollution and tests the real invariant — a clean process
+importing only lean code. Affected: `tests/_helpers.py`,
+`tests/test_import_safety.py` (`test_lean_base_does_not_pull_heavy_dep`,
+`test_tone_backend_constructs_without_mlx`), `tests/test_pcm16_clip.py`
+(`test_converter_importable_without_mlx_or_numpy`). Negative control confirms the
+probe still detects a real heavy-dep import; full suite 182 passed.
+
+### /review-plan pass — 2026-06-25 (5 lenses; advisory, not applied to the reviewed contract)
+Re-ran `/review-plan --auto-fix` after the marker went stale from the smoke-test-doc edit
+(`f32bbc4` added a Phase 5b checkbox above the marker). No Critical findings. Recorded here in
+the workspace (below the marker, outside the hash) per the "don't edit the reviewed contract"
+decision; address the actionable ones when Phase 5 is conducted. Auto-fix applied nothing — every
+fixable line-drift sits inside `#### Phase 5*` sections that the scope-forbid list protects.
+Reconciliation: raw=18 merged=0 unique=18 related=1 (line 290).
+
+**Important**
+- **Line-anchor drift (CI):** `test.yml:84` is a comment — the real macOS `uv sync` step is
+  **line 109**; the lean allow-list range is **40-56**, not 40-55. Fix when next editing those
+  Phase-5 / per-sub-phase tasks (they live in the reviewed zone, so not auto-fixed).
+- **Testing gap (R4 cadence):** streaming-cadence/TTFB has no *automated* gate — 5a asserts only
+  the locked `streaming_interval` + no-NaN; the "deltas incremental, not all-at-end" check lives
+  only in manually-run smoke scripts. Add an mlx-gated pytest cadence assertion in 5a/5b.
+- **Testing gap (smoke cadence under-specified):** the 5b "extend smoke" checkbox has no concrete
+  threshold and the smoke drivers have no timestamp instrumentation. Specify: capture per-delta
+  receive timestamps; assert ≥2 deltas spaced ≥ a fraction of `streaming_interval` before `done`;
+  fail if all deltas land within X ms of `done`.
+- **Assumption (gamealerts contract):** R1/R4's two load-bearing client claims (resample driven
+  *solely* by `hello.audio.rate`; a mid-response stall starves playback) were never confirmed
+  against a real client — Phase 4 shipped only the `examples/` reference adapter, not the gamealerts
+  integration, so the plan's "confirm before Phase 4 integration" gate is still open. Confirm at
+  real integration time before treating R1/R4 as validated.
+
+**Minor**
+- **Line-anchor drift:** `backend.py:282`→283 (ToneBackend streaming hardcode); `_validate_extras`
+  `server.py:614-646`→615-647; `duration_ms` `server.py:1137`→1138.
+- **Architecture:** the plan's `stream_generate` signature omits the live `worker_done` param that
+  `kokoro.py` already passes; 5a/5b `_gen_factory` kwargs assembly under-specified; streaming
+  model-load blocks the first `server.hello` (handshake latency scales with load); per-backend
+  `_BRIDGE_MAXSIZE` vs Metal-lock-hold fairness interaction unanalyzed.
+- **Sequencing:** the prescribed lean construction test routes through `make_backend` and never
+  asserts argparse *rejects* an unknown `--backend` — the choices-tuple half of the dual-wire is
+  untested (make it parse argv). Phase-boundary 5a→5b commit safety confirmed sound.
+- **Testing:** no `capabilities()` shape test for 5a/5b R7 keys; `duration_ms` over many small
+  sub-segment chunks untested; 5a TTFB selection criterion under-specified (no rule ties measured
+  numbers to the single locked value).
+- **Assumption:** "VERIFIED via `inspect.signature`" (line 818) but the committed
+  `verify_mlx_tts_api.py` uses source-regex — provenance, not correctness (signatures do match
+  installed 0.4.4).
+
+### Phase 2 measured results (Apple Silicon, mlx-audio 0.4.4, Kokoro-82M-bf16)
+- **Kokoro single-segment cancellation latency — re-measured 2026-06-26** (arm64, post throughput-fix + Phase-3 cancel-path refactor; supersedes the original "≈ 51 s" finding below). **Client-visible cancel** (`response.cancel` → `response.cancelled`, "no more deltas") lands in **~1 ms**, *independent* of how far into a long no-newline segment the cancel fires — measured 0.0–0.002 s across cancels sent 0/0.5/1.0/2.0 s into synthesis. `_cancel_response` (server.py) sets the flag, requests `stream.cancel()`, and cancels the drain task, then emits `response.cancelled` **immediately** — it does NOT wait for the backend worker. The backend `generate()` thread still runs to its next yield boundary (a no-newline segment yields only at the END) holding the process-wide Metal lock; that is what the **slot release** waits on (`_await_worker_release`, bounded by `drain_timeout_seconds`), *not* the client-visible cancel. So the worker/lock-hold ceiling for a single segment ≈ its full `generate()` time — **≈ 2.9 s for a ~1700-char segment** post-fix. **The original ≈ 51 s (measured 2026-06-24)** conflated client-visible cancel with lock release and predated both the throughput fix (RTF 12× → 0.03×, which alone cut the single-segment `generate()` time) and the cancel-path decoupling — it is no longer reproducible. **Practical effect:** client barge-in is prompt (~1 ms) regardless of chunking; chunking at sentence/newline boundaries now mainly bounds how fast the Metal lock frees for the NEXT commit. Hard guarantee unchanged: "no more deltas after `response.cancelled`" (asserted in tests).
+- **mlx-audio 0.4.4 `broadcast_shapes` bug:** a very long single segment (~542k samples) and certain short inputs (e.g. "Warm up") trip an internal `broadcast_shapes` error inside Kokoro `generate()`, unrelated to our code. Warmup is therefore best-effort (caught/logged/non-fatal) and uses the verified-safe phrase "Hello there."; rate discovery is independent of warmup per R3.
+- **Packaging fix:** Phase 0's `kokoro` extra was missing `misaki[en]` (R3's G2P dep, lazily imported by mlx-audio 0.4.4 so not a transitive hard dep). Added in Phase 2; `mlx-audio==0.4.4` pin kept.
+- **Synthesis-throughput bug (client-reported, 2026-06-26):** live clients measured Kokoro at ~12× realtime (a ~2 s line took ~24 s) — unusable for live commentary. Profiled (`scripts/profiling/`): the neural forward is ~0.03× realtime (fast); the slowdown was 100% in the streaming bridge. `_stream_util._audio_to_pcm` passed mlx-audio's `mx.array` audio straight into the stdlib `float_to_pcm16`, which iterates element-by-element → a device→host sync **per sample** (~78k syncs ≈ 40 s, linear in audio length). Fixed by bulk-materializing via `.tolist()` before conversion → **RTF 12× → 0.03×** (~33× faster than realtime, TTFB ~40 ms). Regression guard: `tests/test_stream_util_audio_conversion.py`. The reusable RTF benchmark + vocoder/acoustic split profiler are kept in `scripts/profiling/` for the Phase 5 streaming backends.
+- **Honest language advertisement (Codex adversarial-review finding, 2026-06-25):** `_discover_voices` derived `capabilities.languages` from voice-name prefixes, so `ja`/`zh` were advertised even though their G2P needs `misaki[ja]`/`misaki[zh]` (not installed by the `kokoro` extra) — a client could pick an advertised language, pass `_validate_language`, consume a synthesis slot, then get `backend_error`. **Resolution:** a `_REQUIRES_EXTRA_G2P = {ja, zh}` blocklist drops them from the advertised set by default; the existing pre-admission `_validate_language` then rejects them cleanly (`invalid_config`, no slot consumed). An operator who installs the package opts a language back in via `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (build-time decision; documented in README). Lean unit tests cover the filter (`tests/test_kokoro_language_advertise.py`); the advertised set is logged at startup. Voices for the blocked languages remain in the voice list — selecting a `jf_*`/`zf_*` voice *without* an enabled language degrades to English G2P (no error); filtering voices too was judged out of scope (the voice does exist).
+
+### Phase 3 notes
+- **Send-queue high-water guard — trippability over loopback (stt-parity limitation):** the outbound send-queue high-water *close* logic is correct and unit-tested deterministically (a fake connection reporting `pending > high_water` → `state.closed`, `ws.close(1011, "send_queue_overflow")`, overflowing frame dropped). BUT over loopback the drain blocks inside a single `await ws.send()` while the kernel/asyncio absorbs the bytes, and the guard only samples `transport.get_write_buffer_size()` *before* each send — so a never-reading raw client is not actually closed (buffer reads 0 during the in-progress send). **This matches the stt reference exactly** (same guard, no live-socket trip test there); the plan says "mirror stt". Future hardening (if a true end-to-end stall-close is needed): re-check the buffer while a send is in progress, or bound buffering differently. Recorded, not fixed (out of v1 mirror scope).
+- Phase 3 mid-phase review: scheduler/auth/concurrency invariants verified sound (single-dispatcher Metal-lock serialization, fair round-robin, no lost-wakeup, no starvation, no slot double-free). One Minor cosmetic finding (redundant `except` tuple in `_SynthScheduler.stop()`) left as advisory.
+
+### Phase 5 signature verification (pre-implementation, 2026-06-24, arm64, mlx-audio 0.4.4)
+Ran `inspect.signature` on the live `Model.generate` callables + source read (supersedes the
+earlier source-regex survey; satisfies R7's "re-verify via `inspect.signature` before wiring").
+- **All extras assertions confirmed:** kokoro `{speed}`, voxtral_tts `{temperature, top_k, top_p}`,
+  pocket_tts `{temperature}`, dia `{temperature, top_p}`.
+- **voxtral_tts & pocket_tts are genuine sub-segment streamers** (native `stream`/`streaming_interval`,
+  confirmed yielding incrementally in source). **dia is NOT** — no `stream` param, uses
+  `split_pattern` like Kokoro → `streaming:false`.
+- **`streaming_interval` default 2.0s is too coarse** — first chunk lands after ~2s of audio
+  (mechanism verified; the 20 ms re-chunker cannot lower TTFB). It is a backend config, not a client
+  extra. ≈0.3–0.5s is a **starting estimate, not measured** — the plan now requires measuring TTFB +
+  audio quality before locking a default (see Phase 5a measurement step).
+- **voxtral *appears to* set `is_final_chunk=True`** on its last chunk (Kokoro never does) —
+  **observed in 0.4.4 source, not script-verified** (`verify_mlx_tts_api.py` checks only field
+  *presence*). EOF-on-exhaustion handles both shapes, so no bridge change and correctness does not
+  depend on it.
+- **Undocumented params to keep unwired:** pocket_tts `frames_after_eos`; dia `ref_text` (in
+  addition to `ref_audio`). Negative-guard tests must cover these.
+- **Backend split rationale confirmed:** voxtral has no `ref_audio` (can't test decision-#2 guard);
+  pocket_tts/dia do (they exercise it). → Phase 5 split 5a voxtral / 5b pocket / 5c dia.
+
+### Phase 5 plan review rounds (2026-06-24, pre-implementation)
+Two review passes on the revised Phase 5 section; all findings folded into the plan body above.
+- **`/review-plan` (5 lenses):** 15 findings (0 Critical at plan level, 2 Critical test gaps, 9
+  Important, 4 Minor); codebase-claims clean (78/78 references verified). Folded: `streaming_interval`
+  plumbing as a per-backend module constant; `voice=None` must be omitted from `generate()`; the
+  ~0.3–0.5s default reframed as an unmeasured estimate + measurement step; two-layer negative-guard
+  tests; `streaming:true/false` advertisement asserts; `ToneBackend` streaming ctor param; per-backend
+  bridge `maxsize`; macOS CI `--extra` flip / `--all-extras`; lean allow-list extension; EOF
+  `is_final_chunk=True` test.
+- **Codex adversarial pass:** 5 Important findings, all verified against code and folded:
+  (1) sub-segment streaming must be asserted at the **native** chunk boundary — wire-delta count is
+  meaningless because the 20 ms re-chunker splits one big chunk into many deltas; (2) negative-guard
+  test must call `open_stream(extras=...)` **directly** — `_validate_extras` (`server.py:614-646`)
+  drops unadvertised extras before the backend, so the e2e path proves nothing; (3) the
+  `is_final_chunk=True` EOF test must drive `_stream_util.stream_generate` directly — `ToneBackend`
+  can't carry the flag (`AudioEvent` is `{kind, pcm}` only); (4) per-backend `sample_rate` discovery
+  before `server.hello` is unstated (rates are per-model, unverified); (5) new backends must be wired
+  into `make_backend` (resolves only `tone`/`kokoro` today) + a lean construction test, else
+  `--backend voxtral_tts|…` is dead end-to-end.
+
+### Phase 1 mid-phase review (advisory, deferred to later phases)
+- **[Phase 2]** `backends/_stream_util.py` EOF sentinel is enqueued via `loop.call_soon_threadsafe(queue.put_nowait, _EOF)`; if the consumer broke out early (cancel) leaving a full queue, `put_nowait` raises `QueueFull` inside the loop callback (logged, benign — Metal lock still releases, no hang). The bridge cancel path is first exercised by Kokoro in Phase 2 — harden the EOF put there (swallow `QueueFull` / drain-then-put).
+- **[Phase 4 — RESOLVED]** `server.py` emits a `session.closed` event (reason `client_cancel`/`client_close`) on `session.cancel`/`session.close`. `docs/protocol.md` §5 now lists `session.closed {session_id, reason}` — reconciled in Phase 4.
+- **[Phase 3]** In-flight commit rejection (K=1) currently uses `ErrorCode.INVALID_EVENT`; when Phase 3 wires `BUSY`/`retry_after_ms`, map the in-flight/backlog rejection to the right code.
+
+## Operator justfile (post-review)
+
+Added after the reviewed contract, so it lives here in the workspace rather than in the
+Implementation Checklist (keeps the `<!-- reviewed -->` hash valid). Mirrors the sibling
+`pipecat-local-stt-server/justfile`. macOS / `launchctl` only.
+
+### Shipped now (read-only recipes — work against any running server)
+- **`default`** — `just --list`.
+- **`tts-list`** — sweep `~/Library/LaunchAgents/pipecat.tts-server*.plist`, print state/pid via
+  `launchctl print`, and for the canonical label (`pipecat.tts-server` → `~/Library/Caches/pipecat-tts/tts.sock`)
+  probe the live backend with `python -m tts_server status`. Because the TTS server has **no launchd
+  install path yet**, the recipe also falls back to probing the canonical ad-hoc socket directly, so a
+  server started by hand (README quick-start) still shows up. Read-only sweep — always exits 0.
+- **`tts-status [socket]`** — wraps `python -m tts_server status --socket-path <socket>`; defaults to
+  the canonical `tts.sock`. Exits with the probe's own status (mirrors stt's behaviour).
+- Smoke-tested 2026-06-24 (arm64): `just tts-list` correctly reports "no agents" with no server, and
+  surfaces an ad-hoc tone server (`live: tone`) when one is running; `tts-status` prints the full status block.
+
+### Phase 6 — launchd ops parity + port-per-backend (PLANNED; not yet reviewed/conducted)
+Status: spec lives in the workspace (below the `<!-- reviewed -->` marker) so it does **not** claim
+review coverage it hasn't had and does not perturb the Phase 0–5 contract hash. **Before conducting:
+promote this into the Implementation Checklist and run `/review-plan` (refresh the marker) — same
+discipline applied to Phase 5.**
+
+**Goal.** Run each backend as its own launchd **user agent** bound to a canonical **loopback port**,
+with `just` wrappers for the full lifecycle (install/enable/disable/start/stop/uninstall) on top of
+the read-only `tts-list`/`tts-status` that already ship. Mirrors the sibling stt ops surface
+(`scripts/install_stt_agent.sh` + `render_stt_plist.py` + `stt-install/enable/disable/uninstall`),
+which the TTS repo deliberately omitted until an install path existed.
+
+**Substrate is already complete — Phase 6 is glue, not server changes.** VERIFIED 2026-06-24:
+- `serve` host+port binding works (`server.py:403-406` `ws_serve(host=…, port=…)`;
+  `ServerConfig` accepts `host+port` as a valid endpoint, `server.py:150`).
+- `status` is already port-capable (`_add_endpoint_flags(p_status, include_uri=True)`,
+  `__main__.py`), so `python -m tts_server status --host 127.0.0.1 --port 8765` works today.
+- `127.0.0.1` is loopback (`env.py:24`), so port binding does **not** trip the cleartext-remote
+  auth warning. No server code changes are needed.
+
+So the two example commands the convention targets work the moment the backend exists + is in the
+`--backend` choices tuple:
+```
+python -m tts_server serve --backend kokoro     --host 127.0.0.1 --port 8765
+python -m tts_server serve --backend pocket_tts --host 127.0.0.1 --port 8965   # after Phase 5b
+```
+(`pocket`, not `pocket_tts`, and the missing `--backend` choice are why the second line fails today.)
+
+**Canonical `backend → (label, host, port)` map** (chosen defaults; ports on `127.0.0.1`):
+
+| backend | label | port |
+|---|---|---|
+| tone | `pipecat.tts-server.tone` | 8665 |
+| kokoro | `pipecat.tts-server.kokoro` | 8765 |
+| voxtral_tts | `pipecat.tts-server.voxtral_tts` | 8865 |
+| pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
+| dia | `pipecat.tts-server.dia` | 9065 |
+
+The **Unix socket stays the default** for a single ad-hoc server / README quick-start
+(`pipecat.tts-server` → `tts.sock`); **ports are the multi-backend convention.** This **resolves the
+old open question** ("does `tone` get its own canonical label?"): with ports making multi-agent the
+norm, `tone` gets its own agent (a dependency-free smoke agent) at 8665.
+
+**One `serve` process = one backend = one port.** `make_backend` resolves a single backend per
+process (`backends/__init__.py`), so a model is never shared across backends in one server —
+multi-backend means *multiple agents*, one per row above. The `voxtral_tts`/`pocket_tts`/`dia` rows
+are **conducted only after their backend lands** (`voxtral_tts`/`pocket_tts` with Phase 5a/5b; the
+`dia` row waits on its own plan, `20260625-feature-tts-dia-backend.md`); a top-to-bottom conductor
+must not stand up an agent for a backend that has no `--backend` choice yet.
+
+**Impl files**
+- `scripts/render_tts_plist.py` — emits a user-agent plist: `Label`, `ProgramArguments`
+  (`… python -m tts_server serve --backend B --host H --port P [--model M] [--auth-token-file F]`),
+  `RunAtLoad=true`, `KeepAlive=true`, `StandardOutPath`/`StandardErrorPath` under
+  `~/Library/Caches/pipecat-tts/logs/<label>.{out,err}`.
+- `scripts/install_tts_agent.sh` — port of the stt installer; env-keyed `PIPECAT_TTS_LABEL` /
+  `PIPECAT_TTS_BACKEND` / `PIPECAT_TTS_HOST` / `PIPECAT_TTS_PORT` / `PIPECAT_TTS_MODEL`; renders the
+  plist → `~/Library/LaunchAgents` → `launchctl bootstrap gui/$uid`.
+- `justfile` — a `_resolve <backend>` map yielding `(label, host, port)`, plus recipes
+  `tts-install/uninstall/enable/disable/start/stop <backend>` (lifecycle = `launchctl
+  bootstrap`/`bootout`, `enable`/`disable`, `kickstart -k`/`kill`, mirroring stt). Extend `tts-list`
+  and `tts-status` to be **port-aware** via the map (`status --host/--port`) — today both are
+  socket-only (`justfile:54,95`).
+
+**Auth note.** Loopback ports need no token. A non-loopback bind MUST set `PIPECAT_TTS_AUTH_TOKEN`
+via `--auth-token-file` in the plist (the cleartext-remote guard warns otherwise).
+
+**Drift guard.** Add a README "Per-backend port convention" table and
+`tests/test_justfile_recipes.py` asserting README table ↔ justfile `_resolve` map ↔
+`render_tts_plist.py` defaults agree (the stt repo's drift test is the model). Point
+`la_dir`/`cache_dir` at a temp `$HOME`, as the stt tests do.
+**Scope at Phase-6 merge:** the drift test asserts exactly the backends present in the `--backend`
+choices tuple **at merge time** — not a hardcoded `tone`/`kokoro` pair. If Phase 6 lands before any
+Phase-5 backend, that set is just `tone`/`kokoro`; **if 5a/5b merged first, Phase 6 MUST seed their
+rows too** (read the choices tuple as the source of truth so an already-merged `voxtral_tts`/`pocket_tts`
+is not silently missing a `_resolve`/README/plist row). Each of 5a/5b **extends the test** (and the
+table + `_resolve` map) with its own row in the same commit it lands (see the Phase-5 per-sub-phase
+checklist). The test must not assert rows for backends not yet in the choices tuple, or it goes red between phases.
+Test command: `uvx pytest tests/test_justfile_recipes.py -v`.
+
+**Sequencing — Phase 6 does NOT block on Phase 5.** It needs only the serve binding (exists) + a
+backend module. It can be conducted right after Phase 4 for `tone`/`kokoro`; each Phase 5 backend
+adds exactly one map row + one README row + one `--backend` choice when it lands. (Numbered 6 for
+ordering, but independent of 5.)
+
+**Pre-promotion verify (launchd is ported on faith).** Phase 6 ports the stt installer/plist
+mechanism (`RunAtLoad`/`KeepAlive`/`bootstrap`/`bootout`/`kickstart`) assuming it works; those are
+launchctl environmental facts, not code we can unit-test. Before conducting, **confirm the existing
+stt agent actually comes up under `RunAtLoad`** (one `launchctl print gui/$uid/<stt-label>` showing
+`state = running` + a pid) so the port rests on observed behaviour, not plist keys alone.
+
+**Acceptance (install/lifecycle is manual-only — NOT CI-covered).** Only the drift test is automated;
+the lifecycle below is an **operator/manual check** (it bootstraps real launchd agents and binds
+ports, which CI does not do). `just tts-install kokoro` loads the agent; `RunAtLoad` brings it up on
+`127.0.0.1:8765`; `just tts-list` shows running + pid; `just tts-status kokoro` prints
+`backend=kokoro` + rate; `tts-stop`/`tts-disable`/`tts-uninstall` tear it down cleanly; the drift
+test is green; lean CI is unaffected (recipes/scripts are not python runtime).
