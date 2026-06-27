@@ -134,8 +134,9 @@ holding the lock for the duration of one commit.
 ## 6. `capabilities` (in `server.hello`)
 
 Built **per backend** — never copied across backends. **Shipped backends:** `kokoro`
-(`streaming:false`, Apache-2.0), `voxtral_tts` (`streaming:true`, CC-BY-NC weights — see
-README → *Backends & licenses*), and the dependency-free `tone` reference. Kokoro example
+(`streaming:false`, Apache-2.0), `voxtral_tts` (`streaming:true`, CC-BY-NC weights),
+`pocket_tts` (`streaming:true`, CC-BY-4.0 weights — see README → *Backends & licenses*),
+and the dependency-free `tone` reference. Kokoro example
 (fields VERIFIED via `scripts/verify_mlx_tts_api.py --load`, 2026-06-24, mlx-audio 0.4.4):
 
 ```jsonc

@@ -42,8 +42,8 @@ trap cleanup EXIT
 
 # A plain `uv run` re-syncs and strips the kokoro extra mid-run; pin --no-sync.
 UV_RUN=(uv run)
-if [[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" ]]; then
-  # The extra name matches the backend name (kokoro / voxtral_tts).
+if [[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" ]]; then
+  # The extra name matches the backend name (kokoro / voxtral_tts / pocket_tts).
   if ! uv run --no-sync python -c "import mlx_audio" 2>/dev/null; then
     echo "$BACKEND extra not installed — running 'uv sync --extra $BACKEND'..."
     uv sync --extra "$BACKEND" >/dev/null

@@ -803,10 +803,58 @@ Phase 3:
 - [x] Phase 2: Kokoro backend — committed (80 lean + 5 mlx-gated tests pass; live synth verified)
 - [x] Phase 3: Ops parity with stt — committed (103 lean tests pass; scheduler/auth/backpressure verified)
 - [x] Phase 4: Reference adapter + docs — committed (pipecat adapter, README, protocol.md reconciled; 183 total: 157 lean + 6 mlx-gated + 20 pipecat-adapter)
-- [~] Phase 5: More streaming backends — **5a `voxtral_tts` DONE** (branch `feature/tts-voxtral-backend`; 6 mlx-gated + 27 new lean tests pass; streaming_interval locked 0.3 s; latency+concurrency smoke executed — see Findings → *Phase 5a measurements*); 5b `pocket_tts` next (5a before 5b). `dia` (formerly 5c) split to `20260625-feature-tts-dia-backend.md`. (Per the *don't edit the reviewed contract* decision, the `#### Phase 5a` contract checkboxes above the marker are left as-is; completion is tracked here in the workspace.)
+- [x] Phase 5: More streaming backends — **5a `voxtral_tts` DONE** (PR #4 merged; branch `feature/tts-voxtral-backend`; streaming_interval locked 0.3 s; latency+concurrency smoke executed — see Findings → *Phase 5a measurements*) and **5b `pocket_tts` DONE** (branch `feature/tts-pocket-backend`; 6 mlx-gated + 14 new lean tests incl. the decision-#2 ref_audio/frames_after_eos negative guard; streaming_interval locked 0.3 s; CC-BY-4.0; smoke executed — see Findings → *Phase 5b measurements*). `dia` (formerly 5c) split to `20260625-feature-tts-dia-backend.md`. (Per the *don't edit the reviewed contract* decision, the `#### Phase 5a/5b` contract checkboxes above the marker are left as-is; completion is tracked here in the workspace.) **Phase 6 (launchd ops + port-per-backend) is ready to be prepared next — see the handoff note below.**
 - [x] Post-v1 ops: operator `justfile` (`tts-list`, `tts-status`) — mirrors the stt justfile; smoke-tested with a live tone server. Launchd install/enable/disable/uninstall recipes deferred (no tts install path yet — see *Operator justfile (post-review)* below).
 
 ## Findings
+
+### Phase 5b — pocket_tts measurements (Apple Silicon arm64, mlx-audio 0.4.4, 2026-06-27)
+Backend: `tts_server/backends/pocket_tts.py`. Model: **`mlx-community/pocket-tts`**
+(the loadable full-model repo; the sibling `kyutai/pocket-tts-without-voice-cloning`
+holds only voice-embedding safetensors). **License CC-BY-4.0** (verified via the HF
+model card API — permissive, commercial use OK WITH attribution; unlike voxtral's
+CC-BY-NC). `sample_rate=24000` read from `model.sample_rate` pre-warmup.
+
+**No bespoke dep:** pocket's tokenizer (`sentencepiece`, via `mlx-lm`) plus
+`huggingface-hub`/`requests`/`transformers` are all transitive hard deps of
+mlx-audio, so the `pocket_tts` extra is just `mlx-audio==0.4.4` (verified: `mlx-lm`
+Requires `sentencepiece`; mlx-audio Requires `mlx-lm`).
+
+**streaming_interval measurement** (single no-newline sentence):
+
+| streaming_interval | TTFB (s) | native chunks | RTF | peak | NaN |
+|---|---|---|---|---|---|
+| 0.3 | 0.038 | 14 | 0.126 | 0.701 | none |
+| 0.5 | 0.025 | 9 | 0.048 | 0.673 | none |
+| 1.0 | 0.040 | 4 | 0.048 | 0.715 | none |
+
+**LOCKED `_STREAMING_INTERVAL = 0.3`.** NOTE: unlike voxtral, **TTFB is
+non-discriminating** (~0.03–0.04 s across all intervals) because pocket's RTF ≪ 1
+(0.05–0.13× — it generates the whole utterance in a fraction of its duration, so
+the first chunk is ready almost immediately regardless of interval). 0.3 locked for
+finest native cadence, consistent with voxtral. Test asserts `== 0.3`. No NaN, no
+clip (peak ≤ 0.72). `is_final_chunk` is never set (like Kokoro, unlike voxtral) —
+EOF is exhaustion-driven regardless.
+
+**Decision-#2 negative guard (the distinctive 5b deliverable):** pocket's
+`generate()` exposes `ref_audio` (cloning) and `frames_after_eos` (undocumented);
+both are excluded from advertised `extras` AND dropped by the backend's own
+`open_stream` filter (only `temperature` survives). Asserted directly (bypassing
+server validation) in `tests/test_pocket_lean.py::test_ref_audio_and_frames_after_eos_never_reach_generate`.
+
+**Smoke (executed on-host 2026-06-27):**
+- Latency (`just smoke-pocket_tts`): WAV OK; TTFB **0.031 s**, span 0.217 s / total
+  0.248 s (steady, not buffer-then-flush), RTF 0.056. PASS.
+- Concurrency (`just smoke-multiconn-pocket_tts --connections 2 --turns 3`): clean
+  2-conn interleave (no cross-talk); BUSY `retry_after_ms=250` (K=1). PASS.
+  `max_text_chars` over-cap → `payload_too_large` (focused probe, pre-synthesis). PASS.
+- **Smoke-driver limitation (recorded, not a backend bug):** the multiconn driver's
+  growing-sentence rounds at `--turns 5` ask a fast streaming backend (pocket RTF≈0.05)
+  to synthesize ~90–160 s of audio per turn; two connections flooding that near-instantly
+  trips the server's outbound send-queue high-water *close* (R4, working as designed) and
+  the driver's post-interleave BUSY probe then errors on the closed socket. The 2×3 run +
+  focused over-cap probe cover the contract; hardening the driver for huge-audio streaming
+  backends is future work (see tests/smoke/README.md).
 
 ### Phase 5a — voxtral_tts measurements (Apple Silicon arm64, mlx-audio 0.4.4, 2026-06-27)
 Backend: `tts_server/backends/voxtral_tts.py`. Model: **`mlx-community/Voxtral-4B-TTS-2603-mlx-bf16`**
@@ -999,6 +1047,19 @@ Status: spec lives in the workspace (below the `<!-- reviewed -->` marker) so it
 review coverage it hasn't had and does not perturb the Phase 0–5 contract hash. **Before conducting:
 promote this into the Implementation Checklist and run `/review-plan` (refresh the marker) — same
 discipline applied to Phase 5.**
+
+> **Phase 5 → 6 handoff (2026-06-27, after 5a+5b merged).** Phase 5 is complete:
+> `voxtral_tts` (5a, PR #4 merged) and `pocket_tts` (5b) both ship with `--backend`
+> choices wired, so Phase 6 can now seed their rows. **Ready to prepare Phase 6:**
+> (1) promote this section's prose into the `## Implementation Checklist` as `[ ]`
+> items; (2) the canonical port map below already lists `voxtral_tts` (8865) /
+> `pocket_tts` (8965) — keep those rows (both backends now exist in the choices
+> tuple); (3) run `/review-plan` and refresh the reviewed marker; then conduct it
+> separately. Phase 6's install/launchctl lifecycle is **operator-manual, not CI**:
+> a conductor implements `render_tts_plist.py` + `install_tts_agent.sh` + the
+> justfile lifecycle recipes + the automated drift test
+> (`tests/test_justfile_recipes.py`), but MUST NOT claim an agent is "running" —
+> that is a `launchctl print gui/$uid/<label>` check the operator runs.
 
 **Goal.** Run each backend as its own launchd **user agent** bound to a canonical **loopback port**,
 with `just` wrappers for the full lifecycle (install/enable/disable/start/stop/uninstall) on top of

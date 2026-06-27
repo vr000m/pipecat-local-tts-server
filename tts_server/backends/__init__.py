@@ -46,6 +46,12 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
         from .voxtral_tts import DEFAULT_VOXTRAL_MODEL, VoxtralBackend
 
         return VoxtralBackend(model=model or DEFAULT_VOXTRAL_MODEL)
+    if name == "pocket_tts":
+        # Lazy import (same invariant): ``pocket_tts.py`` imports ``mlx_audio``
+        # only inside ``start()``.
+        from .pocket_tts import DEFAULT_POCKET_MODEL, PocketBackend
+
+        return PocketBackend(model=model or DEFAULT_POCKET_MODEL)
     # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
     # callable outside the CLI, so it must not terminate the process. The CLI
     # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.

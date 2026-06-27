@@ -29,7 +29,20 @@ tests/smoke/run_smoke.sh --backend kokoro --multilingual --play
 # streaming-cadence assertion (TTFB bound + deltas dribble out, not all-at-end).
 # Auto-runs `uv sync --extra voxtral_tts` if needed. Weights are CC-BY-NC.
 tests/smoke/run_smoke.sh --backend voxtral_tts
+
+# pocket_tts backend — streaming:true, fast. WAV + latency/cadence. CC-BY-4.0.
+tests/smoke/run_smoke.sh --backend pocket_tts
 ```
+
+> **Multi-connection driver + fast streaming backends.** `run_multiconn.sh`'s
+> growing-sentence rounds scale to `max_text_chars` (up to ~1700 chars at
+> `--turns 5`). For a *fast* streaming backend (e.g. `pocket_tts`, RTF≈0.05×) that
+> is ~90–160 s of synthesized audio per turn; two connections flooding that
+> near-instantly can trip the server's outbound send-queue high-water *close*
+> (working as designed) and the driver's later BUSY probe then errors on the
+> closed socket. Use `--turns 3` for fast backends (covers interleave + BUSY); the
+> `max_text_chars` over-cap guard is server-level and verified separately. Making
+> the driver robust to huge-audio streaming backends is future work.
 
 The **latency / streaming-cadence** check (`latency_smoke.py`) runs automatically
 for `voxtral_tts` (and can be pointed at any running server directly): it records a
@@ -44,8 +57,10 @@ just smoke-tone
 just smoke-kokoro
 just smoke-multilingual
 just smoke-voxtral_tts
+just smoke-pocket_tts
 just smoke-multiconn
-just smoke-multiconn-voxtral_tts   # concurrency against the streaming backend
+just smoke-multiconn-voxtral_tts          # concurrency against voxtral
+just smoke-multiconn-pocket_tts --turns 3 # concurrency against pocket (fast backend)
 ```
 
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)

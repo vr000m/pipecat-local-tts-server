@@ -49,6 +49,10 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
         from .backends.voxtral_tts import DEFAULT_VOXTRAL_MODEL
 
         return DEFAULT_VOXTRAL_MODEL
+    if backend == "pocket_tts":
+        from .backends.pocket_tts import DEFAULT_POCKET_MODEL
+
+        return DEFAULT_POCKET_MODEL
     return None
 
 
@@ -299,7 +303,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = subparsers.add_parser("serve", help="run the server (default)")
     _add_endpoint_flags(p_serve)
-    p_serve.add_argument("--backend", choices=("tone", "kokoro", "voxtral_tts"), default="tone")
+    p_serve.add_argument(
+        "--backend",
+        choices=("tone", "kokoro", "voxtral_tts", "pocket_tts"),
+        default="tone",
+    )
     # Default None so ``_resolve_model`` applies a backend-aware fallback
     # (the Kokoro repo for ``kokoro``; no model for ``tone``). An explicit value
     # always wins and is passed through verbatim.
