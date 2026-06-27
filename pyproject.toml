@@ -69,6 +69,22 @@ kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
 # are responsible for honouring the model license. Kokoro (Apache-2.0) remains
 # the default commercial-safe backend. See README → "Backends & licenses".
 voxtral_tts = ["websockets>=13.0", "mlx-audio==0.4.4", "mistral-common[audio]>=1.11,<2"]
+# Full server install with the Pocket TTS mlx-audio backend (Phase 5b) — a
+# second streaming:true backend; also the no-cloning negative-guard backend
+# (its generate() exposes ref_audio/frames_after_eos which we deliberately leave
+# unwired, decision #2).
+#
+# mlx-audio is pinned to 0.4.4 (R8). Pocket needs NO bespoke tokenizer dep: its
+# tokenizer (sentencepiece, via mlx-lm) plus huggingface-hub/requests/transformers
+# are all transitive hard deps of mlx-audio — so unlike kokoro (misaki) and
+# voxtral_tts (mistral-common), this extra is just mlx-audio.
+#
+# LICENSE NOTE: the Pocket TTS weights (``mlx-community/pocket-tts``) are
+# **CC-BY-4.0** — permissive, commercial use allowed WITH attribution (verified
+# via the HF model card). Unlike voxtral_tts (CC-BY-NC), Pocket is
+# commercial-safe. The package ships only runtime; weights download on first
+# ``serve``. See README → "Backends & licenses".
+pocket_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

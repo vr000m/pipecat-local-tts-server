@@ -117,6 +117,11 @@ smoke-multilingual *args:
 smoke-voxtral_tts *args:
     tests/smoke/run_smoke.sh --backend voxtral_tts {{args}}
 
+# Pocket TTS backend (streaming:true, fast). WAV round-trip + TTFB/cadence.
+# Auto-syncs the pocket_tts extra if missing (CC-BY-4.0 weights; see README).
+smoke-pocket_tts *args:
+    tests/smoke/run_smoke.sh --backend pocket_tts {{args}}
+
 # Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
 smoke-multiconn *args:
     tests/smoke/run_multiconn.sh {{args}}
@@ -124,6 +129,10 @@ smoke-multiconn *args:
 # Multi-connection concurrency against the streaming voxtral_tts backend.
 smoke-multiconn-voxtral_tts *args:
     tests/smoke/run_multiconn.sh --backend voxtral_tts {{args}}
+
+# Multi-connection concurrency against the streaming pocket_tts backend.
+smoke-multiconn-pocket_tts *args:
+    tests/smoke/run_multiconn.sh --backend pocket_tts {{args}}
 
 # Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
 smoke-reconnect *args:

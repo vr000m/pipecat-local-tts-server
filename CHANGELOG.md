@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pocket_tts` backend** (Phase 5b) — a second `streaming:true` backend, and
+  the no-cloning negative-guard backend: its `generate()` exposes `ref_audio`
+  (voice cloning) and `frames_after_eos`, both deliberately **unwired**
+  (decision #2) and dropped by the backend's own extras filter. Behind the
+  `pocket_tts` extra (just `mlx-audio==0.4.4` — its `sentencepiece`/
+  `huggingface-hub` deps are transitive); model `mlx-community/pocket-tts`,
+  **CC-BY-4.0** (commercial OK with attribution). Advertised `extras`:
+  `temperature` only. `streaming_interval` locked 0.3 s (TTFB ~0.03 s, RTF≈0.05×
+  — fast). `just smoke-pocket_tts` / `just smoke-multiconn-pocket_tts`.
+
 - **`voxtral_tts` backend** (Phase 5a) — the first `streaming:true` backend
   (native sub-segment streaming via mlx-audio's `stream`/`streaming_interval`,
   locked to 0.3 s after on-host TTFB measurement: 0.395 s). Behind the new

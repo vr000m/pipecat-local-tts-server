@@ -38,6 +38,10 @@ uv add "pipecat-local-tts-server[kokoro]"  # or: pip install "pipecat-local-tts-
 # Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.4.4 +
 # mistral-common[audio]). NOTE: model weights are CC-BY-NC (non-commercial).
 uv add "pipecat-local-tts-server[voxtral_tts]"
+
+# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.4.4).
+# Weights are CC-BY-4.0 (commercial OK with attribution).
+uv add "pipecat-local-tts-server[pocket_tts]"
 ```
 
 From source (development):
@@ -53,6 +57,10 @@ uv sync --extra kokoro
 # Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.4.4 +
 # mistral-common[audio]). Weights are CC-BY-NC; see "Backends & licenses".
 uv sync --extra voxtral_tts
+
+# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.4.4).
+# Weights are CC-BY-4.0 (commercial OK with attribution).
+uv sync --extra pocket_tts
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -169,10 +177,12 @@ Operators are responsible for honouring each model's license.
 | `tone` | (base) | `false` | none (synthetic sine) | — |
 | `kokoro` | `kokoro` | `false` | mlx-community/Kokoro-82M-bf16 | Apache-2.0 (commercial-safe) |
 | `voxtral_tts` | `voxtral_tts` | `true` | mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 | **CC-BY-NC (non-commercial)** |
+| `pocket_tts` | `pocket_tts` | `true` | mlx-community/pocket-tts | CC-BY-4.0 (commercial OK w/ attribution) |
 
 > **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
-> **CC-BY-NC** — do not use them in a commercial deployment. The choice of
-> backend (and thus of model license) is the operator's.
+> **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`
+> (CC-BY-4.0) and Kokoro (Apache-2.0) are commercial-safe (pocket needs
+> attribution). The choice of backend (and thus of model license) is the operator's.
 
 ### Voxtral TTS capabilities (as shipped)
 
@@ -189,6 +199,25 @@ against mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 (mlx-audio 0.4.4):
 | `languages` | `["en","fr","es","de","it","pt","nl","ar","hi"]` | from the 20 voice presets; language is selected by the voice preset (no `lang_code` kwarg) |
 | `voice_count` | `20` | full list via `status` (e.g. `casual_male`, `fr_female`) |
 | `extras` | `["temperature","top_k","top_p"]` | Voxtral's effective sampling kwargs (`ref_audio` is absent → no cloning; `streaming_interval` is backend config, not advertised) |
+| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
+| `max_text_chars` | `2000` | hard server cap |
+
+### Pocket TTS capabilities (as shipped)
+
+`streaming:true` sub-segment streamer and **fast** (RTF ≈ 0.05–0.13× on-host).
+The voice-cloning channel (`ref_audio`) and undocumented `frames_after_eos` are
+**deliberately unwired** (decision #2 — no cloning in v1). Verified against
+mlx-community/pocket-tts (mlx-audio 0.4.4):
+
+| Field | Value | Note |
+|---|---|---|
+| rate | **24000** | from `server.hello.audio.rate`, read from `model.sample_rate` |
+| `streaming` | `true` | genuine sub-segment streaming |
+| `binary_audio` | `false` | base64-in-JSON for v1 |
+| `text_formats` | `["plain"]` | ssml/ipa not supported |
+| `languages` | `["en"]` | English verified on-host (Pocket has no `lang_code` kwarg) |
+| `voice_count` | `8` | `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma` (via `status`) |
+| `extras` | `["temperature"]` | Pocket's only effective sampling kwarg (`ref_audio`/`frames_after_eos` never advertised; `streaming_interval` is backend config) |
 | `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
 | `max_text_chars` | `2000` | hard server cap |
 

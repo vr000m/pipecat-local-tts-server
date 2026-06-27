@@ -49,12 +49,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" ]]; then
-  echo "--backend must be tone, kokoro, or voxtral_tts (got '$BACKEND')" >&2; exit 2
+if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" ]]; then
+  echo "--backend must be tone, kokoro, voxtral_tts, or pocket_tts (got '$BACKEND')" >&2; exit 2
 fi
-# mlx-backed backends (kokoro/voxtral_tts) need a longer first-call timeout
-# (model load/JIT/first-run download); tone is fast.
-IS_MLX=0; [[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" ]] && IS_MLX=1
+# mlx-backed backends need a longer first-call timeout (model load/JIT/first-run
+# download); tone is fast.
+IS_MLX=0
+[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" ]] && IS_MLX=1
 [[ -z "$TIMEOUT" ]] && { [[ "$IS_MLX" -eq 1 ]] && TIMEOUT=180 || TIMEOUT=30; }
 
 # --- locate repo + run dir --------------------------------------------------
@@ -166,6 +167,12 @@ elif [[ "$BACKEND" == "voxtral_tts" ]]; then
   # voxtral_tts is streaming:true — verify a WAV round-trip AND the streaming
   # cadence. Default voice (omitted) exercises the voice=None path.
   verify "voxtral_tts/default" "$RUN_DIR/voxtral.wav" \
+    --text "The quick brown fox jumps over the lazy dog."
+  latency_check --ttfb-bound 3.0
+elif [[ "$BACKEND" == "pocket_tts" ]]; then
+  # pocket_tts is streaming:true (and fast, RTF<<1). WAV round-trip + cadence.
+  # Default voice (omitted) exercises the voice=None path.
+  verify "pocket_tts/default" "$RUN_DIR/pocket.wav" \
     --text "The quick brown fox jumps over the lazy dog."
   latency_check --ttfb-bound 3.0
 elif [[ "$MULTILINGUAL" -eq 0 ]]; then
