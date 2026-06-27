@@ -49,10 +49,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" ]]; then
-  echo "--backend must be tone or kokoro (got '$BACKEND')" >&2; exit 2
+if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" ]]; then
+  echo "--backend must be tone, kokoro, or voxtral_tts (got '$BACKEND')" >&2; exit 2
 fi
-[[ -z "$TIMEOUT" ]] && { [[ "$BACKEND" == "kokoro" ]] && TIMEOUT=180 || TIMEOUT=30; }
+# mlx-backed backends (kokoro/voxtral_tts) need a longer first-call timeout
+# (model load/JIT/first-run download); tone is fast.
+IS_MLX=0; [[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" ]] && IS_MLX=1
+[[ -z "$TIMEOUT" ]] && { [[ "$IS_MLX" -eq 1 ]] && TIMEOUT=180 || TIMEOUT=30; }
 
 # --- locate repo + run dir --------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -76,10 +79,12 @@ trap cleanup EXIT
 # A plain `uv run` re-syncs the venv to the base deps and STRIPS the kokoro
 # extra mid-run. After ensuring the extra once, every uv call uses --no-sync.
 UV_RUN=(uv run)
-if [[ "$BACKEND" == "kokoro" ]]; then
+if [[ "$IS_MLX" -eq 1 ]]; then
+  # The extra name matches the backend name (kokoro / voxtral_tts). Ensure it is
+  # installed once, then pin --no-sync so a later `uv run` cannot strip it.
   if ! uv run --no-sync python -c "import mlx_audio" 2>/dev/null; then
-    echo "kokoro extra not installed — running 'uv sync --extra kokoro'..."
-    uv sync --extra kokoro >/dev/null
+    echo "$BACKEND extra not installed — running 'uv sync --extra $BACKEND'..."
+    uv sync --extra "$BACKEND" >/dev/null
   fi
   UV_RUN=(uv run --no-sync)
 fi
@@ -141,9 +146,28 @@ expect_fail() {
   fi
 }
 
+# latency: run the TTFB / streaming-cadence assertion against a streaming-capable
+# backend. Proves first audio is prompt AND deltas dribble out during synthesis
+# (not buffer-then-flush) — the R4 steady-stream contract the WAV check can't see.
+latency_check() {
+  echo "-- latency / streaming cadence --"
+  if "${UV_RUN[@]}" python tests/smoke/latency_smoke.py --socket-path "$SOCK" \
+       --timeout "$TIMEOUT" "$@"; then
+    echo "   PASS (latency)"; PASS=$((PASS+1))
+  else
+    echo "   FAIL (latency)"; FAIL=$((FAIL+1))
+  fi
+}
+
 echo "== synthesis =="
 if [[ "$BACKEND" == "tone" ]]; then
   verify "tone" "$RUN_DIR/tone.wav" --text "The quick brown fox jumps over the lazy dog."
+elif [[ "$BACKEND" == "voxtral_tts" ]]; then
+  # voxtral_tts is streaming:true — verify a WAV round-trip AND the streaming
+  # cadence. Default voice (omitted) exercises the voice=None path.
+  verify "voxtral_tts/default" "$RUN_DIR/voxtral.wav" \
+    --text "The quick brown fox jumps over the lazy dog."
+  latency_check --ttfb-bound 3.0
 elif [[ "$MULTILINGUAL" -eq 0 ]]; then
   verify "en/af_heart" "$RUN_DIR/en.wav" \
     --voice af_heart --speed 1.1 --text "The quick brown fox jumps over the lazy dog."

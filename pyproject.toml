@@ -49,6 +49,26 @@ client = ["websockets>=13.0"]
 # it declared explicitly. ``misaki[en]`` drags in num2words/spacy/en_core_web_sm
 # AND torch, which is what makes this extra heavy (R3); keep it behind the extra.
 kokoro = ["websockets>=13.0", "mlx-audio==0.4.4", "misaki[en]"]
+# Full server install with the Voxtral TTS mlx-audio backend (Phase 5a) — the
+# streaming reference backend (native ``stream``/``streaming_interval``, no
+# ``ref_audio`` cloning channel).
+#
+# mlx-audio is pinned to 0.4.4 (R8), same policy as the kokoro extra. Voxtral's
+# tekken tokenizer needs ``mistral-common[audio]`` (the Mistral speech tokenizer
+# that builds the synthesis prompt); without it ``model.generate()`` raises at
+# load/encode time. It is NOT a transitive hard dep of mlx-audio, so the extra
+# declares it explicitly (mirrors how ``kokoro`` declares ``misaki[en]``).
+# Bounded to ``>=1.11,<2`` (same pinning discipline as R8): the ``pip install``
+# end-user path ignores ``uv.lock`` and would otherwise float to an arbitrary
+# future major — verified against 1.11.x on arm64.
+#
+# LICENSE NOTE (non-commercial): the Voxtral-4B-TTS weights this backend loads
+# (``mlx-community/Voxtral-4B-TTS-2603-mlx-bf16``) are released under
+# **CC-BY-NC** — non-commercial use only. This extra installs the *runtime*
+# (code), not the weights; the weights download on first ``serve``. Operators
+# are responsible for honouring the model license. Kokoro (Apache-2.0) remains
+# the default commercial-safe backend. See README → "Backends & licenses".
+voxtral_tts = ["websockets>=13.0", "mlx-audio==0.4.4", "mistral-common[audio]>=1.11,<2"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

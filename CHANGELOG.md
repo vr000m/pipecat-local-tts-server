@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`voxtral_tts` backend** (Phase 5a) — the first `streaming:true` backend
+  (native sub-segment streaming via mlx-audio's `stream`/`streaming_interval`,
+  locked to 0.3 s after on-host TTFB measurement: 0.395 s). Behind the new
+  `voxtral_tts` extra (`mlx-audio==0.4.4` + `mistral-common[audio]`); model
+  `mlx-community/Voxtral-4B-TTS-2603-mlx-bf16`. Advertised `extras`:
+  `temperature`/`top_k`/`top_p` (no `ref_audio` → no voice cloning). Wired into
+  `--backend` and `make_backend`; `just smoke-voxtral_tts` /
+  `just smoke-multiconn-voxtral_tts` drive the live latency + concurrency smoke.
+  **Model weights are CC-BY-NC (non-commercial)** — Kokoro (Apache-2.0) remains
+  the default commercial-safe backend. See README → *Backends & licenses*.
+- `ToneBackend(streaming=True)` constructor flag so the `streaming:true`
+  capabilities branch and the client no-split path are covered in lean CI.
+- Live **latency / streaming-cadence smoke driver** (`tests/smoke/latency_smoke.py`):
+  asserts TTFB bound + that deltas stream during synthesis (not buffer-then-flush).
+
+### Changed
+
+- The macOS CI smoke job now `uv sync --all-extras` (install-smokes every backend
+  extra) instead of a fixed `--extra` list.
+
 ## [0.1.0] - 2026-06-26
 
 First release of `pipecat-local-tts-server` — a standalone, local WebSocket

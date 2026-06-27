@@ -51,6 +51,7 @@ jobs:
             tests/test_pcm16_clip.py \
             tests/test_kokoro_lazy_import.py \
             tests/test_kokoro_language_advertise.py \
+            tests/test_voxtral_lean.py \
             tests/test_status.py \
             tests/test_auth.py \
             tests/test_resource_limits.py \
@@ -107,17 +108,25 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Sync (all declared extras — verifies the runner can uv sync TTS extras)
-        run: uv sync --extra client --extra kokoro
-      - name: Import smoke (kokoro extra installs + imports on Apple Silicon)
+      - name: Sync (all declared extras — verifies the runner can uv sync every TTS extra)
+        # --all-extras (flipped in Phase 5a, once): every backend extra
+        # (kokoro + voxtral_tts + later pocket_tts/dia) gets INSTALL-smoked here
+        # so a new backend's deps can't silently fail to resolve. This is an
+        # install-smoke only — it deliberately runs NO pytest (backend synth
+        # tests stay local/mlx-gated, same as the Kokoro decision). Flipping it
+        # in 5a is why 5a MUST merge before 5b (else 5b's extra is never synced).
+        run: uv sync --all-extras
+      - name: Import smoke (backend extras install + import on Apple Silicon)
         run: |
           uv run python - <<'PY'
           import mlx_audio
-          from mlx_audio.tts.utils import load  # the entry point kokoro start() uses
+          from mlx_audio.tts.utils import load  # the entry point backends' start() use
           from mlx_audio.tts.models.kokoro import istftnet
           assert hasattr(istftnet.SineGen, "_f02sine"), (
               "SineGen._f02sine missing — the kokoro vocoder-fix shim target moved upstream"
           )
           import tts_server.backends.kokoro as k
-          print("OK: mlx_audio imports; kokoro backend module loads;", k.DEFAULT_KOKORO_MODEL)
+          import tts_server.backends.voxtral_tts as v  # 5a: extra resolves + module imports
+          print("OK: mlx_audio imports; kokoro + voxtral_tts modules load;",
+                k.DEFAULT_KOKORO_MODEL, v.DEFAULT_VOXTRAL_MODEL)
           PY

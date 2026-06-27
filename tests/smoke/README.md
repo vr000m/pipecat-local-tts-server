@@ -24,7 +24,18 @@ tests/smoke/run_smoke.sh --backend kokoro --multilingual
 
 # also play the audio through the speakers (macOS afplay)
 tests/smoke/run_smoke.sh --backend kokoro --multilingual --play
+
+# voxtral_tts backend — streaming:true. Runs a WAV round-trip AND the latency /
+# streaming-cadence assertion (TTFB bound + deltas dribble out, not all-at-end).
+# Auto-runs `uv sync --extra voxtral_tts` if needed. Weights are CC-BY-NC.
+tests/smoke/run_smoke.sh --backend voxtral_tts
 ```
+
+The **latency / streaming-cadence** check (`latency_smoke.py`) runs automatically
+for `voxtral_tts` (and can be pointed at any running server directly): it records a
+monotonic timestamp per `response.audio.delta` and asserts first audio arrives
+within a TTFB bound and that deltas stream *during* synthesis (the R4 steady-stream
+contract the WAV-only check cannot see).
 
 Or via `just`:
 
@@ -32,7 +43,9 @@ Or via `just`:
 just smoke-tone
 just smoke-kokoro
 just smoke-multilingual
+just smoke-voxtral_tts
 just smoke-multiconn
+just smoke-multiconn-voxtral_tts   # concurrency against the streaming backend
 ```
 
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)

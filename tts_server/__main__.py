@@ -45,6 +45,10 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
         from .backends.kokoro import DEFAULT_KOKORO_MODEL
 
         return DEFAULT_KOKORO_MODEL
+    if backend == "voxtral_tts":
+        from .backends.voxtral_tts import DEFAULT_VOXTRAL_MODEL
+
+        return DEFAULT_VOXTRAL_MODEL
     return None
 
 
@@ -283,26 +287,19 @@ def _cmd_status(args: argparse.Namespace) -> None:
         print(f"  pid: {pid}")
 
 
-def main() -> None:
-    # Accept both ``python -m tts_server <flags>`` (legacy serve path) and
-    # ``python -m tts_server <subcommand> <flags>``. Detect the latter by a
-    # non-flag first argv; otherwise dispatch to ``serve``. Top-level
-    # ``-h``/``--help`` is NOT reinterpreted as a serve flag.
-    argv = sys.argv[1:]
-    top_level_help = argv and argv[0] in {"-h", "--help"}
-    if argv and not argv[0].startswith("-") and argv[0] in {"serve", "status"}:
-        sub, rest = argv[0], argv[1:]
-    elif top_level_help:
-        sub, rest = None, argv
-    else:
-        sub, rest = "serve", argv
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the ``tts_server`` argument parser (serve + status subcommands).
 
+    Extracted from ``main()`` so tests can assert the ``--backend`` choices tuple
+    accepts a wired backend and rejects an unknown one — the choices half of the
+    dual-wire (resolver + argparse) that a ``make_backend`` unit test alone does
+    NOT cover (R7 / Phase-5 per-sub-phase checklist)."""
     parser = argparse.ArgumentParser(prog="tts_server")
     subparsers = parser.add_subparsers(dest="cmd")
 
     p_serve = subparsers.add_parser("serve", help="run the server (default)")
     _add_endpoint_flags(p_serve)
-    p_serve.add_argument("--backend", choices=("tone", "kokoro"), default="tone")
+    p_serve.add_argument("--backend", choices=("tone", "kokoro", "voxtral_tts"), default="tone")
     # Default None so ``_resolve_model`` applies a backend-aware fallback
     # (the Kokoro repo for ``kokoro``; no model for ``tone``). An explicit value
     # always wins and is passed through verbatim.
@@ -317,6 +314,24 @@ def main() -> None:
         "--timeout", type=float, default=3.0, help="overall probe timeout in seconds"
     )
     p_status.add_argument("--json", action="store_true", help="emit raw JSON instead of text")
+    return parser
+
+
+def main() -> None:
+    # Accept both ``python -m tts_server <flags>`` (legacy serve path) and
+    # ``python -m tts_server <subcommand> <flags>``. Detect the latter by a
+    # non-flag first argv; otherwise dispatch to ``serve``. Top-level
+    # ``-h``/``--help`` is NOT reinterpreted as a serve flag.
+    argv = sys.argv[1:]
+    top_level_help = argv and argv[0] in {"-h", "--help"}
+    if argv and not argv[0].startswith("-") and argv[0] in {"serve", "status"}:
+        sub, rest = argv[0], argv[1:]
+    elif top_level_help:
+        sub, rest = None, argv
+    else:
+        sub, rest = "serve", argv
+
+    parser = build_parser()
 
     if sub is None:
         # Top-level --help path: argparse prints both subcommands and exits.

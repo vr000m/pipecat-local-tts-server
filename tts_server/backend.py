@@ -262,8 +262,16 @@ class ToneBackend:
         max_text_chars: int = 2000,
         languages: list[str] | None = None,
         extras: list[str] | None = None,
+        streaming: bool = False,
     ) -> None:
         self.sample_rate = sample_rate
+        # Advertised ``capabilities()["streaming"]`` flag. ToneBackend is the
+        # *streaming* reference but advertises ``streaming:false`` by default
+        # (it yields whole 100 ms segments, not native sub-segment chunks).
+        # Phase 5a adds this knob so the ``streaming:true`` capabilities branch
+        # and the client no-split path are exercisable in LEAN CI, independent of
+        # the mlx-gated real streaming backends (voxtral_tts/pocket_tts).
+        self._streaming = streaming
         self._frequency = frequency
         self._amplitude = amplitude
         self._segment_count = segment_count
@@ -281,7 +289,7 @@ class ToneBackend:
 
     def capabilities(self) -> dict:
         return {
-            "streaming": False,
+            "streaming": self._streaming,
             "binary_audio": False,
             "text_formats": ["plain"],
             "languages": list(self._languages),

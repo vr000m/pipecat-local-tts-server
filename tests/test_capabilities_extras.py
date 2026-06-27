@@ -40,6 +40,26 @@ async def test_capabilities_full_shape():
             assert caps["max_text_chars"] == 2000
 
 
+async def test_tone_streaming_true_capability_and_no_split_path():
+    """ToneBackend(streaming=True) exercises the ``streaming:true`` capabilities
+    branch AND the client no-split path in LEAN CI (Phase 5a prerequisite),
+    independent of the mlx-gated real streaming backends. A streaming:true
+    backend advertises the flag and the server still synthesizes a larger
+    single commit (the client need not pre-split) into multiple deltas."""
+    backend = ToneBackend(streaming=True, segment_count=3, segment_delay_ms=0)
+    async with running_server(backend) as srv:
+        async with connected_client(srv) as (client, hello):
+            assert hello["capabilities"]["streaming"] is True
+            # No-split path: pass a longer single commit; it streams fine.
+            resp = await synthesize_once(
+                client,
+                "The quick brown fox jumps over the lazy dog and keeps running.",
+            )
+            assert resp.error is None and resp.failed is None
+            assert resp.done is not None
+            assert len(resp.deltas) >= 2  # streamed incrementally, not one burst
+
+
 async def test_unknown_extras_dropped_not_errored():
     """An extras key not in capabilities.extras is dropped; synthesis proceeds."""
     backend = ToneBackend(segment_count=1, segment_delay_ms=0, extras=["speed"])
