@@ -1,0 +1,75 @@
+name: release
+
+# Build and publish to PyPI via Trusted Publishing (OIDC) — no API token, no
+# secret in the repo or in ~/.pypirc. Triggered when a GitHub Release is
+# *published* (not on a draft, and not on a bare tag push), so cutting a release
+# is the single deliberate action that ships to PyPI.
+#
+# ONE-TIME PyPI SETUP (already-existing project, so this is added under settings,
+# not at first upload):
+#   1. PyPI → the project → Manage → Publishing → "Add a new pending publisher"
+#      / trusted publisher (GitHub):
+#        Owner:            vr000m
+#        Repository:       pipecat-local-tts-server
+#        Workflow name:    release.yml
+#        Environment name: pypi
+#   2. GitHub → repo Settings → Environments → create an environment named `pypi`
+#      (optionally add protection rules, e.g. required reviewers, before publish).
+# Until both exist the publish step will fail the OIDC token exchange.
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  # Build the sdist + wheel and verify the release tag matches the packaged
+  # version, so a mistagged release can never ship a mismatched artifact. The
+  # build job needs no special permissions.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Verify release tag matches pyproject version
+        run: |
+          pkg_version=$(grep -m1 -E '^version *= *"' pyproject.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag pyproject_version=$pkg_version"
+          if [ "$tag" != "$pkg_version" ]; then
+            echo "::error::release tag '$GITHUB_REF_NAME' does not match pyproject version '$pkg_version'"
+            exit 1
+          fi
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Check distribution metadata
+        run: uvx twine check dist/*
+      - name: Upload built distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Publish to PyPI using Trusted Publishing. Isolated from the build job so the
+  # only job holding `id-token: write` does nothing but download the vetted
+  # artifacts and upload them — minimal blast radius.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pipecat-local-tts-server/
+    permissions:
+      id-token: write # OIDC token for Trusted Publishing — the only privilege needed.
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
