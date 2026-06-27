@@ -26,7 +26,8 @@ Not yet tagged or published; landing here as it is validated.
   mlx-audio on Apple Silicon, lazy-imported so the lean base never pulls
   mlx/torch/spacy. Verified against `mlx-community/Kokoro-82M-bf16` (mlx-audio
   pinned to `0.4.4`): 24000 Hz, 54 voices, languages
-  `en/ja/zh/fr/es/it/pt/hi`, `speed` extra.
+  `en/es/fr/hi/it/pt` (default; `ja`/`zh` opt-in via
+  `PIPECAT_TTS_KOKORO_EXTRA_LANGS`), `speed` extra.
 - **Tone backend** — stdlib-only (no numpy at runtime) reference/test backend that
   emits a deterministic tone; exercises the full protocol without a model.
 - **Async client** (`tts_server.client.TTSClient`) — speaks the wire protocol,
