@@ -86,6 +86,34 @@ uv run python -m tts_server serve --backend kokoro \
 uv run python -m tts_server serve --backend kokoro --host 127.0.0.1 --port 8765
 ```
 
+### Per-backend port convention
+
+A single ad-hoc server uses the **Unix socket** quick-start above
+(`pipecat.tts-server` → `~/Library/Caches/pipecat-tts/tts.sock`) — that stays
+the default. Running several backends side by side as **launchd agents** uses one
+loopback **TCP port** per backend instead (one backend = one process = one
+port). The `just tts-*` recipes (install/uninstall/enable/disable/start/stop)
+and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
+
+| backend | label | port (on `127.0.0.1`) |
+|---|---|---|
+| tone | `pipecat.tts-server.tone` | 8665 |
+| kokoro | `pipecat.tts-server.kokoro` | 8765 |
+| voxtral_tts | `pipecat.tts-server.voxtral_tts` | 8865 |
+| pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
+
+```sh
+# install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
+just tts-install kokoro
+just tts-list            # every pipecat.tts-server* agent + live backend probe
+just tts-status kokoro   # probe one backend's canonical host:port
+```
+
+> `kokoro=8765` is assumed free and is **not** collision-checked — it matches
+> this repo's own kokoro examples. A launchd tts agent binds a loopback port, so
+> two installed agents never collide; the only risk is an ad-hoc process you run
+> by hand on the same port. The `dia` backend is reserved and not yet shipped.
+
 The server logs the resolved backend + model at startup, *before* the
 (potentially slow) model load, so you can see what is being loaded. The rate is
 read from the loaded model, so model load completes before the first

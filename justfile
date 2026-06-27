@@ -1,19 +1,28 @@
-# Operator-convenience recipes for the pipecat TTS servers.
+# Operator-convenience recipes for managing the pipecat TTS LaunchAgents.
 #
 # macOS / launchctl only, mirroring the sibling pipecat-local-stt-server justfile.
 # This is the cross-agent "operate the listed servers" surface.
 #
-# SCOPE NOTE — only the read-only recipes are present today. The stt justfile also
-# carries stt-install / stt-enable / stt-disable / stt-uninstall, but those delegate
-# to scripts/install_stt_agent.sh + a plist renderer. The TTS server has no launchd
-# install path yet (no scripts/install_tts_agent.sh, no plist template), so adding
-# those recipes would point at files that do not exist. They are intentionally
-# omitted until that install path lands (tracked in the dev plan). `tts-list` and
-# `tts-status` work today against any running server.
+# Transport divergence from stt: the stt agents bind a Unix socket; the tts
+# agents bind a loopback **TCP port** (one backend = one process = one port). The
+# `_resolve` map below yields (label, host, port) — NOT (label, socket, backend)
+# — and the per-backend lifecycle recipes delegate to scripts/install_tts_agent.sh
+# + scripts/render_tts_plist.py.
 #
-# The label -> socket map below mirrors the README quick-start convention
-# (`~/Library/Caches/pipecat-tts/tts.sock`). When a launchd install path is added,
-# extend this map (and add a mirror test) the same way stt does.
+# The backend -> (label, host, port) map below is the single source of truth that
+# the README "Per-backend port convention" table and render_tts_plist.py defaults
+# must agree with. A drift test (tests/test_justfile_recipes.py) parses the README
+# table and asserts this map equals it, so drift fails CI.
+#
+# The Unix socket stays the DEFAULT for a single ad-hoc server / README
+# quick-start (`pipecat.tts-server` -> `tts.sock`); ports are the multi-backend
+# convention. `dia` is reserved and intentionally NOT in this map (no --backend
+# choice until its own plan lands — adding it here would turn the drift test red).
+#
+# tts-disable vs tts-uninstall: the rendered plist sets RunAtLoad=True +
+# KeepAlive=True. So `tts-disable` (launchctl bootout, plist kept) takes the agent
+# down only until the next login — launchd reloads it from the on-disk plist.
+# `tts-uninstall` removes the plist, so it stays gone.
 
 set shell := ["bash", "-uc"]
 
@@ -22,10 +31,29 @@ set shell := ["bash", "-uc"]
 # the command line (e.g. `just la_dir=/tmp/x tts-list`).
 cache_dir := env_var('HOME') / "Library/Caches/pipecat-tts"
 la_dir := env_var('HOME') / "Library/LaunchAgents"
+# Overridable so tests can point install/uninstall delegation at a stub.
+script := justfile_directory() / "scripts/install_tts_agent.sh"
 
 # Default: show the recipe list.
 default:
     @just --list
+
+# Resolve a backend name to LABEL / HOST / PORT on three separate lines (one
+# field per line so the reads stay bash-3.2-compatible — macOS system bash has
+# no `mapfile`); fail fast on unknown. `quote()` shell-escapes the interpolated
+# arg so it can never break out of the `case` — the `case` arms are the
+# allowlist. This is the canonical port map (must match README + renderer).
+# `dia` is reserved and deliberately absent.
+_resolve backend:
+    #!/usr/bin/env bash
+    backend={{quote(backend)}}
+    case "$backend" in
+      tone)        printf '%s\n' "pipecat.tts-server.tone"        "127.0.0.1" "8665" ;;
+      kokoro)      printf '%s\n' "pipecat.tts-server.kokoro"      "127.0.0.1" "8765" ;;
+      voxtral_tts) printf '%s\n' "pipecat.tts-server.voxtral_tts" "127.0.0.1" "8865" ;;
+      pocket_tts)  printf '%s\n' "pipecat.tts-server.pocket_tts"  "127.0.0.1" "8965" ;;
+      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts)" >&2; exit 1 ;;
+    esac
 
 # List every pipecat.tts-server* agent with state, pid, and live backend.
 tts-list:
@@ -47,26 +75,44 @@ tts-list:
       else
         printf 'stopped  %-32s (plist present, not loaded)\n' "$label"
       fi
-      # Live backend probe — canonical sockets only (a custom label's socket is
-      # not derivable from its label, so it gets no socket/live line by design).
+      # Live backend probe. Two canonical addressing schemes:
+      #  * the bare default label still probes its ad-hoc Unix socket (the
+      #    quick-start default), and
+      #  * the per-backend labels (.tone/.kokoro/.voxtral_tts/.pocket_tts) probe
+      #    their canonical host:port from the _resolve map.
+      # A custom label matches neither, so it gets no live line by design.
       sock=""
+      host=""
+      port=""
       case "$label" in
         pipecat.tts-server) sock="{{cache_dir}}/tts.sock" ;;
+        pipecat.tts-server.tone)        host="127.0.0.1"; port="8665" ;;
+        pipecat.tts-server.kokoro)      host="127.0.0.1"; port="8765" ;;
+        pipecat.tts-server.voxtral_tts) host="127.0.0.1"; port="8865" ;;
+        pipecat.tts-server.pocket_tts)  host="127.0.0.1"; port="8965" ;;
       esac
+      # status raises SystemExit(1) on a stopped/absent endpoint and never prints
+      # "stopped"/"unreachable" itself, so the recipe owns that display.
       if [[ -n "$sock" ]]; then
         # Print the socket in the same ~-form the README quick-start uses, so an
         # operator can match a config line to an agent directly.
         printf '         socket: %s\n' "${sock/#$HOME/~}"
-        # status raises SystemExit(1) on a stopped/absent socket and never prints
-        # "stopped"/"unreachable" itself, so the recipe owns that display.
         if live=$(uv run python -m tts_server status --socket-path "$sock" 2>/dev/null); then
           backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*//')
           printf '         live: %s\n' "${backend:-?}"
         else
           printf '         live: stopped/unreachable\n'
         fi
+      elif [[ -n "$host" && -n "$port" ]]; then
+        printf '         endpoint: %s:%s\n' "$host" "$port"
+        if live=$(uv run python -m tts_server status --host "$host" --port "$port" 2>/dev/null); then
+          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*//')
+          printf '         live: %s\n' "${backend:-?}"
+        else
+          printf '         live: stopped/unreachable\n'
+        fi
       else
-        printf '         socket: (custom label — not in the canonical map)\n'
+        printf '         endpoint: (custom label — not in the canonical map)\n'
       fi
     done
     if [[ "$found" -eq 0 ]]; then
@@ -91,11 +137,139 @@ tts-list:
     exit 0
 
 # Wire status probe for one server (exits with the probe's own status).
-# Defaults to the canonical README socket; override for a custom socket/host.
-tts-status socket=(cache_dir / "tts.sock"):
+#
+# With NO argument, probes the canonical ad-hoc Unix socket (the README
+# quick-start default). With a known backend name (tone/kokoro/voxtral_tts/
+# pocket_tts) it resolves that backend's canonical --host/--port from the
+# _resolve map and probes the port. Any other value is treated as a literal
+# socket path (the previous override behaviour is preserved as a fallback).
+tts-status target=(cache_dir / "tts.sock"):
     #!/usr/bin/env bash
     set -uo pipefail
-    exec uv run python -m tts_server status --socket-path {{quote(socket)}}
+    target={{quote(target)}}
+    case "$target" in
+      tone|kokoro|voxtral_tts|pocket_tts)
+        resolved=$(just _resolve "$target") || exit 1
+        # One field per line; three reads keep this bash-3.2-compatible.
+        { read -r label; read -r host; read -r port; } <<<"$resolved"
+        exec uv run python -m tts_server status --host "$host" --port "$port"
+        ;;
+      *)
+        # Literal socket path (default = the canonical quick-start socket).
+        exec uv run python -m tts_server status --socket-path "$target"
+        ;;
+    esac
+
+# --- launchd lifecycle (one TCP-port-bound agent per backend) ---------------
+# Each recipe resolves (label, host, port) from the canonical _resolve map, then
+# delegates state changes to launchctl / scripts/install_tts_agent.sh. set -uo
+# pipefail does NOT abort on a failed simple command, so each state change is
+# guarded explicitly — otherwise a success echo would mask a launchctl failure.
+
+# Install an agent — delegates to install_tts_agent.sh (no plist reimplementation).
+tts-install backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    PIPECAT_TTS_LABEL="$label" PIPECAT_TTS_BACKEND="$backend" \
+      PIPECAT_TTS_HOST="$host" PIPECAT_TTS_PORT="$port" \
+      "{{script}}" install
+
+# Uninstall an agent (removes the plist) — delegates to install_tts_agent.sh.
+tts-uninstall backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    PIPECAT_TTS_LABEL="$label" PIPECAT_TTS_BACKEND="$backend" \
+      PIPECAT_TTS_HOST="$host" PIPECAT_TTS_PORT="$port" \
+      "{{script}}" uninstall
+
+# Re-load + start an agent from its existing plist (no re-render).
+tts-enable backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    uid=$(id -u)
+    plist="{{la_dir}}/$label.plist"
+    if [[ ! -e "$plist" ]]; then
+      echo "tts-enable: no plist at $plist — run 'just tts-install $backend' first" >&2
+      exit 1
+    fi
+    if ! launchctl bootstrap "gui/$uid" "$plist"; then
+      echo "tts-enable: launchctl bootstrap failed for $label" >&2
+      exit 1
+    fi
+    if ! launchctl enable "gui/$uid/$label"; then
+      echo "tts-enable: launchctl enable failed for $label" >&2
+      exit 1
+    fi
+    if ! launchctl kickstart "gui/$uid/$label"; then
+      echo "tts-enable: launchctl kickstart failed for $label" >&2
+      exit 1
+    fi
+    echo "tts-enable: bootstrapped + kickstarted $label"
+
+# Stop an agent until next login (launchctl bootout; plist kept). Idempotent.
+tts-disable backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    uid=$(id -u)
+    if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+      echo "tts-disable: $label not loaded — nothing to do"
+      exit 0
+    fi
+    if ! launchctl bootout "gui/$uid/$label"; then
+      echo "tts-disable: launchctl bootout failed for $label" >&2
+      exit 1
+    fi
+    echo "tts-disable: booted out $label (plist kept; reloads at next login)."
+    echo "             Use 'just tts-uninstall $backend' to remove it durably."
+
+# Force-restart a loaded agent (launchctl kickstart -k).
+tts-start backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    uid=$(id -u)
+    if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+      echo "tts-start: $label not loaded — run 'just tts-install $backend' first" >&2
+      exit 1
+    fi
+    if ! launchctl kickstart -k "gui/$uid/$label"; then
+      echo "tts-start: launchctl kickstart failed for $label" >&2
+      exit 1
+    fi
+    echo "tts-start: kickstarted $label"
+
+# Send SIGTERM to a loaded agent (KeepAlive will restart it; use tts-disable to
+# take it down until next login, tts-uninstall to remove durably).
+tts-stop backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    uid=$(id -u)
+    if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+      echo "tts-stop: $label not loaded — nothing to do"
+      exit 0
+    fi
+    if ! launchctl kill SIGTERM "gui/$uid/$label"; then
+      echo "tts-stop: launchctl kill failed for $label" >&2
+      exit 1
+    fi
+    echo "tts-stop: sent SIGTERM to $label (KeepAlive restarts it; use tts-disable to keep it down)"
 
 # --- Live smoke tests (start a real server on an isolated socket) -----------
 # See tests/smoke/README.md. These never touch the canonical operator socket.

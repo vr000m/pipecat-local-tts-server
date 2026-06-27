@@ -57,7 +57,10 @@ jobs:
             tests/test_auth.py \
             tests/test_resource_limits.py \
             tests/test_backpressure.py \
-            tests/test_multiconn_fairness.py
+            tests/test_multiconn_fairness.py \
+            tests/test_render_tts_plist.py \
+            tests/test_justfile_recipes.py \
+            tests/test_status_port.py
 
   # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
   # reference Pipecat adapter tests. These are NOT in the lean allow-list above:
