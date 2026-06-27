@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-26
+
 First release of `pipecat-local-tts-server` — a standalone, local WebSocket
 **text-to-speech** server, client, and pluggable mlx-audio backends mirroring the
 sibling [`pipecat-local-stt-server`](https://github.com/vr000m/pipecat-local-stt-server).
-Not yet tagged or published; landing here as it is validated.
+
+Ships Phases 0–4 of the dev plan: the wire protocol (`v0.1`), the `tone` (stdlib
+reference) and `kokoro` (mlx-audio, Apple Silicon) backends, an async client, a
+reference Pipecat `TTSService` adapter, and ops parity (status, optional auth,
+backpressure). The wire protocol is still `0.x` and may change as the streaming
+backends land.
 
 ### Added
 
@@ -169,3 +176,6 @@ Not yet tagged or published; landing here as it is validated.
   An operator who installs the extra G2P package re-enables a language via
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
+
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/vr000m/pipecat-local-tts-server/releases/tag/v0.1.0

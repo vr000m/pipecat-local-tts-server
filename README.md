@@ -26,6 +26,18 @@ built around):
 
 The base package is lean — `websockets` only. Backends live behind extras.
 
+From [PyPI](https://pypi.org/project/pipecat-local-tts-server/) (consumers):
+
+```sh
+# client-only lean base (websockets) — for a bot that just talks to a server
+uv add pipecat-local-tts-server            # or: pip install pipecat-local-tts-server
+
+# Kokoro backend (Apple Silicon; pulls mlx-audio==0.4.4 + misaki[en])
+uv add "pipecat-local-tts-server[kokoro]"  # or: pip install "pipecat-local-tts-server[kokoro]"
+```
+
+From source (development):
+
 ```sh
 # client-only (lean base: websockets) — for a bot that just talks to a server
 uv sync --extra client
