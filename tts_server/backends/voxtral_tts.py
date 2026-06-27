@@ -142,6 +142,11 @@ def _coerce_top_k(raw: Any) -> int:
     """Validate + clamp a client-supplied ``top_k`` (a positive integer)."""
     if isinstance(raw, bool):  # bool is an int subclass; reject it explicitly.
         raise ValueError(f"top_k must be an integer, got {raw!r}")
+    # Reject a non-integral float (e.g. 2.9) rather than silently truncating to 2
+    # — the client should learn its value was not an integer, not get a quietly
+    # different one. Integral floats (50.0) and int-valued strings ("40") are ok.
+    if isinstance(raw, float) and not raw.is_integer():
+        raise ValueError(f"top_k must be an integer, got {raw!r}")
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -349,6 +354,10 @@ class VoxtralBackend:
         # Derive voice count + languages from the model's voice presets
         # (data-driven, not a hardcoded copy). Falls back to the verified static
         # facts if the attribute is absent (a future mlx-audio may restructure).
+        # Called directly (NOT via run_in_executor, unlike Kokoro's
+        # _discover_voices): this is a pure in-memory attribute walk over the
+        # already-loaded model's voice-preset dict — no I/O / network (Kokoro's
+        # goes through snapshot_download, which is why it needs the executor).
         self._voice_count, self._voice_names, self._languages = self._discover_voices()
         logger.info(
             "voxtral_tts: serving %d voices, languages %s",

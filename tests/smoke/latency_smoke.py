@@ -57,15 +57,11 @@ async def _run(args: argparse.Namespace) -> int:
         f"connected: backend={hello.get('backend')} rate={rate} streaming={caps.get('streaming')}"
     )
 
-    extras: dict = {}
-    if args.voice:
-        # voice is a top-level commit field, not an extra; passed via commit().
-        pass
-
     loop = asyncio.get_running_loop()
     await client.append(args.text)
     t_commit = loop.time()
-    await client.commit(voice=args.voice or None, extras=extras or None)
+    # voice is a top-level commit field (not an extra); default sampling is used.
+    await client.commit(voice=args.voice or None)
 
     delta_ts: list[float] = []
     total_bytes = 0

@@ -160,6 +160,11 @@ def test_coerce_top_k_clamps_and_rejects():
     assert V._coerce_top_k("40") == 40
     assert V._coerce_top_k(0) == V._TOP_K_MIN
     assert V._coerce_top_k(10_000) == V._TOP_K_MAX
+    # integral floats are accepted; non-integral floats are rejected (not
+    # silently truncated 2.9 -> 2).
+    assert V._coerce_top_k(50.0) == 50
+    with pytest.raises(ValueError):
+        V._coerce_top_k(2.9)
     # bool is an int subclass but is not a valid top_k.
     with pytest.raises(ValueError):
         V._coerce_top_k(True)
