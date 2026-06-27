@@ -55,6 +55,29 @@ _resolve backend:
       *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts)" >&2; exit 1 ;;
     esac
 
+# Extract the serve endpoint from an installed agent's plist ProgramArguments.
+# Emits FOUR lines — host, port, socket-path, auth-token-file — each empty when
+# the flag is absent. The plist render_tts_plist.py wrote is the source of truth,
+# so tts-list never re-encodes the _resolve map and stays correct for any label
+# or transport. Auth-aware: a secured agent's plist carries --auth-token-file, so
+# the status probe can authenticate instead of getting a 401. Its own recipe so
+# the extraction is unit-testable (see tests/test_justfile_recipes.py).
+_plist_endpoint plist:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    plist={{quote(plist)}}
+    host=""; port=""; sock=""; authfile=""; prev=""
+    while IFS= read -r s; do
+      case "$prev" in
+        --host)            host="$s" ;;
+        --port)            port="$s" ;;
+        --socket-path)     sock="$s" ;;
+        --auth-token-file) authfile="$s" ;;
+      esac
+      prev="$s"
+    done < <(sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' "$plist")
+    printf '%s\n' "$host" "$port" "$sock" "$authfile"
+
 # List every pipecat.tts-server* agent with state, pid, and live backend.
 tts-list:
     #!/usr/bin/env bash
@@ -76,26 +99,22 @@ tts-list:
         printf 'stopped  %-32s (plist present, not loaded)\n' "$label"
       fi
       # Live backend probe. Read the endpoint straight from the agent's OWN plist
-      # (ProgramArguments) instead of a hardcoded per-label host:port map. The
-      # plist is what render_tts_plist.py wrote, so this never drifts from the
-      # _resolve map and works for ANY label (default or custom) and EITHER
-      # transport (--host/--port, or --socket-path for a socket-bound agent).
-      host=""; port=""; sock=""; prev=""
-      while IFS= read -r s; do
-        case "$prev" in
-          --host) host="$s" ;;
-          --port) port="$s" ;;
-          --socket-path) sock="$s" ;;
-        esac
-        prev="$s"
-      done < <(sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' "$plist")
+      # via _plist_endpoint (four lines: host/port/socket/auth-token-file) instead
+      # of a hardcoded per-label map — never drifts from _resolve, works for ANY
+      # label/transport, and stays auth-aware.
+      { read -r host; read -r port; read -r sock; read -r authfile; } < <(just _plist_endpoint "$plist")
+      # A secured agent's plist carries --auth-token-file; forward it so the probe
+      # authenticates instead of getting a 401 and being mislabeled unreachable.
+      # Empty-safe array expansion for bash 3.2 under `set -u`.
+      auth=()
+      [[ -n "$authfile" ]] && auth=(--auth-token-file "$authfile")
       # status raises SystemExit(1) on a stopped/absent endpoint and never prints
       # "stopped"/"unreachable" itself, so the recipe owns that display. The
       # backend line is `backend: <name> (model: <m>)`, so capture only the first
       # token after `backend:` — never the `(model: ...)` suffix.
       if [[ -n "$sock" ]]; then
         printf '         socket: %s\n' "${sock/#$HOME/~}"
-        if live=$(uv run python -m tts_server status --socket-path "$sock" 2>/dev/null); then
+        if live=$(uv run python -m tts_server status --socket-path "$sock" "${auth[@]+"${auth[@]}"}" 2>/dev/null); then
           backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*([^[:space:]]+).*/\1/')
           printf '         live: %s\n' "${backend:-?}"
         else
@@ -103,7 +122,7 @@ tts-list:
         fi
       elif [[ -n "$host" && -n "$port" ]]; then
         printf '         endpoint: %s:%s\n' "$host" "$port"
-        if live=$(uv run python -m tts_server status --host "$host" --port "$port" 2>/dev/null); then
+        if live=$(uv run python -m tts_server status --host "$host" --port "$port" "${auth[@]+"${auth[@]}"}" 2>/dev/null); then
           backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*([^[:space:]]+).*/\1/')
           printf '         live: %s\n' "${backend:-?}"
         else

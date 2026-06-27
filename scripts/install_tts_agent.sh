@@ -78,7 +78,24 @@ install)
     echo "  logs:     $LOG_DIR"
     ;;
 uninstall)
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    uid="$(id -u)"
+    # Only tear down if the agent is currently loaded. If it IS loaded, a bootout
+    # failure must NOT be swallowed: deleting the plist while the agent keeps
+    # running would orphan a live listener (port stays bound, but the plist that
+    # makes it discoverable/stoppable is gone). Leave the plist and fail loudly.
+    if launchctl print "gui/$uid/$LABEL" >/dev/null 2>&1; then
+        if ! launchctl bootout "gui/$uid/$LABEL"; then
+            echo "error: launchctl bootout failed for $LABEL — the agent may still be running." >&2
+            echo "       Left the plist in place ($PLIST_DST) so the agent stays discoverable;" >&2
+            echo "       investigate with: launchctl print gui/$uid/$LABEL" >&2
+            exit 1
+        fi
+        # Confirm it is actually gone before removing the plist.
+        if launchctl print "gui/$uid/$LABEL" >/dev/null 2>&1; then
+            echo "error: $LABEL still loaded after bootout — refusing to delete the plist." >&2
+            exit 1
+        fi
+    fi
     rm -f "$PLIST_DST"
     echo "uninstalled: $LABEL"
     ;;

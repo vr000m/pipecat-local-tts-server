@@ -149,3 +149,67 @@ def test_resolve_dia_exits_nonzero():
     """``dia`` is reserved and intentionally NOT in the resolver map."""
     r = _resolve("dia")
     assert r.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# _plist_endpoint: tts-list reads the live endpoint (and auth token) from the
+# agent's own plist, so a secured agent is probed WITH its token instead of
+# being mislabeled stopped/unreachable on a 401.
+# ---------------------------------------------------------------------------
+
+
+def _render_plist_file(tmp_path: Path, **overrides) -> Path:
+    """Render a real plist via render_plist() and write it to a temp file."""
+    renderer = _load_renderer()
+    kwargs = {
+        "backend": "kokoro",
+        "label": "pipecat.tts-server.kokoro",
+        "host": "127.0.0.1",
+        "port": 8765,
+        "python": "/usr/bin/python3",
+        "repo_root": "/repo",
+        "home": "/home/u",
+        "log_dir": "/home/u/logs",
+    }
+    kwargs.update(overrides)
+    xml = renderer.render_plist(**kwargs)
+    plist = tmp_path / "agent.plist"
+    plist.write_text(xml)
+    return plist
+
+
+def _plist_endpoint(plist: Path) -> tuple[str, str, str, str]:
+    r = subprocess.run(
+        ["just", "_plist_endpoint", str(plist)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 0, f"_plist_endpoint failed: {r.stderr!r}"
+    lines = r.stdout.splitlines()
+    lines += [""] * (4 - len(lines))
+    host, port, sock, authfile = lines[:4]
+    return host, port, sock, authfile
+
+
+@_skip_no_just
+def test_plist_endpoint_extracts_host_and_port(tmp_path):
+    """A loopback agent (no token) yields host+port, empty socket+auth."""
+    plist = _render_plist_file(tmp_path, host="127.0.0.1", port=8765)
+    host, port, sock, authfile = _plist_endpoint(plist)
+    assert (host, port) == ("127.0.0.1", "8765")
+    assert sock == ""
+    assert authfile == ""
+
+
+@_skip_no_just
+def test_plist_endpoint_extracts_auth_token_file(tmp_path):
+    """A secured agent's plist carries --auth-token-file; _plist_endpoint must
+    surface it so tts-list can probe WITH the token (no false 401/unreachable)."""
+    token_path = "/Users/op/Library/Application Support/pipecat-tts/token"
+    plist = _render_plist_file(tmp_path, host="127.0.0.1", port=8765, auth_token_file=token_path)
+    host, port, sock, authfile = _plist_endpoint(plist)
+    assert (host, port) == ("127.0.0.1", "8765")
+    assert sock == ""
+    assert authfile == token_path
