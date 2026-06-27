@@ -62,6 +62,11 @@ explicit allow-list of lean test files — extend it when adding a lean test), a
 kokoro extra resolves/imports; does not run synthesis). See
 `.github/workflows/test.yml`.
 
+A separate **release** workflow (`.github/workflows/release.yml`) runs only when a
+GitHub Release is *published*: it builds the sdist + wheel, fails if the release
+tag does not match the `pyproject` version, then publishes to PyPI via Trusted
+Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
+
 ## justfile recipes (macOS operator surface)
 
 | Recipe | Action |
