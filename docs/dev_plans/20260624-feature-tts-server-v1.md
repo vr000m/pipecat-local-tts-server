@@ -808,6 +808,20 @@ Phase 3:
 
 ## Findings
 
+### Tech debt — backend base-class extraction (deep-review, 2026-06-27; tracked, NOT done in 5b)
+The Phase-5b `/deep-review` architecture lens (and the 5a "track for 5b" note) flagged that with
+THREE mlx backends (`kokoro`/`voxtral_tts`/`pocket_tts`) the `_*Stream` classes share ~85% of
+their body byte-for-byte (`__init__` fields, `feed`/`end`/`cancel`/`wait_closed`, the `events()`
+loop) — only `_gen_factory()` diverges; likewise `__init__`/`close`/`validate_extras` on the
+backends. Recommended: extract `_BaseMLXStream`/`_BaseMLXBackend` (abstract `_gen_factory`) so a
+seam fix lands once. Also: the 3-site backend fork (`make_backend` + `_resolve_model` + argparse
+choices) and the smoke-script `IS_MLX` OR-chains could collapse to a registry/array.
+**Deliberately deferred:** this is a cross-cutting refactor that rewrites the already-merged,
+already-reviewed `kokoro`/`voxtral_tts` backends — doing it inside the 5b PR would inflate the diff
+and risk the proven seam. Do it as a dedicated refactor PR; the `dia` plan
+(`20260625-feature-tts-dia-backend.md`) should adopt the base class from the start rather than add a
+4th copy. Non-blocking (Low/Low-Medium severity, explicitly "not blocking this PR").
+
 ### Phase 5b — pocket_tts measurements (Apple Silicon arm64, mlx-audio 0.4.4, 2026-06-27)
 Backend: `tts_server/backends/pocket_tts.py`. Model: **`mlx-community/pocket-tts`**
 (the loadable full-model repo; the sibling `kyutai/pocket-tts-without-voice-cloning`
