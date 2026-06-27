@@ -63,6 +63,9 @@ The server logs the resolved backend + model at startup, *before* the
 read from the loaded model, so model load completes before the first
 `server.hello` is sent.
 
+`--log-level` (default `INFO`) sets the server's logging verbosity (any standard
+Python level name, e.g. `DEBUG`/`WARNING`).
+
 On startup over a Unix socket, the server **auto-clears a stale socket** left by
 a previous crash (`SIGKILL` / power loss), so the documented restart works
 without manual `rm`. It refuses to start — surfacing a diagnostic instead of
@@ -106,6 +109,12 @@ and prints the backend, model, audio format/rate, capabilities
 (streaming / binary_audio / voice_count), session id, synthesis **queue depth**,
 the **voice list**, buffered chars, uptime, and pid. It exits non-zero if no
 server is reachable.
+
+`status` resolves its endpoint with the same **URI > socket > host+port**
+precedence as the client and additionally accepts `--uri ws://…`/`wss://…` (the
+serve path has no `--uri`, since it builds its listener from socket-path/host+port).
+Two probe-only flags: `--timeout` (overall probe budget in seconds, default `3.0`)
+and `--json` (emit the raw `hello`+`status` JSON instead of the text summary).
 
 For day-to-day operation on macOS the [`justfile`](justfile) carries read-only
 operator recipes mirroring the sibling stt server: `just tts-list` lists every
@@ -181,12 +190,17 @@ verify this (`just smoke-tone` / `just smoke-kokoro` / `just smoke-multilingual`
 ### Kokoro cancellation caveat
 
 Kokoro yields one segment per `\n+` boundary and the cancel flag is only checked
-at a segment boundary, so a **long single-segment** commit cannot be cancelled
-until `generate()` finishes (measured ≈ tens of seconds on Apple Silicon — a
-single no-newline segment is one delta emitted only at the end). For prompt
-barge-in, **clients should chunk at sentence/newline boundaries** for Kokoro.
-The server's hard guarantee is only "no more audio after `response.cancelled`";
-sub-segment cancel promptness is yield-boundary best-effort.
+at a segment boundary. The **client-visible** cancel is prompt regardless: a
+`response.cancel` is acknowledged with `response.cancelled` in ~1 ms (measured on
+Apple Silicon), and no audio follows it. What runs to the segment boundary is the
+backend worker / Metal lock: a **long single-segment** commit keeps the lock
+until its `generate()` reaches the yield (≈ the full single-segment synthesis
+time — a few seconds for a ~1700-char segment, bounded by `drain_timeout_seconds`),
+so the *next* commit can't start synthesizing until then. To free the lock sooner
+for back-to-back commits, **clients should chunk at sentence/newline boundaries**
+for Kokoro. The server's hard guarantee is "no more audio after
+`response.cancelled`". (See the dev plan's *Phase 2 measured results* for the full
+re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifact.)
 
 ## Examples
 

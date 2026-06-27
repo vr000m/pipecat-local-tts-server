@@ -175,7 +175,11 @@ def main() -> int:
     ap.add_argument("--text", required=True, help="text to synthesize")
     ap.add_argument("--voice", help="voice name (e.g. af_heart)")
     ap.add_argument("--language", help="ISO language code (e.g. en)")
-    ap.add_argument("--speed", type=float, help="Kokoro 'speed' extra")
+    ap.add_argument(
+        "--speed",
+        type=float,
+        help="Kokoro 'speed' extra (server clamps to [0.5, 2.0]; non-finite is rejected as invalid_config)",
+    )
     ap.add_argument("--out", help="output WAV path")
     ap.add_argument("--token", help="bearer token (else $TTS_WS_TOKEN)")
     ap.add_argument("--timeout", type=float, default=60.0)

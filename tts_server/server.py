@@ -220,6 +220,12 @@ class _Response:
     synth_stream: TTSStream | None = None
     task: asyncio.Task | None = None
     cancelled: bool = False
+    # Set once a TERMINAL frame (done / failed / cancelled) has been emitted for
+    # this response. A ``response.cancel`` can race the ``response.audio.done``
+    # send (the recv loop runs during the done ``await``, before the drain's
+    # ``finally`` clears ``state.response``); without this guard it would emit a
+    # SECOND terminal — two terminals for one ``response_id``.
+    terminal_sent: bool = False
     # Set False until the dispatcher selects this commit and starts its drain.
     # Used so cancel can distinguish "queued, never started" (drop from the
     # backlog) from "in-flight" (cancel the running drain).
@@ -243,6 +249,11 @@ class _SynthScheduler:
     so fairness is owned by the scheduler — NOT by daemon threads racing for the
     Metal lock. Only the selected commit's drain runs at a time, which is what
     serializes access to the shared model/Metal lock at commit granularity.
+
+    Intentionally **internal to** ``TTSServer``: ``run_drain`` is injected (it is
+    ``TTSServer._run_drain`` in production) so the scheduling policy here can be
+    unit-tested with any coroutine callback, but the scheduler is not a
+    standalone public component — its lifecycle is owned by the server.
     """
 
     def __init__(
@@ -341,6 +352,14 @@ class _SynthScheduler:
             nxt.start_event.set()
             try:
                 await self._run_drain(nxt)
+            except Exception:
+                # Defense-in-depth: ``_run_drain`` already handles its own backend
+                # errors, but the SINGLE dispatcher must survive ANY stray
+                # exception from the drain path — otherwise no future commit is
+                # ever dispatched and every connection wedges permanently.
+                # ``CancelledError`` (the shutdown stop signal) is a BaseException,
+                # so it is NOT caught here and still ends the loop on ``stop()``.
+                logger.exception("tts_server: dispatcher drain raised; continuing")
             finally:
                 # The drain marks completion; ensure the slot is freed exactly
                 # once even if the drain raised.
@@ -1174,6 +1193,10 @@ class TTSServer:
                 await self._emit_delta(ws, state, rid, seq, bytes(carry))
                 seq += 1
             duration_ms = int(total_samples * 1000 / rate) if rate else 0
+            # Mark terminal BEFORE the await: a ``response.cancel`` arriving while
+            # this send is in flight must see the response as already-terminal and
+            # no-op, not emit a second terminal frame.
+            response.terminal_sent = True
             await self._send(
                 ws,
                 state,
@@ -1194,6 +1217,7 @@ class TTSServer:
         except Exception as exc:
             logger.exception("tts_server: backend synthesis failed")
             if not response.cancelled:
+                response.terminal_sent = True
                 await self._send(
                     ws,
                     state,
@@ -1245,12 +1269,18 @@ class TTSServer:
         # ``target or (... else None)``, which sent a malformed
         # ``response.cancelled`` with ``response_id: null`` for a bare cancel on
         # an idle session.
-        if response is None or (target is not None and target != response.response_id):
+        if (
+            response is None
+            or response.terminal_sent
+            or (target is not None and target != response.response_id)
+        ):
             logger.debug(
-                "tts_server: response.cancel no-op (no active response matches target=%r)",
+                "tts_server: response.cancel no-op (no active response matches target=%r "
+                "or it already reached a terminal frame)",
                 target,
             )
             return
+        response.terminal_sent = True
         await self._cancel_response(response)
         await self._send(
             ws,

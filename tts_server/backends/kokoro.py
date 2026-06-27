@@ -4,6 +4,9 @@ Lazy-imports ``mlx_audio`` INSIDE ``start()`` / ``_get_model`` — never at modu
 load (the **lean-base invariant**: ``import tts_server.backends.kokoro`` must
 succeed with the ``kokoro`` extra absent and must NOT pull ``mlx_audio``). Heavy
 deps (``mlx_audio`` → ``misaki``/``spacy``/``torch``) stay behind the extra.
+``huggingface_hub`` (``snapshot_download``) is likewise imported lazily — inside
+``_discover_voices`` (called from ``start()``), not at module load — so the full
+post-``start()`` dependency set is ``{mlx_audio, huggingface_hub}``.
 
 Streaming lifecycle (R3 / R4 / Architecture & Call Flow):
 
