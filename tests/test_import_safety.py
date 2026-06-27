@@ -15,9 +15,11 @@ first exists in Phase 1; Phase 0 asserts import-safety only.
 from __future__ import annotations
 
 import importlib
-import sys
 
 import pytest
+
+from ._helpers import lean_import_offenders
+
 
 # Every public module that must import cleanly on the lean base. ``backends`` is
 # the package; ``backends._stream_util`` ships as a stdlib-only stub in Phase 0.
@@ -59,12 +61,10 @@ def test_lean_base_does_not_pull_heavy_dep(forbidden):
     reaching for ``numpy``) would surface here as the forbidden root appearing
     in ``sys.modules`` after import.
     """
-    for module_name in _TTS_MODULES:
-        importlib.import_module(module_name)
-
-    offenders = sorted(
-        name for name in sys.modules if name == forbidden or name.startswith(forbidden + ".")
+    setup = "import importlib\n" + "\n".join(
+        f"importlib.import_module({m!r})" for m in _TTS_MODULES
     )
+    offenders = lean_import_offenders(setup, forbidden=(forbidden,))
     assert not offenders, (
         f"lean base must not import {forbidden!r}; found in sys.modules: {offenders}"
     )
@@ -86,8 +86,11 @@ def test_tone_backend_constructs_without_mlx():
     assert backend.sample_rate == 24000
     caps = backend.capabilities()
     assert caps["text_formats"] == ["plain"]
-    # Construction did not drag a heavy dep into sys.modules.
-    for forbidden in _FORBIDDEN_AT_IMPORT:
-        assert not any(
-            name == forbidden or name.startswith(forbidden + ".") for name in sys.modules
-        ), f"constructing ToneBackend must not import {forbidden!r}"
+    # Construction did not drag a heavy dep into sys.modules. This invariant is
+    # process-global, so verify it in a fresh interpreter -- an in-process
+    # ``sys.modules`` check is contaminated once another test imports a heavy dep.
+    offenders = lean_import_offenders(
+        "from tts_server.backend import ToneBackend\nb = ToneBackend()\nb.capabilities()",
+        forbidden=_FORBIDDEN_AT_IMPORT,
+    )
+    assert not offenders, f"constructing ToneBackend must not import a heavy dep; found {offenders}"

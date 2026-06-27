@@ -15,9 +15,10 @@ This file is LEAN (on the lean allow-list): no mlx, no numpy.
 from __future__ import annotations
 
 import struct
-import sys
 
 from tts_server._audio import float_to_pcm16
+
+from ._helpers import lean_import_offenders
 
 
 def _unpack_le_int16(pcm: bytes) -> list[int]:
@@ -27,14 +28,17 @@ def _unpack_le_int16(pcm: bytes) -> list[int]:
 
 def test_converter_importable_without_mlx_or_numpy():
     """The converter is a clean stdlib helper -- importing/using it must not pull
-    ``mlx_audio`` or ``numpy`` into ``sys.modules`` (lean-base invariant)."""
-    # Exercise the function so any lazy import inside it would fire.
-    float_to_pcm16([0.0, 0.5, -0.5])
-    for forbidden in ("mlx_audio", "numpy"):
-        offenders = [
-            name for name in sys.modules if name == forbidden or name.startswith(forbidden + ".")
-        ]
-        assert not offenders, f"float_to_pcm16 must not import {forbidden!r}; found {offenders}"
+    ``mlx_audio`` or ``numpy`` into ``sys.modules`` (lean-base invariant).
+
+    Checked in a fresh interpreter: ``sys.modules`` is process-global, so an
+    in-process check fails spuriously once another test imports a heavy dep
+    (test-ordering pollution). The child process exercises the function so any
+    lazy import inside it would fire.
+    """
+    offenders = lean_import_offenders(
+        "from tts_server._audio import float_to_pcm16\nfloat_to_pcm16([0.0, 0.5, -0.5])"
+    )
+    assert not offenders, f"float_to_pcm16 must not import a heavy dep; found {offenders}"
 
 
 def test_saturates_positive_overshoot_does_not_wrap():

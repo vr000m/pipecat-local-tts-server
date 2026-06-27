@@ -10,10 +10,48 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
+import subprocess
+import sys
+import textwrap
 from dataclasses import dataclass, field
 
 from tts_server.client import TTSClient
 from tts_server.server import ServerConfig, TTSServer
+
+# Top-level package roots that the lean base must never pull into ``sys.modules``.
+LEAN_FORBIDDEN_ROOTS = ("mlx_audio", "numpy")
+
+
+def lean_import_offenders(setup_code: str, forbidden=LEAN_FORBIDDEN_ROOTS) -> list[str]:
+    """Run ``setup_code`` in a FRESH interpreter; return any ``forbidden`` roots
+    it pulled into ``sys.modules``.
+
+    Import-safety is a process-global property: once *any* test imports ``numpy``
+    or ``mlx_audio`` (e.g. the Kokoro backend tests), an in-process
+    ``sys.modules`` check is contaminated for the rest of the run and reports
+    false failures under the full suite — pure test-ordering pollution. A child
+    interpreter gives a clean module table, so the check measures the real
+    invariant ("does importing/using the lean code path drag in a heavy dep?")
+    regardless of what ran before it.
+
+    ``setup_code`` runs first (imports/calls under test); the probe then reports
+    the offending module names as JSON on stdout.
+    """
+    probe = (
+        "import sys, json\n"
+        "FORBIDDEN = " + repr(tuple(forbidden)) + "\n" + textwrap.dedent(setup_code).strip() + "\n"
+        "offenders = sorted(n for n in sys.modules "
+        "if any(n == f or n.startswith(f + '.') for f in FORBIDDEN))\n"
+        "print(json.dumps(offenders))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"lean-import probe crashed (rc={proc.returncode}):\n{proc.stderr}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 @contextlib.asynccontextmanager
