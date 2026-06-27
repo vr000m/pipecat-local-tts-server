@@ -924,6 +924,26 @@ Kokoro baseline for comparison (## Phase 2 measured results): RTF 0.03×, TTFB ~
 client-visible cancel ~1 ms — Voxtral is far heavier per the 4B LM, but its *steady*
 streaming keeps the buffer fed.
 
+### Cross-backend profiling + daily-driver comparison (2026-06-27, PR #6)
+A like-for-like English-female run of all three backends (in-process `rtf_benchmark.py`
++ wire-level smoke + concurrency stress + output-loudness) lives in
+`scripts/profiling/README.md` (sections "Phase 5 cross-backend comparison" and "Phase 5
+wire-level smoke + concurrency"). Headlines, all confirmed pristine (sibling MLX stopped):
+- **Voxtral RTF 1.09–1.29 even with zero GPU contention → RTF > 1 is the model floor, not
+  interference.** Streams fine (TTFB 0.42 s) so short turns are OK; sustained long-form is the
+  risk. Voxtral is CC-BY-NC (non-commercial) regardless.
+- **Daily-driver pick:** `pocket_tts` for a streaming default (load 1.9 s, TTFB 0.02 s, RTF
+  0.05, genuine streaming, CC-BY-4.0); `kokoro` for raw throughput + 54 voices/multilingual
+  (Apache-2.0, but `streaming:false`).
+- **Audio was subjectively listened to** (the 5a "manual listening recommended" gate above) —
+  all three intelligible; Voxtral is ~2–3 dB quieter with a soft −41 dB onset ramp (prosody,
+  not a dropped frame) → a per-backend peak/RMS normalization is the one quality gap noted.
+- **Concurrency bounded:** `pocket_tts` clean to 6 conns × 3 turns; the R4 send-queue
+  high-water close trips at 6×5 (>1700 chars/commit) — the smoke-driver drain limit already
+  recorded above, now quantified. `tone` scaled clean to 12×5.
+- None of these block **Phase 6** (launchd ops + ports — glue, no backend changes); they are
+  backend-internal optimizations tracked in the profiling doc's "Gaps to optimize".
+
 ### Test-infra: subprocess-based import-safety verification — 2026-06-26
 The lean import-safety checks asserted on **process-global `sys.modules`**, so once
 any earlier test imported a heavy dep (`test_kokoro_backend.py` pulls `mlx_audio`,
