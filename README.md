@@ -34,6 +34,10 @@ uv add pipecat-local-tts-server            # or: pip install pipecat-local-tts-s
 
 # Kokoro backend (Apple Silicon; pulls mlx-audio==0.4.4 + misaki[en])
 uv add "pipecat-local-tts-server[kokoro]"  # or: pip install "pipecat-local-tts-server[kokoro]"
+
+# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.4.4 +
+# mistral-common[audio]). NOTE: model weights are CC-BY-NC (non-commercial).
+uv add "pipecat-local-tts-server[voxtral_tts]"
 ```
 
 From source (development):
@@ -45,6 +49,10 @@ uv sync --extra client
 # Kokoro backend (Apple Silicon; pulls mlx-audio==0.4.4 + misaki[en], which
 # drags in spacy/num2words/torch — heavy by design, kept out of lean base)
 uv sync --extra kokoro
+
+# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.4.4 +
+# mistral-common[audio]). Weights are CC-BY-NC; see "Backends & licenses".
+uv sync --extra voxtral_tts
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -149,6 +157,40 @@ optimization.
 text into commits, rounding `ideal_words` up to the next **sentence boundary**
 — never splitting mid-sentence (a half-sentence commit makes the model apply
 sentence-final prosody mid-phrase). `max_text_chars` is the hard server cap.
+
+### Backends & licenses
+
+Each backend is its own extra; weights have their own licenses — **the package
+ships only runtime code, never weights** (they download on first `serve`).
+Operators are responsible for honouring each model's license.
+
+| Backend | Extra | `streaming` | Model | Weights license |
+|---|---|---|---|---|
+| `tone` | (base) | `false` | none (synthetic sine) | — |
+| `kokoro` | `kokoro` | `false` | mlx-community/Kokoro-82M-bf16 | Apache-2.0 (commercial-safe) |
+| `voxtral_tts` | `voxtral_tts` | `true` | mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 | **CC-BY-NC (non-commercial)** |
+
+> **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
+> **CC-BY-NC** — do not use them in a commercial deployment. The choice of
+> backend (and thus of model license) is the operator's.
+
+### Voxtral TTS capabilities (as shipped)
+
+`streaming:true` sub-segment streamer (native `stream`/`streaming_interval`,
+locked to 0.3 s — measured TTFB 0.395 s, see the dev-plan Findings). Verified
+against mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 (mlx-audio 0.4.4):
+
+| Field | Value | Note |
+|---|---|---|
+| rate | **24000** | from `server.hello.audio.rate`, read from `model.sample_rate` |
+| `streaming` | `true` | genuine sub-segment streaming; client MAY pass larger text |
+| `binary_audio` | `false` | base64-in-JSON for v1 |
+| `text_formats` | `["plain"]` | ssml/ipa not supported |
+| `languages` | `["en","fr","es","de","it","pt","nl","ar","hi"]` | from the 20 voice presets; language is selected by the voice preset (no `lang_code` kwarg) |
+| `voice_count` | `20` | full list via `status` (e.g. `casual_male`, `fr_female`) |
+| `extras` | `["temperature","top_k","top_p"]` | Voxtral's effective sampling kwargs (`ref_audio` is absent → no cloning; `streaming_interval` is backend config, not advertised) |
+| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
+| `max_text_chars` | `2000` | hard server cap |
 
 ### Kokoro capabilities (as shipped)
 

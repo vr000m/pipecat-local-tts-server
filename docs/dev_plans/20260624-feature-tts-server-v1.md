@@ -794,7 +794,7 @@ Phase 3:
 - `dia` dialogue backend (formerly Phase 5c, split out 2026-06-25):
   `docs/dev_plans/20260625-feature-tts-dia-backend.md`.
 
-<!-- reviewed: 2026-06-25 @ a0cff09acf15d7296db05735e63471649d8bce03 -->
+<!-- reviewed: 2026-06-27 @ 1c450f27bddd12774c948f2058b26861dbba0517 -->
 
 ## Progress
 
@@ -803,10 +803,64 @@ Phase 3:
 - [x] Phase 2: Kokoro backend — committed (80 lean + 5 mlx-gated tests pass; live synth verified)
 - [x] Phase 3: Ops parity with stt — committed (103 lean tests pass; scheduler/auth/backpressure verified)
 - [x] Phase 4: Reference adapter + docs — committed (pipecat adapter, README, protocol.md reconciled; 183 total: 157 lean + 6 mlx-gated + 20 pipecat-adapter)
-- [ ] Phase 5: More streaming backends — 5a `voxtral_tts`, 5b `pocket_tts` (5a before 5b). `dia` (formerly 5c) split to `20260625-feature-tts-dia-backend.md`.
+- [~] Phase 5: More streaming backends — **5a `voxtral_tts` DONE** (branch `feature/tts-voxtral-backend`; 6 mlx-gated + 27 new lean tests pass; streaming_interval locked 0.3 s; latency+concurrency smoke executed — see Findings → *Phase 5a measurements*); 5b `pocket_tts` next (5a before 5b). `dia` (formerly 5c) split to `20260625-feature-tts-dia-backend.md`. (Per the *don't edit the reviewed contract* decision, the `#### Phase 5a` contract checkboxes above the marker are left as-is; completion is tracked here in the workspace.)
 - [x] Post-v1 ops: operator `justfile` (`tts-list`, `tts-status`) — mirrors the stt justfile; smoke-tested with a live tone server. Launchd install/enable/disable/uninstall recipes deferred (no tts install path yet — see *Operator justfile (post-review)* below).
 
 ## Findings
+
+### Phase 5a — voxtral_tts measurements (Apple Silicon arm64, mlx-audio 0.4.4, 2026-06-27)
+Backend: `tts_server/backends/voxtral_tts.py`. Model: **`mlx-community/Voxtral-4B-TTS-2603-mlx-bf16`**
+(the only repo the upstream `voxtral_tts` arch supports; ~8 GB bf16, **CC-BY-NC**).
+
+**Feasibility correction (load path):** the cached `Voxtral-Mini-4B-Realtime-2602*`
+repos are the WRONG architecture for this module (`strict=True` reports 476
+mismatched params; their config `model_type` is `voxtral_realtime`, unregistered).
+The correct repo loads via the plain `load(repo, lazy=False, strict=True)` path
+(no `model_type` override needed). The extra also needs **`mistral-common[audio]`**
+(Voxtral's tekken speech tokenizer) — added to the `voxtral_tts` pyproject extra.
+`sample_rate=24000`, read from `model.sample_rate` pre-warmup (R1/R3).
+
+**streaming_interval measurement-and-lock** (single no-newline sentence; TTFB is the
+objective, audio quality is a manual note not a CI gate):
+
+| streaming_interval | TTFB (s) | native chunks | RTF | peak | NaN |
+|---|---|---|---|---|---|
+| 0.3 | **0.395** | 19 | 1.170 | 0.192 | none |
+| 0.5 | 0.637 | 12 | 1.089 | 0.309 | none |
+| 1.0 | 1.126 | 4 | 1.112 | 0.037 | none |
+
+**LOCKED `_STREAMING_INTERVAL = 0.3`** — lowest TTFB + finest cadence, no NaN, no
+clip (peak 0.192 ≪ 1.0). The backend test asserts equality to this single value
+(`tests/test_voxtral_lean.py::test_streaming_interval_locked_value`), never a range.
+
+**Steady-state (R4 contract) is safe:** on a 15.3 s-audio utterance the mean
+inter-chunk gap (0.254 s, max 0.284 s) is BELOW the ~0.3 s of audio each chunk
+carries → production stays ahead of realtime, the playback buffer fills rather than
+starves. The overall RTF ≈ 1.07–1.17 is **one-time model prefill cost, not a
+steady-state stall** (Kokoro's 0.03× does not apply — Voxtral is a 4B LM-based TTS).
+
+**`is_final_chunk`:** Voxtral DOES set `is_final_chunk=True` on its last chunk
+(confirmed; Kokoro never does). Correctness does not depend on it — the bridge keys
+EOF off generator exhaustion (`tests/test_voxtral_lean.py` drives `stream_generate`
+directly with a flag-set last result and asserts exhaustion-driven EOF).
+
+**Audio quality:** subjective listening was NOT performed in this headless conduct
+environment (no audio device). The automated no-NaN/no-clip sanity passed (peak 0.192,
+no NaN on decoded chunks); a manual listening check is recommended before any
+production rollout (per plan: quality gates the human's choice, not CI).
+
+**Smoke (hard gate, actually executed on this host 2026-06-27):**
+- Latency (`just smoke-voxtral_tts`): WAV round-trip OK; **TTFB 0.395 s**, delta span
+  7.34 s ≈ 94% of the 7.82 s total (steady streaming, NOT buffer-then-flush),
+  RTF 1.087, 360 wire deltas. PASS.
+- Concurrency (`just smoke-multiconn-voxtral_tts --connections 2 --turns 3`): 2-conn
+  interleave with no cross-talk/starvation; per-connection in-flight cap (K=1) →
+  `BUSY` with `retry_after_ms=250`; `max_text_chars` guard rejects a 4000-char commit
+  with `payload_too_large` (pre-synthesis, backend-agnostic). PASS.
+
+Kokoro baseline for comparison (## Phase 2 measured results): RTF 0.03×, TTFB ~40 ms,
+client-visible cancel ~1 ms — Voxtral is far heavier per the 4B LM, but its *steady*
+streaming keeps the buffer fed.
 
 ### Test-infra: subprocess-based import-safety verification — 2026-06-26
 The lean import-safety checks asserted on **process-global `sys.modules`**, so once

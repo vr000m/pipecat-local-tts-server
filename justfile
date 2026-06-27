@@ -112,9 +112,18 @@ smoke-kokoro *args:
 smoke-multilingual *args:
     tests/smoke/run_smoke.sh --backend kokoro --multilingual {{args}}
 
+# Voxtral TTS backend (streaming:true). WAV round-trip + TTFB/cadence assertion.
+# Auto-syncs the voxtral_tts extra if missing (CC-BY-NC weights; see README).
+smoke-voxtral_tts *args:
+    tests/smoke/run_smoke.sh --backend voxtral_tts {{args}}
+
 # Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
 smoke-multiconn *args:
     tests/smoke/run_multiconn.sh {{args}}
+
+# Multi-connection concurrency against the streaming voxtral_tts backend.
+smoke-multiconn-voxtral_tts *args:
+    tests/smoke/run_multiconn.sh --backend voxtral_tts {{args}}
 
 # Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
 smoke-reconnect *args:
