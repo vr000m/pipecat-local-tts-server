@@ -75,30 +75,28 @@ tts-list:
       else
         printf 'stopped  %-32s (plist present, not loaded)\n' "$label"
       fi
-      # Live backend probe. Two canonical addressing schemes:
-      #  * the bare default label still probes its ad-hoc Unix socket (the
-      #    quick-start default), and
-      #  * the per-backend labels (.tone/.kokoro/.voxtral_tts/.pocket_tts) probe
-      #    their canonical host:port from the _resolve map.
-      # A custom label matches neither, so it gets no live line by design.
-      sock=""
-      host=""
-      port=""
-      case "$label" in
-        pipecat.tts-server) sock="{{cache_dir}}/tts.sock" ;;
-        pipecat.tts-server.tone)        host="127.0.0.1"; port="8665" ;;
-        pipecat.tts-server.kokoro)      host="127.0.0.1"; port="8765" ;;
-        pipecat.tts-server.voxtral_tts) host="127.0.0.1"; port="8865" ;;
-        pipecat.tts-server.pocket_tts)  host="127.0.0.1"; port="8965" ;;
-      esac
+      # Live backend probe. Read the endpoint straight from the agent's OWN plist
+      # (ProgramArguments) instead of a hardcoded per-label host:port map. The
+      # plist is what render_tts_plist.py wrote, so this never drifts from the
+      # _resolve map and works for ANY label (default or custom) and EITHER
+      # transport (--host/--port, or --socket-path for a socket-bound agent).
+      host=""; port=""; sock=""; prev=""
+      while IFS= read -r s; do
+        case "$prev" in
+          --host) host="$s" ;;
+          --port) port="$s" ;;
+          --socket-path) sock="$s" ;;
+        esac
+        prev="$s"
+      done < <(sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' "$plist")
       # status raises SystemExit(1) on a stopped/absent endpoint and never prints
-      # "stopped"/"unreachable" itself, so the recipe owns that display.
+      # "stopped"/"unreachable" itself, so the recipe owns that display. The
+      # backend line is `backend: <name> (model: <m>)`, so capture only the first
+      # token after `backend:` — never the `(model: ...)` suffix.
       if [[ -n "$sock" ]]; then
-        # Print the socket in the same ~-form the README quick-start uses, so an
-        # operator can match a config line to an agent directly.
         printf '         socket: %s\n' "${sock/#$HOME/~}"
         if live=$(uv run python -m tts_server status --socket-path "$sock" 2>/dev/null); then
-          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*//')
+          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*([^[:space:]]+).*/\1/')
           printf '         live: %s\n' "${backend:-?}"
         else
           printf '         live: stopped/unreachable\n'
@@ -106,13 +104,13 @@ tts-list:
       elif [[ -n "$host" && -n "$port" ]]; then
         printf '         endpoint: %s:%s\n' "$host" "$port"
         if live=$(uv run python -m tts_server status --host "$host" --port "$port" 2>/dev/null); then
-          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*//')
+          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*([^[:space:]]+).*/\1/')
           printf '         live: %s\n' "${backend:-?}"
         else
           printf '         live: stopped/unreachable\n'
         fi
       else
-        printf '         endpoint: (custom label — not in the canonical map)\n'
+        printf '         endpoint: (no serve endpoint found in plist)\n'
       fi
     done
     if [[ "$found" -eq 0 ]]; then
@@ -124,7 +122,7 @@ tts-list:
         printf 'running  %-32s (ad-hoc, no plist)\n' "pipecat.tts-server"
         printf '         socket: %s\n' "${sock/#$HOME/~}"
         if live=$(uv run python -m tts_server status --socket-path "$sock" 2>/dev/null); then
-          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*//')
+          backend=$(grep -m1 -E '^[[:space:]]*backend:' <<<"$live" | sed -E 's/.*backend:[[:space:]]*([^[:space:]]+).*/\1/')
           printf '         live: %s\n' "${backend:-?}"
         else
           printf '         live: stopped/unreachable\n'
@@ -147,6 +145,13 @@ tts-status target=(cache_dir / "tts.sock"):
     #!/usr/bin/env bash
     set -uo pipefail
     target={{quote(target)}}
+    # A value that looks like a path (contains '/', or is an existing socket
+    # file) is ALWAYS a literal --socket-path, so a socket file that happens to
+    # share a backend's name is never silently reinterpreted as a TCP port. Only
+    # a bare backend name resolves to its canonical host:port.
+    if [[ "$target" == */* || -S "$target" ]]; then
+      exec uv run python -m tts_server status --socket-path "$target"
+    fi
     case "$target" in
       tone|kokoro|voxtral_tts|pocket_tts)
         resolved=$(just _resolve "$target") || exit 1
@@ -155,7 +160,7 @@ tts-status target=(cache_dir / "tts.sock"):
         exec uv run python -m tts_server status --host "$host" --port "$port"
         ;;
       *)
-        # Literal socket path (default = the canonical quick-start socket).
+        # A bare non-backend token that is not path-like: treat as a socket path.
         exec uv run python -m tts_server status --socket-path "$target"
         ;;
     esac
@@ -201,6 +206,10 @@ tts-enable backend:
       echo "tts-enable: no plist at $plist — run 'just tts-install $backend' first" >&2
       exit 1
     fi
+    # Idempotent: unload first if already loaded (mirrors install_tts_agent.sh),
+    # so re-running tts-enable on a loaded agent re-bootstraps cleanly instead of
+    # erroring with "service already bootstrapped".
+    launchctl bootout "gui/$uid/$label" 2>/dev/null || true
     if ! launchctl bootstrap "gui/$uid" "$plist"; then
       echo "tts-enable: launchctl bootstrap failed for $label" >&2
       exit 1

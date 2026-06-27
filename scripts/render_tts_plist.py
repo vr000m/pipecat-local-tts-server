@@ -46,7 +46,12 @@ except ImportError:
 
 DEFAULT_LABEL = "pipecat.tts-server"
 
-_ABSPATH_RE = re.compile(r"^/[A-Za-z0-9._/+\- @]+$")
+# Absolute path. These values flow into plistlib (which XML-escapes them) and are
+# passed to launchd as argv — never through a shell — so the only real constraints
+# are "absolute" and "no control characters". Apostrophes, parentheses, commas,
+# spaces, and non-ASCII (e.g. an accented macOS username like /Users/José) are all
+# legitimate path characters and must not be rejected.
+_ABSPATH_RE = re.compile(r"^/[^\x00-\x1f]+$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
 # The four merge-time backends (see the justfile _resolve map + README port
 # table). ``dia`` is reserved and intentionally NOT accepted here.
@@ -61,12 +66,15 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
 def _log_basename(label: str) -> str:
     """Derive a per-agent log-file basename from the launchd label.
 
-    The default label maps to the short ``pipecat-tts`` slug (kept in lockstep
-    with the shell copy in ``scripts/install_tts_agent.sh``); the branch matches
-    the string literal, NOT ``DEFAULT_LABEL`` — keying on the constant would
-    silently remap the new default if the constant ever moved. Any other label
-    gets a collision-free basename by replacing ``.`` separators with ``-``
-    (e.g. ``pipecat.tts-server.kokoro`` -> ``pipecat-tts-server-kokoro``).
+    This is the **single source** for the log basename: the renderer bakes the
+    resulting ``StandardOutPath``/``StandardErrorPath`` into the plist, and
+    ``scripts/install_tts_agent.sh logs`` reads those paths back out of the
+    installed plist (it does NOT recompute the basename), so there is no second
+    copy to drift. The branch matches the string literal, NOT ``DEFAULT_LABEL`` —
+    keying on the constant would silently remap the new default if the constant
+    ever moved. Any other label gets a collision-free basename by replacing
+    ``.`` separators with ``-`` (e.g. ``pipecat.tts-server.kokoro`` ->
+    ``pipecat-tts-server-kokoro``).
     """
     if label == "pipecat.tts-server":
         return "pipecat-tts"

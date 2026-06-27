@@ -38,15 +38,6 @@ PORT="${PIPECAT_TTS_PORT:-8665}"
 MODEL="${PIPECAT_TTS_MODEL:-}"
 AUTH_TOKEN_FILE="${PIPECAT_TTS_AUTH_TOKEN_FILE:-}"
 
-# Derive a per-agent log basename. The default label maps to the short
-# pipecat-tts slug; any other label replaces '.' with '-' so two agents never
-# share a log. Kept in lockstep with render_tts_plist.py's _log_basename().
-if [[ "$LABEL" == "pipecat.tts-server" ]]; then
-    LOG_BASENAME="pipecat-tts"
-else
-    LOG_BASENAME="${LABEL//./-}"
-fi
-
 # Resolve the python interpreter from the project venv.
 PYTHON="$REPO_ROOT/.venv/bin/python"
 if [[ ! -x "$PYTHON" ]]; then
@@ -119,7 +110,16 @@ status)
         echo "$LABEL: not loaded"
     ;;
 logs)
-    tail -F "$LOG_DIR/$LOG_BASENAME.out" "$LOG_DIR/$LOG_BASENAME.err"
+    # Read the exact log paths the renderer baked into the plist, rather than
+    # recomputing the basename — keeps render_tts_plist.py's _log_basename() the
+    # single source of truth (no shell copy to drift out of lockstep).
+    if [[ ! -e "$PLIST_DST" ]]; then
+        echo "$LABEL: no plist at $PLIST_DST — run 'install' first" >&2
+        exit 1
+    fi
+    out="$(plutil -extract StandardOutPath raw -o - "$PLIST_DST")"
+    err="$(plutil -extract StandardErrorPath raw -o - "$PLIST_DST")"
+    tail -F "$out" "$err"
     ;;
 *)
     echo "usage: $0 [install|uninstall|start|stop|restart|status|logs]" >&2

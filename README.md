@@ -175,8 +175,10 @@ and `--json` (emit the raw `hello`+`status` JSON instead of the text summary).
 For day-to-day operation on macOS the [`justfile`](justfile) carries read-only
 operator recipes mirroring the sibling stt server: `just tts-list` lists every
 `pipecat.tts-server*` launchd agent with state, pid, and live backend, and
-`just tts-status` runs the wire `status` probe against the canonical socket
-(override with `just tts-status socket=…`).
+`just tts-status` runs the wire `status` probe against the canonical socket by
+default; pass a backend name to probe its canonical port (`just tts-status
+kokoro`) or a socket path to probe a specific socket (`just tts-status
+/path/to/tts.sock`).
 
 ## Protocol
 
