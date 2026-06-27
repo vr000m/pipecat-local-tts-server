@@ -341,6 +341,82 @@ async def test_kokoro_stream_wait_closed_blocks_until_lock_released():
     await gen.aclose()
 
 
+async def test_bridge_worker_cancelled_while_blocked_on_lock_never_generates():
+    """Adversarial-review #3: a worker cancelled WHILE parked waiting for the
+    process-wide Metal lock must never construct OR advance its generator once
+    the lock frees. A plain ``metal_lock.acquire()`` would hand the lock over
+    after the prior synthesis releases it and drive one stale segment before the
+    in-loop cancel check — defeating cancellation, synthesizing dead text, and
+    re-pinning the GPU lock under barge-in.
+
+    Drives the bridge directly: a 'prior synthesis' holds the lock, the worker
+    under test is cancelled while blocked on it, then the lock is released. The
+    cancelled worker must leave ``factory_called``/``advanced`` unset. With the
+    old unconditional acquire this test fails: ``gen_factory()`` runs (construct)
+    and the ``for`` loop calls ``next`` once (advance) before the cancel check.
+    """
+    import threading
+
+    from tts_server.backends._stream_util import stream_generate
+
+    loop = asyncio.get_running_loop()
+    metal_lock = threading.Lock()
+    cancel = threading.Event()
+    worker_done = threading.Event()
+    factory_called = threading.Event()
+    advanced = threading.Event()
+
+    class _FakeResult:
+        audio = [0.1, 0.1]
+
+    def _gen():
+        advanced.set()  # set on the first ``next`` — i.e. the generator advanced
+        yield _FakeResult()
+
+    def _factory():
+        factory_called.set()  # set when the generator is CONSTRUCTED
+        return _gen()
+
+    # A prior synthesis holds the lock; the worker under test must wait for it.
+    metal_lock.acquire()
+
+    received: list[bytes] = []
+
+    async def _drain():
+        async for pcm in stream_generate(
+            _factory,
+            loop=loop,
+            metal_lock=metal_lock,
+            cancel=cancel,
+            maxsize=4,
+            worker_done=worker_done,
+        ):
+            received.append(pcm)
+
+    drain_task = asyncio.ensure_future(_drain())
+
+    # Let the worker reach and park on the (held) lock.
+    await asyncio.sleep(0.1)
+    assert not factory_called.is_set(), "generator constructed before acquiring the lock"
+
+    # Cancel WHILE the worker is blocked on the lock, then let the prior
+    # synthesis release it. The cancelled worker must not generate.
+    cancel.set()
+    metal_lock.release()
+
+    await asyncio.wait_for(drain_task, timeout=2.0)
+    done = await loop.run_in_executor(None, worker_done.wait, 2.0)
+    assert done, "worker_done must be set once the cancelled worker exits"
+
+    assert not factory_called.is_set(), "cancelled worker CONSTRUCTED its generator"
+    assert not advanced.is_set(), "cancelled worker ADVANCED its generator (stale segment)"
+    assert received == [], "cancelled worker emitted a stale audio chunk"
+    # The lock ends up free: the worker either never took it, or took and
+    # released it in its finally without generating.
+    assert metal_lock.acquire(blocking=False), "Metal lock leaked by the cancelled worker"
+    metal_lock.release()
+
+
 async def test_kokoro_stream_wait_closed_noop_before_synthesis():
     """``wait_closed`` must return immediately when synthesis never started (a
     pre-synthesis cancel) — there is no worker and no held lock to wait on."""

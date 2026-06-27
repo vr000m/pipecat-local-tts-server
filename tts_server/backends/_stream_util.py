@@ -179,17 +179,36 @@ async def stream_generate(
     def _worker() -> None:
         # Acquire the process-wide Metal lock for the WHOLE drain. Independent
         # workers must not race for the lock; the caller serializes admission.
-        metal_lock.acquire()
+        #
+        # Acquisition is CANCELLATION-AWARE. A worker can be parked here for a
+        # long time while a prior (possibly cancelled) synthesis still holds the
+        # lock past the caller's bounded teardown wait. Block in bounded slices,
+        # re-polling ``cancel`` between them, so a response cancelled WHILE
+        # waiting for the lock never constructs or advances its generator. A
+        # plain ``metal_lock.acquire()`` would hand the lock over after the prior
+        # synthesis releases it and then drive at least one stale generation
+        # segment before the in-loop cancel check — defeating cancellation,
+        # synthesizing dead text, and re-pinning the GPU lock under barge-in.
+        acquired = False
+        while not cancel.is_set():
+            if metal_lock.acquire(timeout=_PUT_TIMEOUT_SECONDS):
+                acquired = True
+                break
         try:
-            gen = gen_factory()
-            for result in gen:
-                if cancel.is_set():
-                    break
-                pcm = _audio_to_pcm(result)
-                if not pcm:
-                    continue
-                if not _put_blocking(pcm):
-                    break
+            # Re-check AFTER acquiring: ``cancel`` may have fired in the window
+            # between the final poll and the lock being handed over. Skip
+            # generation entirely — never call ``gen_factory()`` or advance the
+            # iterator once cancelled.
+            if acquired and not cancel.is_set():
+                gen = gen_factory()
+                for result in gen:
+                    if cancel.is_set():
+                        break
+                    pcm = _audio_to_pcm(result)
+                    if not pcm:
+                        continue
+                    if not _put_blocking(pcm):
+                        break
         except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer
             error_box["error"] = exc
             logger.exception("tts_server: synthesis worker failed")
@@ -197,7 +216,10 @@ async def stream_generate(
             # GPU/Metal work is finished once the generator is drained or broke
             # out; release the lock BEFORE the EOF enqueue so a slow consumer
             # cannot extend the lock hold and stall other connections' synthesis.
-            metal_lock.release()
+            # Guarded by ``acquired``: a worker cancelled before it ever took the
+            # lock must not release a lock it does not hold.
+            if acquired:
+                metal_lock.release()
             # EOF is ALWAYS enqueued (exhaustion/error/cancel) — never keyed off
             # ``.is_final_chunk``. The PATH matters:
             #  - NORMAL exhaustion / worker error: the consumer is STILL draining,

@@ -548,7 +548,10 @@ async def stream_generate(
     maxsize: int,                 # bounded async queue; producer blocks/cooperates when full
 ) -> AsyncIterator[bytes]: ...    # yields int16-LE PCM per chunk; EOF sentinel ends iteration
 ```
-A daemon thread acquires `metal_lock`, runs `gen_factory()`, converts each yielded
+A daemon thread acquires `metal_lock` **cancellation-awarely** (bounded-poll `acquire(timeout=…)`
+re-checking `cancel` between slices, with a second `cancel` check right after acquiring — so a
+response cancelled WHILE parked waiting for the lock never constructs or advances its generator),
+runs `gen_factory()`, converts each yielded
 `GenerationResult.audio` (clipped and mapped per R3) to int16-LE PCM, and performs a
 producer-side blocking/cooperative put into the bounded async queue; `call_soon_threadsafe` alone
 is **not** sufficient because it schedules and returns without applying backpressure. The concrete
