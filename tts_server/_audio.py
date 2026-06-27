@@ -22,10 +22,16 @@ from __future__ import annotations
 
 import array
 import math
+import sys
 from typing import Iterable
 
 _INT16_MIN = -32768
 _INT16_MAX = 32767
+
+# Host endianness is fixed for the process lifetime; resolve once at import
+# rather than per-chunk. ``array('h')`` is host-endian, so we byteswap only on
+# big-endian hosts to force little-endian on the wire.
+_IS_BIG_ENDIAN = sys.byteorder == "big"
 
 
 def float_to_pcm16(samples: Iterable[float]) -> bytes:
@@ -59,12 +65,6 @@ def float_to_pcm16(samples: Iterable[float]) -> bytes:
                 v = _INT16_MAX
             out.append(v)
     # ``array('h')`` is host-endian; force little-endian on the wire.
-    if _is_big_endian():
+    if _IS_BIG_ENDIAN:
         out.byteswap()
     return out.tobytes()
-
-
-def _is_big_endian() -> bool:
-    import sys
-
-    return sys.byteorder == "big"

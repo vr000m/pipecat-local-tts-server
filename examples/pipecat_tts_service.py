@@ -248,6 +248,21 @@ class LocalTTSService(TTSService):
                 "update LocalTTSService._update_sample_rate to the new API."
             )
         self._sample_rate = rate
+        # Verify the round-trip: a silent rename where ``_sample_rate`` still
+        # exists but the ``sample_rate`` property now reads a DIFFERENT backing
+        # field would leave our write on a dead attribute while the property kept
+        # returning the old rate — the exact pitch/speed-distortion failure the
+        # block above warns about, which the ``hasattr`` guard cannot catch. Fail
+        # loudly here instead.
+        if self.sample_rate != rate:
+            raise RuntimeError(
+                "pipecat TTSService.sample_rate did not reflect the value written "
+                f"to '_sample_rate' (wrote {rate}, property returns "
+                f"{self.sample_rate}); the installed pipecat-ai reads the negotiated "
+                "rate from a different field. Pin pipecat-ai to the tested range "
+                "(pyproject 'examples' extra) or update "
+                "LocalTTSService._update_sample_rate to the new API."
+            )
 
     # --- interruption / barge-in ------------------------------------------
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
