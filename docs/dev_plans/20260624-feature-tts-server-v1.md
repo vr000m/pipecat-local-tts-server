@@ -491,7 +491,7 @@ It follows the 5a/5b backend-add pattern below once its dialogue-mapping design 
 ```jsonc
 { "streaming": false, "binary_audio": false,                  // rate is NOT here — canonical rate is hello.audio.rate (24000, VERIFIED); R1 client reads that
   "text_formats": ["plain"],                                   // ssml/ipa UNVERIFIED for Kokoro — plain confirmed; drop until checked
-  "languages": ["en","ja","zh","fr","es","it","pt","hi"],     // VERIFIED as voice-prefix/lang_code mapping only via --load 2026-06-24: a:20,b:8→en, e:3→es, f:1→fr, h:4→hi, i:2→it, j:5→ja, p:3→pt, z:8→zh; full non-English long-text behaviour needs the Phase-2 language probe
+  "languages": ["en","fr","es","it","pt","hi"],               // SHIPPED set after 08d4f6e (2026-06-25): ja/zh dropped from the advertised set — their G2P needs misaki[ja]/misaki[zh] (not in the kokoro extra), so advertising them would let a client pick a language that fails mid-synthesis. ja/zh voices still load but are opt-in via PIPECAT_TTS_KOKORO_EXTRA_LANGS. Voice-prefix/lang_code mapping VERIFIED via --load 2026-06-24: a:20,b:8→en, e:3→es, f:1→fr, h:4→hi, i:2→it, j:5→ja, p:3→pt, z:8→zh; full non-English long-text behaviour needs the Phase-2 language probe
   "voice_count": 54,                                           // VERIFIED via --load 2026-06-24 (54 distinct voices in mlx-community/Kokoro-82M-bf16)
   "extras": ["speed"],                                         // Kokoro effective set ONLY; temperature/instruct/cfg_scale/ddpm_steps are NOT Kokoro params
   "ideal_words": 40, "max_text_chars": 2000 }                  // ideal_words: soft target, client rounds UP to next sentence boundary; max_text_chars: hard server cap. Values are chosen defaults (not model facts).
@@ -804,6 +804,21 @@ Phase 3:
 - [x] Post-v1 ops: operator `justfile` (`tts-list`, `tts-status`) — mirrors the stt justfile; smoke-tested with a live tone server. Launchd install/enable/disable/uninstall recipes deferred (no tts install path yet — see *Operator justfile (post-review)* below).
 
 ## Findings
+
+### Test-infra: subprocess-based import-safety verification — 2026-06-26
+The lean import-safety checks asserted on **process-global `sys.modules`**, so once
+any earlier test imported a heavy dep (`test_kokoro_backend.py` pulls `mlx_audio`,
+which transitively loads `numpy`), four assertions failed under the full suite while
+passing in isolation — pure test-ordering pollution, not a real lean-base regression.
+Fix: moved the `sys.modules` inspection into a **fresh interpreter** via a new
+`lean_import_offenders()` helper in `tests/_helpers.py` (runs the import/call under
+test in a `sys.executable -c` subprocess, returns offending module names as JSON).
+This both removes the pollution and tests the real invariant — a clean process
+importing only lean code. Affected: `tests/_helpers.py`,
+`tests/test_import_safety.py` (`test_lean_base_does_not_pull_heavy_dep`,
+`test_tone_backend_constructs_without_mlx`), `tests/test_pcm16_clip.py`
+(`test_converter_importable_without_mlx_or_numpy`). Negative control confirms the
+probe still detects a real heavy-dep import; full suite 182 passed.
 
 ### /review-plan pass — 2026-06-25 (5 lenses; advisory, not applied to the reviewed contract)
 Re-ran `/review-plan --auto-fix` after the marker went stale from the smoke-test-doc edit
