@@ -29,6 +29,11 @@ jobs:
   # build job needs no special permissions.
   build:
     runs-on: ubuntu-latest
+    # Explicit so the job does not rely on the repo being public: with the
+    # top-level `permissions: {}`, `contents` would otherwise be `none` and
+    # `actions/checkout` could not clone a private repo.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
