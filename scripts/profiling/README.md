@@ -110,17 +110,24 @@ language**, the closest the three models allow.
 ### In-process (`rtf_benchmark.py`, model-only — bypasses server/UDS)
 
 Pure model throughput. **RTF = wall/audio** (`<1` faster than realtime / live-viable).
-Caveat: the operator `tts_server` (kokoro) + `stt_server` were resident during this run;
-they were idle so Kokoro/Pocket held their baselines, but Voxtral's RTF spread (1.12→1.50)
-is partly GPU contention — stop sibling MLX processes for a pristine Voxtral reading.
+Numbers below are a **pristine run** — all sibling MLX processes (operator kokoro
+`tts_server`, nemotron `stt_server`) were stopped first (`launchctl bootout` + kill), so
+the profiler reported `isolation: clean run`. A prior contended run showed Voxtral RTF
+1.12→1.50 and a 22 s `start()`; isolating proved that was **contention on the tail**, not
+the floor — pristine Voxtral still sits at RTF ~1.1–1.3 (so RTF > 1 is the model floor, a
+real gap), while its load dropped to ~5 s (the 22 s was a cold/contended outlier).
+Kokoro and Pocket were unchanged (idle siblings didn't affect them).
 
-| Metric (in-process) | kokoro | voxtral_tts | pocket_tts |
+| Metric (in-process, pristine) | kokoro | voxtral_tts | pocket_tts |
 |---|---|---|---|
-| Cold load + warmup (`start()`) | 2.4 s | **22.1 s** | **1.6 s** |
+| Cold load + warmup (`start()`) | 2.8 s | 4.9 s | **1.9 s** |
 | TTFB, warm (1-sentence) | 0.08 s | 0.42 s | **0.02 s** |
-| RTF, 1-sentence (warm) | **0.03** | 1.12–1.18 | 0.05 |
-| RTF, 2-sentence (warm) | **0.02** | 1.18–1.44 | 0.05 |
-| RTF, 3-seg (warm) | **0.03** | 1.18–1.50 | 0.05 |
+| RTF, 1-sentence (warm) | **0.03** | 1.09–1.11 | 0.05 |
+| RTF, 2-sentence (warm) | **0.02** | 1.10–1.17 | 0.05 |
+| RTF, 3-seg (warm) | **0.03** | 1.20–1.29 | 0.05 |
+
+Pocket's very first synth after load costs ~0.5 s wall / 0.31 s TTFB once, then settles to
+0.02 s TTFB / RTF 0.05 — worth one warmup call at startup if first-utterance latency matters.
 
 ### Output loudness / onset (RMS over the synthesized WAV)
 
@@ -137,18 +144,33 @@ can be hard to hear. See gaps below.
 
 ### Gaps to optimize (ranked)
 
-1. **Voxtral RTF > 1 (≈1.1–1.5).** The headline perf gap — sustained throughput is *slower
-   than realtime* (confirmed in-process AND on the wire at 1.55), so long-form playback can
-   underrun/stutter. It streams, so first audio is prompt (0.42 s TTFB) and short utterances
-   are fine; sustained live narration is the risk. Levers: a smaller/more-quantized Voxtral
-   checkpoint, or scope it to short turns. Re-measure pristine (no sibling MLX) first to
-   separate model floor from contention.
-2. **Voxtral cold load 22 s** vs Kokoro 2.4 s / Pocket 1.6 s — slow process start; matters for
-   restart/failover and autoscaling. Worth profiling load vs warmup split.
-3. **Voxtral output level** (~2–3 dB low + soft onset) — a per-backend peak/RMS normalization
-   step would even the three out for like-for-like A/B and stop quiet leading words.
-4. **Wire vs in-process TTFB overhead:** Kokoro 0.13 s wire vs 0.08 s in-process (~50 ms
+1. **Voxtral RTF > 1 (≈1.1–1.3, pristine).** The headline perf gap — sustained throughput is
+   *slower than realtime* even with zero GPU contention (confirmed pristine in-process AND on
+   the wire at 1.55), so long-form playback can underrun/stutter. This is the **model floor**,
+   not interference. It streams, so first audio is prompt (0.42 s TTFB) and short utterances are
+   fine; sustained live narration is the risk. Levers: a smaller/more-quantized Voxtral
+   checkpoint, or scope it to short turns.
+2. **Voxtral output level** (~2–3 dB low + soft −41 dB onset) — a per-backend peak/RMS
+   normalization step would even the three out for like-for-like A/B and stop quiet leading words.
+3. **Wire vs in-process TTFB overhead:** Kokoro 0.13 s wire vs 0.08 s in-process (~50 ms
    server+UDS+base64); Pocket 0.025 vs 0.02 (negligible). Overhead is small and not a priority.
+
+### Daily-driver recommendation
+
+For a live/streaming default, **pocket_tts** and **kokoro** are both strong; Voxtral is the
+odd one out (RTF > 1).
+
+- **pocket_tts** — best fit for *streaming* use: 1.9 s load, 0.02 s TTFB, RTF 0.05, and it
+  genuinely streams (`streaming:true`, deltas dribble). 8 English-primary voices. CC-BY-4.0
+  (commercial OK). One-time first-utterance warmup (~0.5 s) is the only wrinkle.
+- **kokoro** — best *raw throughput* (RTF 0.02–0.03 ≈ 37× realtime) and the widest voice set
+  (54, true `af_` American-female presets) + multilingual, but `streaming:false`: it
+  buffer-then-flushes, so for very long single commits time-to-first-audio is gated by full
+  synthesis (still ~0.13 s here; grows with length). Apache-2.0 (commercial-safe; the
+  repo's default backend).
+- Pick **pocket** if low, *incremental* first-audio latency under streaming is the priority;
+  pick **kokoro** if voice variety / languages / non-streaming batch throughput matter more.
+  Both clear the realtime bar with large margin; Voxtral does not.
 
 ## Phase 5 wire-level smoke + concurrency (M4 Max 16-core, 2026-06-27)
 
