@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-local-tts-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
 readme = "README.md"
 requires-python = ">=3.12"
