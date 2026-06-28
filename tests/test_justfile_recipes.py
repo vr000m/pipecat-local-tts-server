@@ -204,6 +204,20 @@ def test_plist_endpoint_extracts_host_and_port(tmp_path):
 
 
 @_skip_no_just
+def test_plist_endpoint_ignores_flaglike_arg_value(tmp_path):
+    """An arg VALUE that looks like a flag (e.g. a model id beginning with '-')
+    must not be mis-read as the next flag. _plist_endpoint consumes each flag's
+    value in the same step, so the port stays correct rather than being clobbered
+    by a `--port`-looking model value."""
+    plist = _render_plist_file(tmp_path, host="127.0.0.1", port=8765, model="--port")
+    host, port, sock, authfile = _plist_endpoint(plist)
+    assert host == "127.0.0.1"
+    assert port == "8765"
+    assert sock == ""
+    assert authfile == ""
+
+
+@_skip_no_just
 def test_plist_endpoint_extracts_auth_token_file(tmp_path):
     """A secured agent's plist carries --auth-token-file; _plist_endpoint must
     surface it so tts-list can probe WITH the token (no false 401/unreachable)."""

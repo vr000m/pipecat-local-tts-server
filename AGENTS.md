@@ -72,13 +72,15 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | Recipe | Action |
 |---|---|
 | `just tts-list` | List `pipecat.tts-server*` launchd agents (state, pid, backend). |
-| `just tts-status [backend\|socket=…]` | Wire `status` probe — pass a backend name for its canonical port, or a socket path. |
+| `just tts-status [target]` | Wire `status` probe. `target` is a backend name (probes its canonical `_resolve` port), a socket path, or defaults to the canonical socket. |
 | `just tts-install <backend>` | Render plist + `launchctl bootstrap` (operator-manual, not CI-verified). |
-| `just tts-uninstall <backend>` | `launchctl bootout` + remove plist (operator-manual). |
+| `just tts-uninstall <backend>` | `launchctl bootout` + remove plist, teardown-verified (operator-manual). |
 | `just tts-enable <backend>` | Re-load from the existing plist + start (`launchctl bootstrap`/`enable`/`kickstart`). |
 | `just tts-disable <backend>` | Take down until next login (`launchctl bootout`; plist kept). |
-| `just tts-start <backend>` | Force-restart a loaded agent (`launchctl kickstart -k`). |
+| `just tts-start <backend>` | Ensure running (`launchctl kickstart`; no-op if already up). |
+| `just tts-restart <backend>` | Force-restart a loaded agent (`launchctl kickstart -k`). |
 | `just tts-stop <backend>` | Send SIGTERM (`launchctl kill`; KeepAlive restarts it). |
+| `just tts-logs <backend>` | Tail the agent's stdout+stderr logs. |
 | `just smoke-tone` / `smoke-kokoro` / `smoke-multilingual` | Live end-to-end smoke (starts a real server on an isolated socket). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
 

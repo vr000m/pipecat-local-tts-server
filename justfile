@@ -62,20 +62,31 @@ _resolve backend:
 # or transport. Auth-aware: a secured agent's plist carries --auth-token-file, so
 # the status probe can authenticate instead of getting a 401. Its own recipe so
 # the extraction is unit-testable (see tests/test_justfile_recipes.py).
+#
+# Reads ProgramArguments structurally via `plutil` (the macOS-native plist tool
+# the installer's `logs` path also uses), element by element, NOT a sed scrape of
+# the XML. The flag's VALUE is consumed in the same step that recognises the flag
+# (the `expect` latch), so an arg value that happens to look like a flag — e.g. a
+# model id beginning with `-` — can never be mis-read as the next flag.
 _plist_endpoint plist:
     #!/usr/bin/env bash
     set -uo pipefail
     plist={{quote(plist)}}
-    host=""; port=""; sock=""; authfile=""; prev=""
-    while IFS= read -r s; do
-      case "$prev" in
-        --host)            host="$s" ;;
-        --port)            port="$s" ;;
-        --socket-path)     sock="$s" ;;
-        --auth-token-file) authfile="$s" ;;
-      esac
-      prev="$s"
-    done < <(sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' "$plist")
+    host=""; port=""; sock=""; authfile=""; expect=""; i=0
+    while el=$(plutil -extract "ProgramArguments.$i" raw -o - "$plist" 2>/dev/null); do
+      if [[ -n "$expect" ]]; then
+        case "$expect" in
+          --host)            host="$el" ;;
+          --port)            port="$el" ;;
+          --socket-path)     sock="$el" ;;
+          --auth-token-file) authfile="$el" ;;
+        esac
+        expect=""
+      elif [[ "$el" == --* ]]; then
+        expect="$el"
+      fi
+      i=$((i + 1))
+    done
     printf '%s\n' "$host" "$port" "$sock" "$authfile"
 
 # List every pipecat.tts-server* agent with state, pid, and live backend.
@@ -160,6 +171,11 @@ tts-list:
 # pocket_tts) it resolves that backend's canonical --host/--port from the
 # _resolve map and probes the port. Any other value is treated as a literal
 # socket path (the previous override behaviour is preserved as a fallback).
+#
+# Note: for a backend name this probes the CANONICAL `_resolve` port, not the
+# live installed port. An agent installed with a non-default `PIPECAT_TTS_PORT`
+# is found correctly by `tts-list` (which reads the plist) — use that for the
+# live endpoint of a customised install.
 tts-status target=(cache_dir / "tts.sock"):
     #!/usr/bin/env bash
     set -uo pipefail
@@ -262,7 +278,7 @@ tts-disable backend:
     echo "tts-disable: booted out $label (plist kept; reloads at next login)."
     echo "             Use 'just tts-uninstall $backend' to remove it durably."
 
-# Force-restart a loaded agent (launchctl kickstart -k).
+# Ensure a loaded agent is running (launchctl kickstart; no-op if up — use tts-restart to force).
 tts-start backend:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -274,11 +290,29 @@ tts-start backend:
       echo "tts-start: $label not loaded — run 'just tts-install $backend' first" >&2
       exit 1
     fi
-    if ! launchctl kickstart -k "gui/$uid/$label"; then
+    if ! launchctl kickstart "gui/$uid/$label"; then
       echo "tts-start: launchctl kickstart failed for $label" >&2
       exit 1
     fi
-    echo "tts-start: kickstarted $label"
+    echo "tts-start: kickstarted $label (or already running)"
+
+# Force-restart a loaded agent (launchctl kickstart -k; kills + restarts even if running).
+tts-restart backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    uid=$(id -u)
+    if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+      echo "tts-restart: $label not loaded — run 'just tts-install $backend' first" >&2
+      exit 1
+    fi
+    if ! launchctl kickstart -k "gui/$uid/$label"; then
+      echo "tts-restart: launchctl kickstart -k failed for $label" >&2
+      exit 1
+    fi
+    echo "tts-restart: force-restarted $label"
 
 # Send SIGTERM to a loaded agent (KeepAlive will restart it; use tts-disable to
 # take it down until next login, tts-uninstall to remove durably).
@@ -298,6 +332,15 @@ tts-stop backend:
       exit 1
     fi
     echo "tts-stop: sent SIGTERM to $label (KeepAlive restarts it; use tts-disable to keep it down)"
+
+# Tail an agent's stdout+stderr logs (via install_tts_agent.sh; reads the plist's log paths).
+tts-logs backend:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    backend={{quote(backend)}}
+    resolved=$(just _resolve "$backend") || exit 1
+    { read -r label; read -r host; read -r port; } <<<"$resolved"
+    PIPECAT_TTS_LABEL="$label" "{{script}}" logs
 
 # --- Live smoke tests (start a real server on an isolated socket) -----------
 # See tests/smoke/README.md. These never touch the canonical operator socket.
