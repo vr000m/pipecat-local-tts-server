@@ -1,6 +1,6 @@
 # Task: pipecat-local-tts-server — v1 local websocket TTS server (Kokoro-first)
 
-**Status**: In Progress — Phases 0–4 complete (merged on `feature/tts-server-phases-0-4`); Phase 5 pending. mlx-audio API claims
+**Status**: Complete — Phases 0–6 shipped (0–4 in v0.1.0; Phase 5 streaming backends + Phase 6 launchd ops merged for v0.2.0). See `## Progress` for per-phase detail. mlx-audio API claims
 verified against installed **0.4.4** via `scripts/verify_mlx_tts_api.py` — including the
 runtime `--load` path and `scripts/prosody_check.py`, **executed 2026-06-24 on
 arm64/vr000m-manganese, mlx-audio 0.4.4** (so the runtime facts below — rate, audio range,
