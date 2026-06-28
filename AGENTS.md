@@ -72,7 +72,15 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | Recipe | Action |
 |---|---|
 | `just tts-list` | List `pipecat.tts-server*` launchd agents (state, pid, backend). |
-| `just tts-status [socket=…]` | Wire `status` probe against the canonical socket. |
+| `just tts-status [target]` | Wire `status` probe. `target` is a backend name (probes its canonical `_resolve` port), a socket path, or defaults to the canonical socket. |
+| `just tts-install <backend>` | Render plist + `launchctl bootstrap` (operator-manual, not CI-verified). |
+| `just tts-uninstall <backend>` | `launchctl bootout` + remove plist, teardown-verified (operator-manual). |
+| `just tts-enable <backend>` | Re-load from the existing plist + start (`launchctl bootstrap`/`enable`/`kickstart`). |
+| `just tts-disable <backend>` | Take down until next login (`launchctl bootout`; plist kept). |
+| `just tts-start <backend>` | Ensure running (`launchctl kickstart`; no-op if already up). |
+| `just tts-restart <backend>` | Force-restart a loaded agent (`launchctl kickstart -k`). |
+| `just tts-stop <backend>` | Send SIGTERM (`launchctl kill`; KeepAlive restarts it). |
+| `just tts-logs <backend>` | Tail the agent's stdout+stderr logs. |
 | `just smoke-tone` / `smoke-kokoro` / `smoke-multilingual` | Live end-to-end smoke (starts a real server on an isolated socket). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
 
@@ -105,5 +113,7 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 - `tts_server/backends/` — lazy-imported per-model backends (Kokoro first).
 - `examples/` — stdlib oracle (`reference_client.py`) + Pipecat adapter (`pipecat_tts_service.py`).
 - `tests/`, `tests/smoke/` — unit + live smoke tests.
+- `scripts/render_tts_plist.py` — plist renderer for launchd agents (pure `plistlib`, injection-safe, fail-closed auth).
+- `scripts/install_tts_agent.sh` — env-keyed `launchctl bootstrap` lifecycle wrapper.
 - `scripts/profiling/` — RTF/latency benchmarks (perf baseline for new backends).
 - `docs/protocol.md`, `docs/dev_plans/` — wire spec, development plans.

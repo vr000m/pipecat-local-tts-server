@@ -86,6 +86,43 @@ uv run python -m tts_server serve --backend kokoro \
 uv run python -m tts_server serve --backend kokoro --host 127.0.0.1 --port 8765
 ```
 
+### Per-backend port convention
+
+A single ad-hoc server uses the **Unix socket** quick-start above
+(`pipecat.tts-server` → `~/Library/Caches/pipecat-tts/tts.sock`) — that stays
+the default. Running several backends side by side as **launchd agents** uses one
+loopback **TCP port** per backend instead (one backend = one process = one
+port). The `just tts-*` recipes (install/uninstall/enable/disable/start/stop)
+and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
+
+| backend | label | port (on `127.0.0.1`) |
+|---|---|---|
+| tone | `pipecat.tts-server.tone` | 8665 |
+| kokoro | `pipecat.tts-server.kokoro` | 8765 |
+| voxtral_tts | `pipecat.tts-server.voxtral_tts` | 8865 |
+| pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
+
+```sh
+# install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
+just tts-install kokoro
+just tts-list            # every pipecat.tts-server* agent + live backend probe
+just tts-status kokoro   # probe one backend's canonical host:port
+```
+
+> `kokoro=8765` is assumed free and is **not** collision-checked — it matches
+> this repo's own kokoro examples. A launchd tts agent binds a loopback port, so
+> two installed agents never collide; the only risk is an ad-hoc process you run
+> by hand on the same port. The `dia` backend is reserved and not yet shipped.
+
+> **launchd does not inherit your shell environment.** Server-runtime env you set
+> for an ad-hoc `serve` is *not* carried into an installed agent, so it is handled
+> explicitly at install time: `PIPECAT_TTS_KOKORO_EXTRA_LANGS` is baked into the
+> agent's plist, and **auth must use a token file** —
+> `PIPECAT_TTS_AUTH_TOKEN_FILE=/path/to/token just tts-install kokoro`. Running
+> `PIPECAT_TTS_AUTH_TOKEN=… just tts-install` is **rejected** (the secret must not
+> be written into a plaintext plist, and it would otherwise be silently dropped,
+> leaving the agent with auth disabled).
+
 The server logs the resolved backend + model at startup, *before* the
 (potentially slow) model load, so you can see what is being loaded. The rate is
 read from the loaded model, so model load completes before the first
@@ -144,11 +181,16 @@ serve path has no `--uri`, since it builds its listener from socket-path/host+po
 Two probe-only flags: `--timeout` (overall probe budget in seconds, default `3.0`)
 and `--json` (emit the raw `hello`+`status` JSON instead of the text summary).
 
-For day-to-day operation on macOS the [`justfile`](justfile) carries read-only
-operator recipes mirroring the sibling stt server: `just tts-list` lists every
+For day-to-day operation on macOS the [`justfile`](justfile) carries operator
+recipes mirroring the sibling stt server. Read-only probes: `just tts-list` lists every
 `pipecat.tts-server*` launchd agent with state, pid, and live backend, and
-`just tts-status` runs the wire `status` probe against the canonical socket
-(override with `just tts-status socket=…`).
+`just tts-status` runs the wire `status` probe against the canonical socket by
+default; pass a backend name to probe its canonical port (`just tts-status
+kokoro`) or a socket path to probe a specific socket (`just tts-status
+/path/to/tts.sock`). Lifecycle recipes: `just tts-install <backend>`,
+`just tts-uninstall <backend>`, `just tts-enable <backend>`,
+`just tts-disable <backend>`, `just tts-start <backend>`, `just tts-restart <backend>`,
+`just tts-stop <backend>`, `just tts-logs <backend>` (all operator-manual; not CI-verified).
 
 ## Protocol
 
