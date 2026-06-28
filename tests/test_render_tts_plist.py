@@ -21,7 +21,10 @@ output with ``plistlib.loads`` since the renderer emits via ``plistlib.dumps``.
 from __future__ import annotations
 
 import importlib.util
+import os
 import plistlib
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -199,3 +202,86 @@ def test_hostile_values_keep_plist_well_formed():
     assert parsed["Label"] == _HOSTILE
     # The literal characters were XML-escaped on the wire (no raw breakout).
     assert "&lt;" in xml or "&amp;" in xml
+
+
+# ---------------------------------------------------------------------------
+# Server-runtime env that launchd does not inherit: it must be baked into the
+# plist (non-secret) or rejected loudly (secret), never silently dropped.
+# ---------------------------------------------------------------------------
+
+
+def test_extra_env_baked_into_environment_variables():
+    """``extra_env`` is merged into EnvironmentVariables alongside PATH+HOME."""
+    plist = _render(extra_env={"PIPECAT_TTS_KOKORO_EXTRA_LANGS": "ja,zh"})
+    env = plist["EnvironmentVariables"]
+    assert env["PIPECAT_TTS_KOKORO_EXTRA_LANGS"] == "ja,zh"
+    assert "PATH" in env and env["HOME"] == _BASE["home"]
+
+
+def _run_main(tmp_path: Path, env_extra: dict[str, str]):
+    """Run the renderer's ``main()`` as a subprocess with an ISOLATED env (no
+    inheritance, so a stray PIPECAT_TTS_* in the test runner can't leak in).
+    Returns ``(CompletedProcess, plist_path)``."""
+    plist_dst = tmp_path / "agent.plist"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHON": sys.executable,
+        "REPO_ROOT": str(REPO_ROOT),
+        "BACKEND": "kokoro",
+        "HOST": "127.0.0.1",
+        "PORT": "8765",
+        "HOME": str(tmp_path),
+        "LOG_DIR": str(tmp_path / "logs"),
+        "PLIST_DST": str(plist_dst),
+        "PIPECAT_TTS_LABEL": "pipecat.tts-server.kokoro",
+    }
+    env.update(env_extra)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        env=env,
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    return proc, plist_dst
+
+
+def test_main_rejects_env_auth_token_without_file(tmp_path):
+    """PIPECAT_TTS_AUTH_TOKEN set without a token file would silently disable auth
+    under launchd — main() must fail loudly and write NO plist."""
+    proc, plist_dst = _run_main(tmp_path, {"PIPECAT_TTS_AUTH_TOKEN": "server-secret"})
+    assert proc.returncode == 2
+    assert "PIPECAT_TTS_AUTH_TOKEN" in proc.stderr
+    assert not plist_dst.exists()
+
+
+def test_main_env_auth_token_with_file_warns_and_never_writes_secret(tmp_path):
+    """With a token file the install proceeds (the file is authoritative), warns
+    that the env token is ignored, and the secret never lands in the plist."""
+    proc, plist_dst = _run_main(
+        tmp_path,
+        {
+            "PIPECAT_TTS_AUTH_TOKEN": "server-secret",
+            "AUTH_TOKEN_FILE": "/Users/op/Library/Application Support/pipecat-tts/token",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "ignored" in proc.stderr.lower()
+    text = plist_dst.read_text()
+    assert "server-secret" not in text
+    assert "--auth-token-file" in text
+
+
+def test_main_bakes_kokoro_extra_langs_into_plist(tmp_path):
+    """PIPECAT_TTS_KOKORO_EXTRA_LANGS survives into the agent via the plist."""
+    proc, plist_dst = _run_main(tmp_path, {"PIPECAT_TTS_KOKORO_EXTRA_LANGS": "ja,zh"})
+    assert proc.returncode == 0, proc.stderr
+    plist = plistlib.loads(plist_dst.read_bytes())
+    assert plist["EnvironmentVariables"]["PIPECAT_TTS_KOKORO_EXTRA_LANGS"] == "ja,zh"
+
+
+def test_main_rejects_malformed_extra_langs(tmp_path):
+    """A non-ISO-code-list value is rejected (not blindly baked into the plist)."""
+    proc, plist_dst = _run_main(tmp_path, {"PIPECAT_TTS_KOKORO_EXTRA_LANGS": "ja;rm -rf /"})
+    assert proc.returncode == 2
+    assert not plist_dst.exists()

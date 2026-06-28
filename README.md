@@ -114,6 +114,15 @@ just tts-status kokoro   # probe one backend's canonical host:port
 > two installed agents never collide; the only risk is an ad-hoc process you run
 > by hand on the same port. The `dia` backend is reserved and not yet shipped.
 
+> **launchd does not inherit your shell environment.** Server-runtime env you set
+> for an ad-hoc `serve` is *not* carried into an installed agent, so it is handled
+> explicitly at install time: `PIPECAT_TTS_KOKORO_EXTRA_LANGS` is baked into the
+> agent's plist, and **auth must use a token file** —
+> `PIPECAT_TTS_AUTH_TOKEN_FILE=/path/to/token just tts-install kokoro`. Running
+> `PIPECAT_TTS_AUTH_TOKEN=… just tts-install` is **rejected** (the secret must not
+> be written into a plaintext plist, and it would otherwise be silently dropped,
+> leaving the agent with auth disabled).
+
 The server logs the resolved backend + model at startup, *before* the
 (potentially slow) model load, so you can see what is being loaded. The rate is
 read from the loaded model, so model load completes before the first

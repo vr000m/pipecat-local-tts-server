@@ -18,7 +18,13 @@
 #   PIPECAT_TTS_PORT     TCP port to bind (default: 8665 — the tone agent port)
 #   PIPECAT_TTS_MODEL    model id (optional; backend-aware fallback applies when unset)
 #   PIPECAT_TTS_AUTH_TOKEN_FILE  path to a file with the bearer token (REQUIRED for a
-#                        non-loopback host — the renderer is fail-closed)
+#                        non-loopback host — the renderer is fail-closed). This is the
+#                        ONLY supported way to give a launchd agent auth: launchd does
+#                        not inherit your shell env, so PIPECAT_TTS_AUTH_TOKEN (the
+#                        env-based server token) is NOT carried into the agent — the
+#                        renderer rejects an install where it is set without the file.
+#   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
+#                        the agent's plist EnvironmentVariables so it survives launchd.
 #   PIPECAT_TTS_LOG_DIR  log directory (default: $HOME/Library/Logs/pipecat-tts)
 #
 # Operational constraint: this script manages exactly ONE agent per invocation,
@@ -57,11 +63,17 @@ render_plist() {
     # The env-prefix assignments re-export same-named shell vars into the
     # renderer subprocess; the command word "$PYTHON" uses the parent shell's
     # (identical) value, so SC2097/SC2098 are false positives here.
+    #
+    # PIPECAT_TTS_AUTH_TOKEN / PIPECAT_TTS_KOKORO_EXTRA_LANGS are forwarded
+    # explicitly (not left to implicit inheritance) so the renderer's silent-drop
+    # guard + EnvironmentVariables pass-through act on the operator's actual env.
     # shellcheck disable=SC2097,SC2098
     PYTHON="$PYTHON" REPO_ROOT="$REPO_ROOT" BACKEND="$BACKEND" \
         HOST="$HOST" PORT="$PORT" MODEL="$MODEL" \
         AUTH_TOKEN_FILE="$AUTH_TOKEN_FILE" HOME="$HOME" LOG_DIR="$LOG_DIR" \
         PLIST_DST="$PLIST_DST" PIPECAT_TTS_LABEL="$LABEL" \
+        PIPECAT_TTS_AUTH_TOKEN="${PIPECAT_TTS_AUTH_TOKEN:-}" \
+        PIPECAT_TTS_KOKORO_EXTRA_LANGS="${PIPECAT_TTS_KOKORO_EXTRA_LANGS:-}" \
         "$PYTHON" "$RENDER_PY"
 }
 

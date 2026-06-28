@@ -61,6 +61,9 @@ _LABEL_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 # the loopback-vs-remote auth decision is made by ``is_loopback_host``, not this
 # pattern. Brackets are excluded — pass the bare host (e.g. ``::1``), not a URI.
 _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
+# PIPECAT_TTS_KOKORO_EXTRA_LANGS — a comma-separated list of ISO codes (e.g.
+# ``ja,zh``). Validated before being baked into the plist's EnvironmentVariables.
+_EXTRA_LANGS_RE = re.compile(r"^[A-Za-z]{2,8}(,[A-Za-z]{2,8})*$")
 
 
 def _log_basename(label: str) -> str:
@@ -93,6 +96,7 @@ def render_plist(
     log_dir: str,
     model: str | None = None,
     auth_token_file: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> str:
     """Return the plist XML for a port-bound tts-server LaunchAgent.
 
@@ -136,9 +140,16 @@ def render_plist(
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 10,
+        # launchd does NOT inherit the installer shell's environment, so any
+        # server-runtime env the operator relies on MUST be baked in here.
+        # Secrets (PIPECAT_TTS_AUTH_TOKEN) are deliberately NOT carried this way —
+        # they would land in a plaintext plist; main() rejects that path and
+        # steers the operator to --auth-token-file. ``extra_env`` carries only the
+        # allowlisted, non-secret pass-through vars.
         "EnvironmentVariables": {
             "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             "HOME": home,
+            **(extra_env or {}),
         },
         "StandardOutPath": str(Path(log_dir) / f"{log_basename}.out"),
         "StandardErrorPath": str(Path(log_dir) / f"{log_basename}.err"),
@@ -204,6 +215,43 @@ def main() -> None:
         )
         sys.exit(2)
 
+    # Silent-config-drop guard: launchd does not inherit the installer shell's
+    # environment, so a server-runtime env var set for `just tts-install` would be
+    # silently lost in the agent. For the AUTH token that is a trust-boundary
+    # regression (auth would be quietly disabled), and the secret must NOT be
+    # baked into a plaintext plist either — so fail loudly and steer to the file.
+    if os.environ.get("PIPECAT_TTS_AUTH_TOKEN"):
+        if auth_token_file is None:
+            print(
+                "error: PIPECAT_TTS_AUTH_TOKEN is set, but a launchd agent does not "
+                "inherit it — the agent would run with auth DISABLED. Write the token "
+                "to a file and pass PIPECAT_TTS_AUTH_TOKEN_FILE (path) instead so the "
+                "agent enforces auth; the token is never written into the plist.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Token file supplied: the env token is redundant/ignored under launchd.
+        # The file is authoritative; warn so the operator isn't misled.
+        print(
+            "warning: PIPECAT_TTS_AUTH_TOKEN is ignored for launchd agents; the agent "
+            "uses --auth-token-file. Unset it to avoid confusion.",
+            file=sys.stderr,
+        )
+
+    # Non-secret server-runtime env that must survive into the agent. launchd does
+    # not inherit it, so bake the allowlisted vars into EnvironmentVariables.
+    extra_env: dict[str, str] = {}
+    extra_langs = os.environ.get("PIPECAT_TTS_KOKORO_EXTRA_LANGS")
+    if extra_langs:
+        if not _EXTRA_LANGS_RE.match(extra_langs):
+            print(
+                f"error: PIPECAT_TTS_KOKORO_EXTRA_LANGS={extra_langs!r} rejected by "
+                "allowlist (comma-separated ISO codes, e.g. ja,zh)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        extra_env["PIPECAT_TTS_KOKORO_EXTRA_LANGS"] = extra_langs
+
     try:
         xml = render_plist(
             backend,
@@ -216,6 +264,7 @@ def main() -> None:
             log_dir=log_dir,
             model=model,
             auth_token_file=auth_token_file,
+            extra_env=extra_env or None,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

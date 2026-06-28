@@ -18,7 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   XML/injection-safe, fail-closed auth) and `scripts/install_tts_agent.sh` (env-keyed
   `launchctl bootstrap` lifecycle: `PIPECAT_TTS_LABEL`, `PIPECAT_TTS_BACKEND`,
   `PIPECAT_TTS_HOST`, `PIPECAT_TTS_PORT`, `PIPECAT_TTS_MODEL`, `PIPECAT_TTS_AUTH_TOKEN_FILE`).
-  New lean tests: `test_render_tts_plist.py`, `test_justfile_recipes.py` (backend drift guard),
+  Because launchd does not inherit the installer's shell environment, server-runtime
+  env is handled explicitly: `PIPECAT_TTS_KOKORO_EXTRA_LANGS` is baked into the agent's
+  plist `EnvironmentVariables`, and an install that sets `PIPECAT_TTS_AUTH_TOKEN` (a
+  secret, which must not land in a plaintext plist) without `PIPECAT_TTS_AUTH_TOKEN_FILE`
+  is **rejected** so auth is never silently disabled — use the token file for agents.
+  New lean tests: `test_render_tts_plist.py` (incl. the env-passthrough + auth-drop guard),
+  `test_justfile_recipes.py` (backend drift guard + `_plist_endpoint`),
   `test_status_port.py` (tone-on-port status). launchd install/lifecycle is operator-manual
   and NOT CI-verified (bootstraps real agents / binds ports).
 
