@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 6 launchd ops parity + port-per-backend** — each backend runs as its own
+  launchd user agent bound to a canonical loopback port (`tone`=8665 / `kokoro`=8765 /
+  `voxtral_tts`=8865 / `pocket_tts`=8965; `dia` reserved at 9065). New `just` lifecycle
+  recipes: `tts-install`, `tts-uninstall`, `tts-enable`, `tts-disable`, `tts-start`,
+  `tts-stop`. `tts-list` and `tts-status` are now port-aware (the socket quick-start branch
+  is preserved). New scripts: `scripts/render_tts_plist.py` (pure `plistlib` renderer,
+  XML/injection-safe, fail-closed auth) and `scripts/install_tts_agent.sh` (env-keyed
+  `launchctl bootstrap` lifecycle: `PIPECAT_TTS_LABEL`, `PIPECAT_TTS_BACKEND`,
+  `PIPECAT_TTS_HOST`, `PIPECAT_TTS_PORT`, `PIPECAT_TTS_MODEL`, `PIPECAT_TTS_AUTH_TOKEN_FILE`).
+  New lean tests: `test_render_tts_plist.py`, `test_justfile_recipes.py` (backend drift guard),
+  `test_status_port.py` (tone-on-port status). launchd install/lifecycle is operator-manual
+  and NOT CI-verified (bootstraps real agents / binds ports).
+
 - **`pocket_tts` backend** (Phase 5b) — a second `streaming:true` backend, and
   the no-cloning negative-guard backend: its `generate()` exposes `ref_audio`
   (voice cloning) and `frames_after_eos`, both deliberately **unwired**

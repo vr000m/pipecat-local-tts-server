@@ -172,13 +172,16 @@ serve path has no `--uri`, since it builds its listener from socket-path/host+po
 Two probe-only flags: `--timeout` (overall probe budget in seconds, default `3.0`)
 and `--json` (emit the raw `hello`+`status` JSON instead of the text summary).
 
-For day-to-day operation on macOS the [`justfile`](justfile) carries read-only
-operator recipes mirroring the sibling stt server: `just tts-list` lists every
+For day-to-day operation on macOS the [`justfile`](justfile) carries operator
+recipes mirroring the sibling stt server. Read-only probes: `just tts-list` lists every
 `pipecat.tts-server*` launchd agent with state, pid, and live backend, and
 `just tts-status` runs the wire `status` probe against the canonical socket by
 default; pass a backend name to probe its canonical port (`just tts-status
 kokoro`) or a socket path to probe a specific socket (`just tts-status
-/path/to/tts.sock`).
+/path/to/tts.sock`). Lifecycle recipes: `just tts-install <backend>`,
+`just tts-uninstall <backend>`, `just tts-enable <backend>`,
+`just tts-disable <backend>`, `just tts-start <backend>`, `just tts-stop <backend>`
+(all operator-manual; not CI-verified).
 
 ## Protocol
 
