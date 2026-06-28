@@ -180,23 +180,28 @@ tts-status target=(cache_dir / "tts.sock"):
     #!/usr/bin/env bash
     set -uo pipefail
     target={{quote(target)}}
+    # A deliberate single probe (unlike tts-list's fast multi-agent sweep), so use
+    # a forgiving timeout: a model-backed agent (kokoro/voxtral/pocket) can take
+    # several seconds to load its model right after install/start, and the 3s
+    # default would report a false timeout while it is still warming up.
+    timeout=10
     # A value that looks like a path (contains '/', or is an existing socket
     # file) is ALWAYS a literal --socket-path, so a socket file that happens to
     # share a backend's name is never silently reinterpreted as a TCP port. Only
     # a bare backend name resolves to its canonical host:port.
     if [[ "$target" == */* || -S "$target" ]]; then
-      exec uv run python -m tts_server status --socket-path "$target"
+      exec uv run python -m tts_server status --socket-path "$target" --timeout "$timeout"
     fi
     case "$target" in
       tone|kokoro|voxtral_tts|pocket_tts)
         resolved=$(just _resolve "$target") || exit 1
         # One field per line; three reads keep this bash-3.2-compatible.
         { read -r label; read -r host; read -r port; } <<<"$resolved"
-        exec uv run python -m tts_server status --host "$host" --port "$port"
+        exec uv run python -m tts_server status --host "$host" --port "$port" --timeout "$timeout"
         ;;
       *)
         # A bare non-backend token that is not path-like: treat as a socket path.
-        exec uv run python -m tts_server status --socket-path "$target"
+        exec uv run python -m tts_server status --socket-path "$target" --timeout "$timeout"
         ;;
     esac
 
@@ -327,8 +332,16 @@ tts-stop backend:
       echo "tts-stop: $label not loaded — nothing to do"
       exit 0
     fi
-    if ! launchctl kill SIGTERM "gui/$uid/$label"; then
-      echo "tts-stop: launchctl kill failed for $label" >&2
+    # launchctl kill returns non-zero when the agent is loaded but has no running
+    # process to signal (KeepAlive between restarts, crashed + throttled, etc).
+    # That is already the desired end-state for "stop", so treat ONLY that case as
+    # benign — any other kill failure is still surfaced loudly.
+    if ! out=$(launchctl kill SIGTERM "gui/$uid/$label" 2>&1); then
+      if grep -qiE 'no process to signal|no such process|could not find' <<<"$out"; then
+        echo "tts-stop: $label is loaded but not running — nothing to stop"
+        exit 0
+      fi
+      echo "tts-stop: launchctl kill failed for $label: $out" >&2
       exit 1
     fi
     echo "tts-stop: sent SIGTERM to $label (KeepAlive restarts it; use tts-disable to keep it down)"
