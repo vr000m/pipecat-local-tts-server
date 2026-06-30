@@ -423,19 +423,40 @@ def _run_prod_temp_diagnostic(model, seeds: int) -> None:
         )
 
 
+def _assert_first_item_mono(model, text: str, *, temperature: float) -> None:
+    """Render ``text`` and assert ONLY the first yielded item is mono
+    (``audio.ndim == 1``) LOUDLY, then stop. The generator is abandoned after the
+    first item so we do not synthesise the rest of a multi-turn dialogue just to
+    read one shape — closing the generator releases the model."""
+    gen = model.generate(text, temperature=temperature)
+    try:
+        item = next(iter(gen))
+    except StopIteration:
+        raise AssertionError(f"dia generate() yielded no items for: {text!r}") from None
+    finally:
+        close = getattr(gen, "close", None)
+        if callable(close):
+            close()  # stop synthesis early; don't drain the remaining turns
+    audio = getattr(item, "audio", item)
+    ndim = getattr(audio, "ndim", None)
+    assert ndim == 1, (
+        f"dia bridge contract broken: first item audio.ndim == {ndim!r}, expected 1 (mono)."
+    )
+
+
 def _check_script_mono_shapes(model) -> int:
     """Acceptance criterion: each fixture script's FIRST item asserts
     ``audio.ndim == 1`` (mono). The perceptual path carries pcm bytes over the wire
     with no ``.audio``/``ndim`` available, so this mono-shape guard runs against the
-    model directly (mlx-gated/local-only). ``_render_samples_with_temp`` asserts the
-    ndim==1 invariant LOUDLY on the first item; here we exercise it once per fixture
-    script. Returns 0 on pass; an AssertionError propagates loudly on shape drift."""
+    model directly (mlx-gated/local-only). Returns 0 on pass; an AssertionError
+    propagates loudly on shape drift."""
     print("=== per-script mono-shape guard (audio.ndim == 1 on first item) ===")
     for label, filename in _SCRIPTS:
         text = _load_script(filename)
         # Greedy temperature keeps this quick and deterministic; we only need the
-        # first item's shape, not perceptual fidelity.
-        _render_samples_with_temp(model, text, temperature=_GREEDY_TEMPERATURE)
+        # first item's shape, so stop the generator after item 0 rather than
+        # rendering the whole (multi-turn) dialogue.
+        _assert_first_item_mono(model, text, temperature=_GREEDY_TEMPERATURE)
         print(f"   [{label}] first item audio.ndim == 1 (mono) OK")
     return 0
 
@@ -485,7 +506,11 @@ def main() -> int:
     ap.add_argument("--uri", help="full ws:// URI (highest precedence)")
     ap.add_argument("--socket-path", help="Unix domain socket path")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
+    # dia's canonical port (justfile _resolve / README port table). NOT kokoro's
+    # 8765 — this is a dia-only driver, so the host/port default must point at dia
+    # or an operator running with --host (no --port) would hit a kokoro agent and
+    # the [S1]/[S2] tags would be read aloud literally.
+    ap.add_argument("--port", type=int, default=9065)
     ap.add_argument("--token", help="bearer token (else none)")
     ap.add_argument(
         "--out-dir",
