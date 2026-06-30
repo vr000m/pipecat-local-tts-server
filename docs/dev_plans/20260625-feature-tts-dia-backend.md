@@ -412,7 +412,8 @@ tests with a warning; the human runs it against a live dia server afterward.
 - [x] Phase 0: Verify dia against the live model (GATE) — complete 2026-06-30; 5/6 pass, decision #3 redesigned (see Findings)
 - [x] Phase 1: dia backend module + lean tests — complete 2026-06-30; 40 passed/2 skipped, reviewer clean (commit de70a21)
 - [x] Phase 2: Atomic dia-enablement wiring — complete 2026-06-30; 44 phase tests + full suite 259 passed/3 skipped, reviewer 2 Minor (1 sibling-plan doc-sync addressed, 1 historical/intentional) (commit 82f9d87)
-- [ ] Phase 3: Dialogue smoke driver (manual, listen-and-judge)
+- [x] Phase 3: Dialogue smoke driver (manual, listen-and-judge) — complete 2026-06-30; driver py_compile+ruff clean, import-safe without mlx_audio; 3 reviewer Minors folded in (dead code removed, per-script ndim==1 mono guard added, Phase 0 seed caveat recorded) (commit 4df7b00)
+- CI-parity gate (2026-06-30): caught that `tests/test_dia_lean.py` was missing from the lean CI allow-list (Phase 1 mandate); added it. Lean CI job replicated locally: 220 passed/2 skipped (the 2 skips = mlx-gated dia tests); ruff check+format clean; lean import-safety OK.
 
 ## Findings
 
@@ -465,6 +466,13 @@ knob (see redesigned decision #3), not a correctness hazard.
 
 The five passing facts (repo id, `ref_text`, `sample_rate=44100`, bridge contract, no-voice gen) are
 verified and stand regardless of the decision-#3 redesign.
+
+**Operator action item (Phase 3 reviewer, 2026-06-30):** the Phase 0 cross-commit byte-identity
+control run above was "seeded" but its **exact numeric seed was not recorded**. The Phase 3 greedy
+regression guard (`tests/smoke/dia_dialogue_smoke.py --seed`) therefore defaults to a **placeholder
+seed (42)**: any fixed seed makes greedy decoding deterministic, so the `X_alone == X_after` guard
+holds for any value, but reproducing the *exact* Phase 0 run requires the real seed. When dia is
+next run on Apple Silicon, record the seed used here and set it as the `--seed` default.
 
 ### Review resolution — 2026-06-30 (`/review-plan` refresh on the post-gate contract)
 
