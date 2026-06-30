@@ -410,8 +410,8 @@ tests with a warning; the human runs it against a live dia server afterward.
 ## Progress
 
 - [x] Phase 0: Verify dia against the live model (GATE) — complete 2026-06-30; 5/6 pass, decision #3 redesigned (see Findings)
-- [ ] Phase 1: dia backend module + lean tests
-- [ ] Phase 2: Atomic dia-enablement wiring
+- [x] Phase 1: dia backend module + lean tests — complete 2026-06-30; 40 passed/2 skipped, reviewer clean (commit de70a21)
+- [x] Phase 2: Atomic dia-enablement wiring — complete 2026-06-30; 44 phase tests + full suite 259 passed/3 skipped, reviewer 2 Minor (1 sibling-plan doc-sync addressed, 1 historical/intentional) (commit 82f9d87)
 - [ ] Phase 3: Dialogue smoke driver (manual, listen-and-judge)
 
 ## Findings
