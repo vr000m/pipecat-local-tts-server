@@ -2,8 +2,10 @@
 
 **Status**: In progress — **Phase 0 model-verification gate PASSED 2026-06-30** (5/6; segment-independence
 falsified → decision #3 redesigned, one-commit-coherence-unit / incremental-commits-supported; see
-*Resolved design decisions* #3 + `## Findings`). Reshaped into conduct phases; **pending a fresh
-`/review-plan` pass before conduct** because the contract changed post-gate.
+*Resolved design decisions* #3 + `## Findings`). Reshaped into conduct phases. **`/review-plan`
+refresh completed 2026-06-30** on the post-gate contract (5 lenses; 1 Critical + 7 Important + 5 Minor,
+all addressed — folded into decision #3, Phases 1–3, and Acceptance Criteria; see `## Findings` →
+*Review resolution 2026-06-30*) — cleared for conduct.
 Split out of the v1 plan (`20260624-feature-tts-server-v1.md`, where it was Phase 5c) on 2026-06-25
 because, unlike the streaming backends `voxtral_tts`/`pocket_tts`, `dia` carried an unsolved design
 that touches the single-voice `open_stream(voice=…)` contract — a backend-*contract* change, not just
@@ -72,6 +74,16 @@ Two independent `/review-plan` lenses (architecture, spec-and-testing) flagged 5
      **architectural** argument (not the byte-equality) is what carries the claim at production
      temperature. Conclusion: incremental committing is **safe and clean**, with no order-dependent
      artifacts.
+     - **Named residual assumption (review 2026-06-30, Critical lens finding).** The architectural
+       argument proves only that *the server* threads no state across calls; it does **not** exclude
+       module/instance-level state *inside* mlx-audio's `generate()` on the shared, reused `self._model`
+       object (e.g. a persisted KV-cache, a cached RNG, a decoder buffer). The byte-identity check pins
+       statelessness **only under greedy decoding** (`seed`+`temperature=0.0`); at the production default
+       `temperature=1.3` the claim therefore rests on the **assumption** that mlx-audio carries no such
+       cross-call state on the model object. This is a named assumption, not a verified fact at
+       production temperature. Phase 3 adds a **production-temperature coupling diagnostic** (below) to
+       probe it empirically rather than relying on the greedy guard alone. If that diagnostic ever shows
+       coupling, decision #3's "incremental commits are safe" conclusion must be revisited.
 
    Consequences for the client contract:
    - **A commit is the unit of coherence.** Every turn inside one commit conditions on the others;
@@ -143,8 +155,8 @@ its job: the "independent segments" premise was falsified before any wiring.** R
 ### Phase 1 — dia backend module + lean tests
 
 **Impl files:** tts_server/backends/dia.py, tts_server/backends/__init__.py
-**Test files:** tests/test_dia_lean.py, tests/test_capabilities_extras.py
-**Test command:** `uv run pytest tests/test_dia_lean.py tests/test_capabilities_extras.py`
+**Test files:** tests/test_dia_lean.py, tests/test_capabilities_extras.py, tests/test_import_safety.py
+**Test command:** `uv run pytest tests/test_dia_lean.py tests/test_capabilities_extras.py tests/test_import_safety.py`
 
 Creates the backend module + `make_backend` lazy-import branch and the lean (`_SpyModel`, no `mlx_audio`)
 tests. This may land BEFORE Phase 2 without a red state: creating `dia.py` + a resolver branch does NOT
@@ -157,16 +169,38 @@ test path, it does not invert any dia-absence assertion (those belong to Phase 2
   split_pattern='\n', max_tokens=None, verbose=False, ref_audio=None, ref_text=None, **kwargs)`. **NOT a
   streaming backend** — no `stream` param, uses `split_pattern` (segment-level, like Kokoro) → advertise
   **`streaming:false`** (assert `capabilities()["streaming"] is False`). extras `{temperature, top_p}`.
+- [ ] **Implement the full streaming-bridge contract dia inherits — it is NOT free (review 2026-06-30).**
+  dia's `_DiaStream` MUST implement `wait_closed` (`SupportsWaitClosed`, `backend.py:70-86`) and thread
+  `_worker_done` exactly as Pocket does (`pocket_tts.py:152-156`). The cancel/Metal-lock semantics in
+  decision #3 and the cancel-latency caveat below depend on the slot being held until the worker releases
+  the Metal lock; a `_DiaStream` that omits `wait_closed` silently changes barge-in timing. Mirror the
+  Pocket/Kokoro `_stream_util` bridge shape — the method is part of the contract, not optional.
+- [ ] **Mirror Pocket's `validate_extras` for `{temperature, top_p}` (review 2026-06-30).** dia advertises
+  both extras, so it MUST implement `SupportsExtrasValidation.validate_extras` (`pocket_tts.py:290-302`)
+  to clamp/reject non-finite or out-of-range values, closing the unbounded-value-under-the-Metal-lock DoS
+  vector the base guard warns about (`backend.py:89-102`). Do **not** forward extras verbatim — that would
+  be an inconsistency with the sibling backend advertising the same `temperature` extra. Add a lean test
+  (no `mlx_audio`) that `validate_extras` rejects a non-finite `temperature`/`top_p`.
 - [ ] **Per-backend `sample_rate` discovery (R1/R3).** Expose `sample_rate` after `start()`/load so
   `server.hello.audio.rate` advertises the true model rate; read `model.sample_rate` (the config
   property), **not** a literal. Phase 0 recorded **44100** — treat a missing/zero rate after load as
   fatal (as Kokoro/Pocket do). The rate-value assertion is mlx-gated/local-only; a lean test may assert
   the backend reports a `backend=dia` status-reply dict shape (as `tests/test_status.py:27-45`).
+  **The lean test MUST assert `sample_rate == 0` pre-`start()`** (the model is unloaded, so the rate is
+  not yet known; cf. `test_pocket_lean.py:178`) **and only the *presence* of the rate field — never
+  `== 44100`** (review 2026-06-30). 44100 is a single-run Phase 0 observation and is mlx-gated/local-only;
+  letting it leak into a lean assertion would couple CI to a model-loaded value it cannot produce.
 - [ ] Apply dia's **voice-ignore/OMIT rule** at the backend boundary — a **third** kwarg shape neither
   existing backend has. Pocket (`pocket_tts.py:164-165`) conditionally omits `voice` *when None*; Kokoro
   (`kokoro.py:312`) *always* passes `voice=self._voice`. dia must do neither: its `_gen_factory` MUST
   **never build a `voice` kwarg under any branch** (ignore `self._voice` entirely), and
-  `open_stream(voice=...)` accepts-and-discards. This is the single enforcement point, because the
+  `open_stream(voice=...)` accepts-and-discards. **Make this structural, not test-enforced (review
+  2026-06-30):** dia's `_DiaStream`/`_gen_factory` MUST NOT accept or store a `voice`/`self._voice`
+  member at all — omit the `voice` parameter from `_DiaStream.__init__` so "never build a `voice` kwarg"
+  is **unrepresentable in the code**, not merely covered by a test. `open_stream(voice=...)` accepts the
+  arg at the server-facing signature and discards it without threading it into the stream object. This
+  removes the Pocket-conditional-omit look-alike trap entirely. This is the single enforcement point,
+  because the
   server accepts a non-`None` client voice when `voice_count` is falsy (`server.py:752-768`) and carries
   it into `open_stream` (`server.py:1152`) — do **not** copy Pocket's conditional-omit, which would
   forward a non-None voice (the exact bug). **Call flow** (why the backend discard is mandatory, not
@@ -179,11 +213,17 @@ test path, it does not invert any dia-absence assertion (those belong to Phase 2
   `_voice_set` *first* (`server.py:756-768`) and would *reject* a non-member voice if dia ever exposed a
   voice list. **Two distinct lean tests at two layers** (the backend-layer `_SpyModel` assertion below
   bypasses the server pre-filter, so it CANNOT prove the server boundary): (a) backend-layer — `"voice"
-  not in call` via `_SpyModel` in `tests/test_dia_lean.py`; (b) **server-boundary** — a supplied `voice`
-  on a `voice_count:0` dia backend does **not** error through the real `_validate_voice` accept branch,
-  written running-server/connected-client style in `tests/test_capabilities_extras.py` (the
-  already-allow-listed home for server-exercising lean tests). Naming only (a) leaves the accept-branch
-  half unproven.
+  not in call` via `_SpyModel` in `tests/test_dia_lean.py` (lean/CI); (b) **server-boundary** — a supplied
+  `voice` on a `voice_count:0` dia backend does **not** error through the real `_validate_voice` accept
+  branch. **Decision (review 2026-06-30): write (b) against the real dia backend behind an
+  `mlx`-availability skip — mlx-gated/local-only, NOT a lean CI test.** `tests/test_capabilities_extras.py`
+  only ever constructs `ToneBackend` (`voice_count:1`) today and has no `voice_count:0` fixture; a
+  synthetic voice_count:0 stand-in would assert the test framework, not dia's real accept-branch path
+  through `_validate_voice` (`server.py:752-768`). Place it behind the same `mlx` skip the other
+  mlx-gated dia checks use (e.g. in `tests/test_dia_lean.py` guarded by `pytest.importorskip`, or a
+  local-only module). **Accepted CI gap (named, not silent):** the server-boundary accept-branch is
+  verified locally only; the backend-layer half (a) remains lean/CI. Naming only (a) leaves the
+  accept-branch half unproven.
 - [ ] **Leave BOTH `ref_audio` AND `ref_text` unwired** (locked decision #2). Negative-guard test must
   cover `ref_text` too — assert at **both** layers (capabilities exclusion **and** absence at the
   `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`. Phase 0 confirmed
@@ -198,6 +238,20 @@ test path, it does not invert any dia-absence assertion (those belong to Phase 2
   speaker-switch effect is left to the smoke; pass-through is asserted here. The `extras == ["temperature",
   "top_p"]` ordered-list + `streaming is False` + `text_formats == ["plain"]` assertions live in
   `tests/test_capabilities_extras.py` (already CI-allow-listed).
+- [ ] **Tagged-text → deltas lean coverage (review 2026-06-30 — closes a coverage gap).** The `_SpyModel`
+  returns an empty generator, so it proves kwarg *pass-through* but NOT that a tagged buffer actually
+  *streams audio*. Add a lean test that a multi-line `[S1]`/`[S2]` committed buffer streams **≥1 audio
+  delta unchanged** through a `ToneBackend` (the server/bridge path, no `mlx_audio`), giving CI coverage
+  of the tagged-text→delta path. Real dia-audio production from tagged text stays mlx-gated (Phase 3
+  smoke) — this lean test guards the framing/bridge, not the model.
+- [ ] **Land the `test_import_safety.py` `_TTS_MODULES` append in THIS phase (review 2026-06-30 — moved
+  from Phase 2 to close a coverage window).** Add `"tts_server.backends.dia"` to `_TTS_MODULES`
+  (`tests/test_import_safety.py:27-37`) alongside `dia.py`, so the no-`mlx_audio`-at-module-load invariant
+  covers `dia.py` from the commit that introduces it. Without this, between Phase 1 and Phase 2 a `dia.py`
+  importing `mlx_audio` at module top would pass CI (the `test_lean` job imports the `backends` package,
+  not the `dia` submodule, which `_TTS_MODULES` lists explicitly). This is a pure add (asserts a *correct*
+  invariant on a module that exists), cannot go red, and is a **separate list** from the CI pytest
+  allow-list — do not conflate. Phase 2 item 3 no longer carries this.
 - [ ] **Cancel latency caveat (inherited from Kokoro):** dia is segment-level, so a long
   segment's backend `generate()` runs to its yield boundary before the Metal lock frees for the next
   commit. The **client-visible cancel** (`response.cancel` → `response.cancelled`) is prompt (**~1 ms**,
@@ -220,12 +274,13 @@ test path, it does not invert any dia-absence assertion (those belong to Phase 2
   2. CLI backend surface (`tts_server/__main__.py`): `_resolve_model` default branch
      (`__main__.py:34-56`) plus argparse `--backend` choices tuple (`__main__.py:306-310`) — a
      passing `make_backend` unit test will NOT catch a missing `--backend` choice;
-  3. packaging/CI surface: `pyproject.toml` `dia` extra; `.github/workflows/test.yml` macOS
-     `--all-extras` import-smoke block (`test.yml:115-136`) must import the dia backend module; **and add
-     `"tts_server.backends.dia"` to `_TTS_MODULES` in `tests/test_import_safety.py:27-37`** so the
-     no-`mlx_audio`-at-module-load invariant is asserted for `dia.py` — a **separate list** from the CI
-     allow-list (do not conflate); missing it is a silent gap (a dia.py importing `mlx_audio` at module
-     top would pass CI), not a red state;
+  3. packaging/CI surface: `pyproject.toml` `dia` extra — **net-new** (review 2026-06-30: today
+     `pyproject.toml` declares only `client`/`kokoro`/`voxtral_tts`/`pocket_tts`/`examples`), following the
+     kokoro/voxtral_tts pattern exactly: `dia = ["websockets>=13.0", "mlx-audio==0.4.4"]` (no bespoke
+     tokenizer, like Pocket); `.github/workflows/test.yml` macOS `--all-extras` import-smoke block
+     (`test.yml:115-136`) must import the dia backend module. **(The `_TTS_MODULES` append in
+     `tests/test_import_safety.py` has been MOVED to Phase 1 — review 2026-06-30 — so the import-safety
+     invariant covers `dia.py` from the commit that creates it; do NOT re-add it here.)**
   4. renderer/launchd validation surface: renderer `_BACKEND_RE` and backend hint string
      (`scripts/render_tts_plist.py:56-58`, `scripts/render_tts_plist.py:186-191`) plus
      `scripts/install_tts_agent.sh:16` backend comment;
@@ -254,6 +309,13 @@ test path, it does not invert any dia-absence assertion (those belong to Phase 2
   inverting `test_dia_is_absent_*` before argparse includes `dia` asserts dia present in a set that still
   lacks it and goes red immediately. Phase 6 (launchd ops) has **already merged** (v1 plan, PR #7), so the
   launchd/operator surfaces are unconditional — not gated on "if Phase 6 has landed."
+  **Completeness guard (review 2026-06-30):** after inverting, run `grep -n '"dia"'
+  tests/test_justfile_recipes.py` and confirm **zero** remaining dia-*absence* assertions before
+  declaring the phase done. The two easy-to-miss surfaces are the inline `_BACKEND_RE.match("dia")` guard
+  at `:105` (inside `test_renderer_allowlist_matches_argparse_backends`, NOT a dedicated dia-absence
+  test) and the module docstring `:12-13`. A partial inversion leaves a test asserting dia both present
+  and reserved — and because Phase 2's test command runs `tests/test_justfile_recipes.py`, a missed
+  surface goes red at the phase-boundary commit.
 - [ ] Packaging/CI: the `pyproject.toml` `dia` extra is `mlx-audio==0.4.4`; the macOS smoke job already
   syncs `--all-extras`, so a new extra is install-smoked automatically; also add the dia backend module
   to the macOS import-smoke block so lazy module import is exercised. Backend synth tests stay
@@ -272,11 +334,28 @@ tests with a warning; the human runs it against a live dia server afterward.
   Connects a real client to a real dia server, sends crafted dialogue scripts, writes one WAV per
   script, prints their paths for a human to judge. Structural asserts (cheap, non-perceptual): non-empty
   audio per script AND a per-script sample-count sanity bound (finite, roughly proportional to text
-  length). Perceptual "two distinct speakers" / "natural resumption" cannot be cheaply auto-verified —
-  left to the human. **Also add a local-only mlx-gated regression guard** re-running the Phase 0
-  cross-commit byte-identity check (`X_alone == X_after` under `seed`+`temperature=0.0`) so a future
-  `mlx-audio` bump that silently reintroduces cross-call coupling is caught (pins the load-bearing
-  statelessness finding decision #3 rests on).
+  length) AND **`item.audio.ndim == 1`** on the first item of each script (review 2026-06-30 — the bridge
+  contract is a single-run Phase 0 snapshot and `_audio_to_pcm` duck-types via `.tolist()`
+  (`_stream_util.py:97-107`), so a future stereo/shape drift (`ndim==2`) would not hard-fail loudly;
+  assert the mono shape loudly here). Perceptual "two distinct speakers" / "natural resumption" cannot be
+  cheaply auto-verified — left to the human.
+  **Also add a local-only mlx-gated regression guard** re-running the Phase 0 cross-commit byte-identity
+  check so a future `mlx-audio` bump that silently reintroduces cross-call coupling is caught (pins the
+  load-bearing statelessness finding decision #3 rests on). **Pin it precisely (review 2026-06-30) so it
+  is implementable without re-deriving Phase 0:** a fixed `seed` (record the exact value used in the
+  Phase 0 control run — see `## Findings`), two payload strings `textPRIOR` and `textX`,
+  `temperature=0.0`, asserting `X_alone == X_after` as **array equality** (`mx.array_equal` /
+  `np.array_equal`), where `X_alone` renders `textX` with no prior call and `X_after` renders `textPRIOR`
+  then `textX` on the same model object.
+  **AND add a production-temperature coupling diagnostic (review 2026-06-30 — the greedy guard alone does
+  NOT cover the production default `temperature=1.3`; see decision #3's named residual assumption).**
+  Render `textX` alone vs after `textPRIOR` across N seeds (e.g. N=8) at `temperature=1.3` and compare the
+  **sample-count (duration) distribution** of the two render sets: a statistically indistinguishable
+  distribution *supports* the cross-call statelessness assumption at production temperature; a shifted one
+  *falsifies* it and re-opens decision #3. This is a **diagnostic (print + soft-flag), not a hard
+  byte-assert** — production-temp output is non-deterministic, so byte-equality cannot apply. Both the
+  greedy guard and this diagnostic are mlx-gated/local-only; the statelessness invariant has **zero CI
+  protection by design** (named accepted risk).
   Scripts:
   1. **Turn-taking** — `[S1]…[S2]…[S1]…`; does speaker identity stay consistent across turns?
   2. **Interruption + resumption, BOTH layouts** (the load-bearing test for decision #3): (a) inline
@@ -305,9 +384,20 @@ tests with a warning; the human runs it against a live dia server afterward.
   `ref_audio`/`ref_text`.
 - `capabilities()` advertises `voice_count: 0` and `text_formats: ["plain"]`; `voice` is omitted from
   `generate()` even when supplied by a client, and `[S1]`/`[S2]` tags pass through to `generate()`
-  intact (decisions #1/#2).
+  intact (decisions #1/#2). The voice-omit is **structural** — `_DiaStream` takes no `voice` param — not
+  merely test-enforced.
+- dia's `_DiaStream` implements `wait_closed` (streaming-bridge contract, `backend.py:70-86`) and
+  `validate_extras` for `{temperature, top_p}` (mirrors `pocket_tts.py:290-302`, rejecting non-finite
+  values); a lean test covers the `validate_extras` reject path.
+- A lean test exercises the tagged-text→delta path through `ToneBackend` (multi-line `[S1]`/`[S2]` buffer
+  streams ≥1 delta unchanged); `tts_server.backends.dia` is in `test_import_safety.py`'s `_TTS_MODULES`.
 - `tests/smoke/dia_dialogue_smoke.py` runs against a live dia server and writes one WAV per script
-  (both interruption layouts); the (a)-vs-(b) prosodic-continuity result is recorded in Findings.
+  (both interruption layouts); each script's first item asserts `audio.ndim == 1`; the (a)-vs-(b)
+  prosodic-continuity result is recorded in Findings.
+- **Named accepted CI gaps (review 2026-06-30):** the cross-call statelessness invariant (greedy guard +
+  production-temperature coupling diagnostic) and the server-boundary `voice_count:0` `_validate_voice`
+  accept-branch test are **mlx-gated/local-only** — they have zero CI protection by design. The
+  backend-layer voice-omit half and the tagged-text→delta framing are lean/CI.
 - Lean CI unaffected; `mlx_audio` absent at import time (lazy).
 
 ## References
@@ -315,7 +405,7 @@ tests with a warning; the human runs it against a live dia server afterward.
   backend-add template; *Locked design decisions* #2 (no `ref_audio`/cloning), R7 (per-backend
   extras), R1/R3 (rate contract), and the *Per sub-phase* checklist all apply here.
 
-<!-- reviewed: 2026-06-30 @ 0a663bc184ed8dfeaef4f52f2f205df409bd3f56 -->
+<!-- reviewed: 2026-06-30 @ 17b7dafa51564c686fbe185cfe49c29458f5aa92 -->
 
 ## Progress
 
@@ -375,3 +465,25 @@ knob (see redesigned decision #3), not a correctness hazard.
 
 The five passing facts (repo id, `ref_text`, `sample_rate=44100`, bridge contract, no-voice gen) are
 verified and stand regardless of the decision-#3 redesign.
+
+### Review resolution — 2026-06-30 (`/review-plan` refresh on the post-gate contract)
+
+Five-lens `/review-plan` run (architecture, sequencing, spec-and-testing, assumptions, codebase-claims)
+against the redesigned contract. raw=14 → 13 unique findings (1 merge, 1 cross-category related).
+**All addressed** above the marker; no waivers. Resolutions:
+
+| # | Sev | Lens(es) | Finding | Resolution (decision) |
+|---|-----|----------|---------|------------------------|
+| 1 | Critical | assumptions | Cross-call statelessness only proven under greedy `temp=0.0`; production runs `1.3` | Named the residual "mlx-audio holds no cross-call model state" **assumption** in decision #3; **added a production-temperature coupling diagnostic** to Phase 3 alongside the greedy guard |
+| 2 | Important | architecture | Voice-discard at one enforcement point, Pocket look-alike trap | Made it **structural** — `_DiaStream` omits the `voice` param entirely (Phase 1 item 3 + Acceptance) |
+| 3 | Important | sequencing | `_TTS_MODULES` dia append landed in Phase 2 → Phase-1↔2 coverage window | **Moved the append into Phase 1** (new bullet; Phase 2 item 3 annotated; added `test_import_safety.py` to Phase 1 test files/command) |
+| 4 | Important | spec-and-testing | Server-boundary `voice_count:0` accept-branch test not shaped against existing helpers | **Decision: write against real dia behind an `mlx` skip (local-only)**; named the CI gap. Backend-layer half stays lean |
+| 5 | Important | sequencing + spec-and-testing | Statelessness guard mlx-gated, no CI proxy, under-specified | Pinned seed/payloads/assertion form in Phase 3; named "zero CI protection by design" in Acceptance |
+| 6 | Important | spec-and-testing | No CI assertion for tagged-text→audio path (spy returns empty generator) | **Added a `ToneBackend` lean delta check** (multi-line `[S1]`/`[S2]` buffer streams ≥1 delta) to Phase 1 |
+| 7 | Important | assumptions | `sample_rate=44100` stated as fact; risk of a lean `==44100` assert | Phase 1 item 2 now mandates lean asserts `sample_rate==0` + field presence, never `==44100` |
+| 8 | Important | codebase-claims | `dia` extra absent from `pyproject.toml` | Phase 2 item 3 notes the extra is **net-new**, pinned to the kokoro/voxtral_tts pattern |
+| 9 | Minor | architecture | `wait_closed`/`SupportsWaitClosed` not in any checklist item | Added `wait_closed` + `_worker_done` to Phase 1 + Acceptance |
+| 10 | Minor | architecture | `validate_extras` unspecified | **Decision: mirror Pocket's `validate_extras`** for `{temperature, top_p}` (Phase 1 + Acceptance + lean reject test) |
+| 11 | Minor | sequencing | Partial item-8 inversion risk (`:105` guard, `:12-13` docstring) | Added a `grep '"dia"'` completeness guard to the Phase 2 sequencing guard |
+| 12 | Minor | assumptions | Bridge `.audio` shape a single-run snapshot; tolerant `_audio_to_pcm` | Added `audio.ndim == 1` structural assert to the Phase 3 smoke |
+| 13 | Minor (related) | spec-and-testing | Lean status-reply test could assert `44100` not `0` | Folded into resolution #7 (same `:300` anchor, cross-category related) |
