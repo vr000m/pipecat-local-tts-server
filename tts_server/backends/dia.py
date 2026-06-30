@@ -72,7 +72,7 @@ _FORBIDDEN_GENERATE_KWARGS = ("ref_audio", "ref_text")
 # CLAMPED, non-finite (NaN/inf) or non-numeric are rejected outright.
 _TEMPERATURE_MIN = 0.0
 _TEMPERATURE_MAX = 2.0
-_TOP_P_MIN = 0.0
+_TOP_P_MIN = 0.0  # exclusive lower bound — a non-positive top_p is rejected, not clamped
 _TOP_P_MAX = 1.0
 
 # Chunk-size hints (R7). Chosen defaults, not model facts (mirrors Kokoro/Pocket).
@@ -112,8 +112,11 @@ def _coerce_top_p(raw: Any) -> float:
         raise ValueError(f"top_p must be a number, got {raw!r}") from None
     if not math.isfinite(value):
         raise ValueError(f"top_p must be a finite number, got {raw!r}")
-    if value < _TOP_P_MIN:
-        return _TOP_P_MIN
+    if value <= _TOP_P_MIN:
+        # A non-positive top_p selects no tokens — reject rather than clamp to a
+        # surprising tiny value (mirrors voxtral), so the client learns its
+        # request was invalid instead of getting degenerate sampling.
+        raise ValueError(f"top_p must be > 0 and <= 1, got {raw!r}")
     if value > _TOP_P_MAX:
         return _TOP_P_MAX
     return value

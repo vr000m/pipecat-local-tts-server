@@ -242,6 +242,13 @@ def test_validate_extras_rejects_non_finite_top_p():
     assert msg and "top_p" in msg
     msg = backend.validate_extras({"top_p": float("inf")})
     assert msg and "top_p" in msg
+    # A non-positive top_p selects no tokens — rejected, not clamped to 0.0
+    # (mirrors voxtral, so the same degenerate value is never forwarded to
+    # generate() under the Metal lock).
+    msg = backend.validate_extras({"top_p": 0.0})
+    assert msg and "top_p" in msg
+    msg = backend.validate_extras({"top_p": -0.5})
+    assert msg and "top_p" in msg
 
 
 # --- tagged-text -> deltas through ToneBackend (server/bridge path, no mlx) ----
