@@ -1,7 +1,8 @@
 # Task: tts-server — `dia` dialogue backend (formerly v1 Phase 5c)
 
-**Status**: Planned — **design resolved 2026-06-29** (dialogue voice/text-semantics: tags-in-`plain`,
-`voice_count:0`; see *Resolved design decisions*). Conduct-ready pending a `/review-plan` refresh.
+**Status**: Planned — **design resolved + `/review-plan` refreshed 2026-06-29** (tags-in-`plain`,
+`voice_count:0`; see *Resolved design decisions*). Conduct-ready; **the Phase 0 model-verification
+gate must pass first** (it can fail and re-open the design).
 Split out of the v1 plan (`20260624-feature-tts-server-v1.md`, where it was Phase 5c) on 2026-06-25
 because, unlike the streaming backends `voxtral_tts`/`pocket_tts`, `dia` carried an unsolved design
 that touches the single-voice `open_stream(voice=…)` contract — a backend-*contract* change, not just
@@ -51,17 +52,51 @@ Two independent `/review-plan` lenses (architecture, spec-and-testing) flagged 5
      from plain text, so it cannot reject `[S1]` tags aimed at a non-dialogue backend (e.g. Kokoro
      would read them aloud literally as "bracket S one"). The dialogue contract lives only in client
      convention. If a fail-loud guarantee is later wanted, a per-backend `text_formats` capability
-     (Option B, making `server.py:904-905` validation capability-driven) is the upgrade path — deferred.
+     (Option B, making `server.py:904-905` validation capability-driven) is the upgrade path — deferred,
+     but keep the Option B note prominent in `docs/protocol.md` (not just here): the moment a second
+     dialogue-aware consumer or a mixed-backend deployment appears, the `plain`-overload becomes a
+     silent-misrender vector and Option B is no longer optional.
 3. **Chunking stays the client's job; turns must not split mid-tag.** `ideal_words` chunking is
    already client-side (`server.py:979-981`); dia keeps `split_pattern='\n'`. The client MUST NOT break a
    `[S1]…` turn across two commits, and MUST NOT place a `\n` inside a turn it wants dia to render as
-   one segment. **Open model-quality unknown:** dia generates each `\n`-separated turn as an
-   independent segment, so prosodic continuity across an interruption is *not* guaranteed — the
-   two-layout dialogue smoke (below) is what tells us whether it holds.
+   one segment. **Open model-quality unknown:** dia is *assumed* (by analogy to Kokoro — **verify in
+   Phase 0**) to generate each `\n`-separated turn as an independent segment, so prosodic continuity
+   across an interruption is *not* guaranteed — the two-layout dialogue smoke (below) is what tells us
+   whether it holds. If Phase 0 shows dia carries cross-segment state, this decision re-opens.
 
-A `/review-plan` refresh on this resolved design is still recommended before conduct.
+A `/review-plan` refresh on this resolved design was completed 2026-06-29; its findings are folded into
+the Phase 0 gate and the checklist below.
 
 ## Implementation Checklist (after the design question is settled)
+
+### Phase 0 — Verify dia against the live model (GATE; before any wiring)
+
+`dia`/`mlx-audio` is **not installed** in the repo, so the behavioral claims this plan relies on are
+**assumptions until checked against the real model**. Run this gate first (mlx-gated, local) and do
+**not** proceed to Backend/wiring until every item passes; if one fails, **re-plan** rather than wire
+around it. (`/review-plan` 2026-06-29 flagged each item below as a fact stated without verification.)
+
+- [ ] **dia ships in the pinned wheel + concrete repo id.** Confirm `mlx-audio==0.4.4` actually
+  contains a loadable dia family and pin a concrete repo id (as Kokoro/Pocket each do):
+  `python -c "from mlx_audio.tts.models import dia"` plus a `load(<repo-id>)` smoke. If dia only landed
+  in a later release or on `main`, the pin is wrong — stop.
+- [ ] **Live signature.** `inspect.signature(model.generate)` — confirm the surveyed shape and in
+  particular that `ref_text` is a **real** `generate()` kwarg (else its negative-guard guards nothing).
+- [ ] **Bridge contract.** The shared `_stream_util` bridge HARD-REQUIRES `generate()` return a Python
+  iterator whose items expose `.audio` materializing to a **1-D float32 mono** sequence
+  (`_stream_util.py:97,203-207`). Assert iterator-ness and item-0 `.audio` shape/dtype. If dia returns
+  a single result / ndarray / stereo / non-float32, the "reuses the bridge, no server-side changes"
+  claim fails — stop and re-plan.
+- [ ] **No-voice generation works.** Kokoro documents `voice=None` trips a broadcast-shape error in
+  mlx-audio 0.4.4 (`kokoro.py:382-383`). Call `generate(text)` with no voice and confirm it produces
+  audio rather than raising — dia must tolerate no-voice (tag-conditioned) generation.
+- [ ] **`model.sample_rate` populated pre-warmup.** Confirm `getattr(model, "sample_rate", None)` is
+  truthy immediately after `load()` (Kokoro/Pocket treat a missing rate as fatal). Record the value;
+  do not assume Kokoro's 24000.
+- [ ] **Segment independence (decision #3's premise).** Generate a 2-turn input, alter turn 1's text,
+  re-generate; confirm turn 2's audio is unchanged — i.e. dia segments on `split_pattern='\n'` with no
+  cross-segment decoder state. If dia DOES carry state across segments, decision #3 and the
+  newline-layout smoke expectation change — re-open the design.
 
 ### Backend
 - [ ] `backends/dia.py`. **Re-verify the live signature via `inspect.signature` before wiring**
@@ -70,15 +105,26 @@ A `/review-plan` refresh on this resolved design is still recommended before con
   verbose=False, ref_audio=None, ref_text=None, **kwargs)`. **NOT a streaming backend** — no `stream`
   param, uses `split_pattern` (segment-level, like Kokoro) → advertise **`streaming:false`** (assert
   `capabilities()["streaming"] is False`). extras `{temperature, top_p}`.
-- [ ] Apply dia's **voice-ignore/OMIT rule** at the backend boundary. Because the existing server
-  accepts non-`None` `voice` values when `voice_count` is falsy (`server.py:752-768`) and then carries
-  them into `open_stream` (`server.py:1001-1015`, `server.py:1152`), dia must never add `voice` to the
-  `generate()` kwargs, even if a client supplied one. Use Pocket's kwargs-building shape
-  (`pocket_tts.py:160-166`) only as the analogue for conditional kwargs; dia's rule is stricter than
-  Pocket's `voice=None` omit. Test both omitted voice and an explicit ignored voice.
+- [ ] Apply dia's **voice-ignore/OMIT rule** at the backend boundary — a **third** kwarg shape neither
+  existing backend has. Pocket (`pocket_tts.py:163-166`) conditionally omits `voice` *when None*; Kokoro
+  (`kokoro.py:312`) *always* passes `voice=self._voice`. dia must do neither: its `_gen_factory` MUST
+  **never build a `voice` kwarg under any branch** (ignore `self._voice` entirely), and
+  `open_stream(voice=...)` accepts-and-discards. This is the single enforcement point, because the
+  server accepts a non-`None` client voice when `voice_count` is falsy (`server.py:752-768`) and carries
+  it into `open_stream` (`server.py:1152`) — do **not** copy Pocket's conditional-omit, which would
+  forward a non-None voice (the exact bug).
+- [ ] **`voice_count:0` invariant — name both halves.** For `_validate_voice`'s accept branch to be
+  reached deterministically, dia MUST (a) **not define a `voices()` method** (so
+  `isinstance(backend, SupportsVoices)` is False at `server.py:1429-1441` / `backend.py:130` and
+  `_voice_set` stays empty) **and** (b) advertise `voice_count: 0`. `_validate_voice` checks
+  `_voice_set` *first* (`server.py:756-768`) and would *reject* a non-member voice if dia ever exposed a
+  voice list. Lean test: a supplied `voice` on a `voice_count:0` dia backend does **not** error at the
+  server boundary (complements the backend-layer "voice never reaches generate()" assertion).
 - [ ] **Leave BOTH `ref_audio` AND `ref_text` unwired** (locked decision #2). Negative-guard test
   must cover `ref_text` too — assert at **both** layers (capabilities exclusion **and** absence at the
-  `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`.
+  `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`. **Phase 0 confirms
+  `ref_text` is a real `generate()` kwarg** — if it is not, the boundary guard for `ref_text` is
+  vacuous (the server already drops unadvertised keys; see `test_pocket_lean.py:142-150`).
 - [ ] **Cancel latency caveat (inherited from Kokoro):** dia is segment-level, so a long single
   segment's backend `generate()` runs to its yield boundary before the Metal lock frees for the next
   commit. Per Kokoro's re-measurement (v1 plan Findings → *Phase 2 measured results*, 2026-06-26):
@@ -87,10 +133,13 @@ A `/review-plan` refresh on this resolved design is still recommended before con
   (bounded by `drain_timeout_seconds`). Carry Kokoro's resolution: hard guarantee is "no more deltas
   after `response.cancelled`"; chunking at sentence/newline boundaries still helps free the Metal lock
   faster for the NEXT commit (no longer needed for prompt client-visible barge-in).
-- [ ] **Dialogue-mapping tests** (net-new, the reason this is its own plan): per *Resolved design
-  decisions* #1/#2 — assert `[S1]`/`[S2]` text passes through to `generate()` intact (boundary test,
-  as in 5b), `text_format` stays `plain`, `capabilities()` advertises `voice_count: 0`, and `voice`
-  is omitted from the `generate()` call even when a client supplies `voice`.
+- [ ] **Dialogue-mapping tests** (net-new, the reason this is its own plan) — these are **LEAN
+  `_SpyModel` assertions, NOT the listen-and-judge smoke** (mirror `tests/test_pocket_lean.py:82-113`:
+  a spy model records `generate()` kwargs, `open_stream` is called directly bypassing the server
+  pre-filter). Assert, deterministically: `call["text"]` contains the `[S1]`/`[S2]` markers verbatim
+  (pass-through intact), `text_format` stays `plain`, `capabilities()` advertises `voice_count: 0`, and
+  `"voice" not in call` **even when `open_stream(voice="...")` was supplied** (decisions #1/#2). Only
+  the *perceptual* speaker-switch effect is left to the smoke; pass-through is asserted here.
 - [ ] **`tests/smoke/dia_dialogue_smoke.py`** (net-new, mlx-gated, dia-only, **listen-and-judge** —
   NOT a CI assertion; mirrors `tests/smoke/latency_smoke.py` + `examples/reference_client.py`).
   Connects a real client to a real dia server, sends crafted dialogue scripts, writes one WAV per
@@ -122,8 +171,12 @@ A `/review-plan` refresh on this resolved design is still recommended before con
      (`__main__.py:34-56`) plus argparse `--backend` choices tuple (`__main__.py:306-310`) — a
      passing `make_backend` unit test will NOT catch a missing `--backend` choice;
   3. packaging/CI surface: `pyproject.toml` `dia` extra; `.github/workflows/test.yml` macOS
-     `--all-extras` import-smoke block (`test.yml:115-136`) must import the dia backend module, and
-     the lean allow-list (`test.yml:37-63`) must include any new dia lean test file;
+     `--all-extras` import-smoke block (`test.yml:115-136`) must import the dia backend module; the CI
+     pytest allow-list (`test.yml:37-63`) must include any new dia lean test file; **and add
+     `"tts_server.backends.dia"` to `_TTS_MODULES` in `tests/test_import_safety.py:27-37`** so the
+     no-`mlx_audio`-at-module-load invariant is asserted for `dia.py` — a **separate list** from the CI
+     allow-list (do not conflate); missing it is a silent gap (a dia.py importing `mlx_audio` at module
+     top would pass CI), not a red state;
   4. renderer/launchd validation surface: renderer `_BACKEND_RE` and backend hint string
      (`scripts/render_tts_plist.py:56-58`, `scripts/render_tts_plist.py:186-191`) plus
      `scripts/install_tts_agent.sh:16` backend comment;
@@ -141,28 +194,39 @@ A `/review-plan` refresh on this resolved design is still recommended before con
      `tests/smoke/reconnect_smoke.py` `DEFAULT_VOICE` / argparse choices
      (`reconnect_smoke.py:51-58`, `reconnect_smoke.py:234-237`) if dia is expected to run those
      generic smokes rather than only `dia_dialogue_smoke.py`;
-  8. **invert the dia-absence assertions** in `tests/test_justfile_recipes.py`
-     (`test_dia_is_absent_from_readme_and_renderer`, `test_resolve_dia_exits_nonzero`, and the inline
-     `_BACKEND_RE.match("dia")` guard) into positive presence assertions, matching the other backends.
-  Add a lean construction/lazy-import test for dia in the same commit. Phase 6 (launchd ops) has
-  **already merged** (v1 plan, PR #7), so the launchd/operator surfaces are unconditional — not gated
-  on "if Phase 6 has landed."
+  8. **invert ALL the dia-absence assertions** in `tests/test_justfile_recipes.py` —
+     `test_dia_is_absent_from_readme_and_renderer` (`:118-122`), `test_resolve_dia_exits_nonzero`
+     (`:148-150`), the inline `_BACKEND_RE.match("dia")` guard (`:105`), **and the module docstring**
+     (`:12-13`, the easy-to-miss one) — into positive presence assertions, matching the other backends.
+     A partial inversion leaves a test asserting dia both present and reserved.
+  Add a lean construction/lazy-import test for dia in the same commit. **Sequencing guard:** the
+  Backend-section `dia.py` + its dialogue-mapping/voice lean tests MAY land in an earlier commit
+  (creating `dia.py` + a `make_backend` branch does not add `dia` to argparse, so the drift tests stay
+  green), but the **item-8 assertion inversions MUST belong to this atomic commit only** — inverting
+  `test_dia_is_absent_*` before argparse includes `dia` asserts dia present in a set that still lacks it
+  and goes red immediately. Phase 6 (launchd ops) has **already merged** (v1 plan, PR #7), so the
+  launchd/operator surfaces are unconditional — not gated on "if Phase 6 has landed."
 - [ ] Per-backend `sample_rate` discovery (R1/R3): expose `sample_rate` after `start()`/load so
   `server.hello.audio.rate` advertises the true model rate; mlx-gated test reads `model.sample_rate`
-  (the config property), **not** a backend literal. dia's rate is per-model and unverified — do not
+  (the config property), **not** a backend literal, and asserts it is **non-None/non-zero pre-warmup**
+  (Phase 0 confirms the property exists and populates). dia's rate is per-model and unverified — do not
   assume it matches Kokoro's 24000.
 - [ ] Packaging/CI: add the `pyproject.toml` `dia` extra (`mlx-audio==0.4.4`); the macOS smoke job
   already syncs `--all-extras` once v1 Phase 5a lands, so a new extra is install-smoked automatically;
   also add the dia backend module to the macOS import-smoke block so lazy module import is exercised.
   Backend synth tests stay local/mlx-gated only.
-- [ ] If a new lean test file is added, extend the lean allow-list (`.github/workflows/test.yml`) in
-  the same commit; prefer folding the negative-guard assertion into the already-allow-listed
-  `tests/test_capabilities_extras.py`. (The README/`docs/protocol.md` capabilities & extras table —
-  including dia's `streaming:false` flag — and the justfile/port/renderer/drift-test surfaces are all
-  covered by the single atomic dia-enablement commit above.)
+- [ ] If a new lean test file is added, extend the **CI pytest allow-list**
+  (`.github/workflows/test.yml:37-63` — distinct from `_TTS_MODULES` in atomic item 3) in the same
+  commit, or `pytest -x` skips it silently; prefer folding the negative-guard assertion into the
+  already-allow-listed `tests/test_capabilities_extras.py` to avoid adding a new file at all. (The
+  README/`docs/protocol.md` capabilities & extras table — including dia's `streaming:false` flag — and
+  the justfile/port/renderer/drift-test surfaces are all covered by the single atomic dia-enablement
+  commit above.)
 
 ## Acceptance Criteria
-- `python -m tts_server serve --backend dia` serves; `status` prints `backend=dia` + the model rate.
+- `python -m tts_server serve --backend dia` serves; the `status` **reply dict** carries `backend=dia`
+  + the model rate (lean dict-level assertion, as in `tests/test_status.py:27-45`; the CLI-print path
+  stays a manual/mlx-gated check, not a lean test).
 - `capabilities()["streaming"] is False`; `capabilities()["extras"] == ["temperature", "top_p"]`
   (ordered list, matching `docs/protocol.md` + `tests/test_capabilities_extras.py`) and excludes
   `ref_audio`/`ref_text`.
@@ -178,4 +242,4 @@ A `/review-plan` refresh on this resolved design is still recommended before con
   backend-add template; *Locked design decisions* #2 (no `ref_audio`/cloning), R7 (per-backend
   extras), R1/R3 (rate contract), and the *Per sub-phase* checklist all apply here.
 
-<!-- reviewed: 2026-06-29 @ 3b3f1a0ce66de9bfb7a238730d14be1b47827488 -->
+<!-- reviewed: 2026-06-29 @ fe4fae4eacd3f64227cb5488d95faca05002b957 -->
