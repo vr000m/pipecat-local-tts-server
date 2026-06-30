@@ -1,8 +1,9 @@
 # Task: tts-server — `dia` dialogue backend (formerly v1 Phase 5c)
 
-**Status**: Planned — **design resolved + `/review-plan` refreshed 2026-06-29** (tags-in-`plain`,
-`voice_count:0`; see *Resolved design decisions*). Conduct-ready; **the Phase 0 model-verification
-gate must pass first** (it can fail and re-open the design).
+**Status**: In progress — **Phase 0 model-verification gate PASSED 2026-06-30** (5/6; segment-independence
+falsified → decision #3 redesigned, one-commit-coherence-unit / incremental-commits-supported; see
+*Resolved design decisions* #3 + `## Findings`). Reshaped into conduct phases; **pending a fresh
+`/review-plan` pass before conduct** because the contract changed post-gate.
 Split out of the v1 plan (`20260624-feature-tts-server-v1.md`, where it was Phase 5c) on 2026-06-25
 because, unlike the streaming backends `voxtral_tts`/`pocket_tts`, `dia` carried an unsolved design
 that touches the single-voice `open_stream(voice=…)` contract — a backend-*contract* change, not just
@@ -41,7 +42,7 @@ Two independent `/review-plan` lenses (architecture, spec-and-testing) flagged 5
    the backend as having no voice concept and accepts a supplied `voice` instead of rejecting or
    stripping it. Therefore the dia backend itself must ignore `voice` and omit the `voice` kwarg from
    `generate()` even if `open_stream(voice=...)` receives one; Pocket's conditional `voice=None` omit
-   shape (`pocket_tts.py:160-166`) is only an analogue for building kwargs, not sufficient by itself.
+   shape (`pocket_tts.py:164-165`) is only an analogue for building kwargs, not sufficient by itself.
 2. **Dialogue text rides inside `text_format: plain` (Option A — no server-side changes).** `[S1]`/
    `[S2]` are literal characters in a normal `plain` payload; the server forwards the committed buffer
    untouched (verified `server.py:904-925` validates/appends `plain` text without parsing,
@@ -56,123 +57,171 @@ Two independent `/review-plan` lenses (architecture, spec-and-testing) flagged 5
      but keep the Option B note prominent in `docs/protocol.md` (not just here): the moment a second
      dialogue-aware consumer or a mixed-backend deployment appears, the `plain`-overload becomes a
      silent-misrender vector and Option B is no longer optional.
-3. **Chunking stays the client's job; turns must not split mid-tag.** `ideal_words` chunking is
-   already client-side (`server.py:979-981`); dia keeps `split_pattern='\n'`. The client MUST NOT break a
-   `[S1]…` turn across two commits, and MUST NOT place a `\n` inside a turn it wants dia to render as
-   one segment. **Open model-quality unknown:** dia is *assumed* (by analogy to Kokoro — **verify in
-   Phase 0**) to generate each `\n`-separated turn as an independent segment, so prosodic continuity
-   across an interruption is *not* guaranteed — the two-layout dialogue smoke (below) is what tells us
-   whether it holds. If Phase 0 shows dia carries cross-segment state, this decision re-opens.
+3. **Each commit is one "coherence unit"; the client chooses commit granularity.**
+   **RESOLVED by Phase 0 (2026-06-30) — the original "independent segments" assumption was FALSIFIED,
+   but the practical contract is more permissive than first feared.** Two verified facts:
+   - **Within a single `generate()` call (= one commit), dia carries cross-segment state** — editing an
+     earlier turn changes a later turn's audio (autoregressive across `\n`-separated turns, unlike
+     Kokoro; seeded control A==B deterministic, A≠C when turn-1 edited — see `## Findings`).
+   - **Across separate `generate()` calls (= across commits), dia is STATELESS** — *architecturally*
+     verified (temperature-independent): the server feeds one commit to exactly one fresh `generate()`
+     call (`server.py:1006`→`:1157`, one `gen_factory()` per drain at `_stream_util.py:203`); no model
+     state is threaded across calls. This byte-identity was *also* confirmed empirically under
+     `seed`+`temperature=0.0` (`X_alone == X_after`; see `## Findings`) — note that proof is a property
+     of seeded/greedy decoding and does not reproduce at the production default `temperature=1.3`, so the
+     **architectural** argument (not the byte-equality) is what carries the claim at production
+     temperature. Conclusion: incremental committing is **safe and clean**, with no order-dependent
+     artifacts.
 
-A `/review-plan` refresh on this resolved design was completed 2026-06-29; its findings are folded into
-the Phase 0 gate and the checklist below.
+   Consequences for the client contract:
+   - **A commit is the unit of coherence.** Every turn inside one commit conditions on the others;
+     turns in a *later* commit are NOT conditioned on an earlier commit (context resets at the boundary).
+   - **The client picks the granularity — a latency-vs-coherence knob:**
+     - *Whole dialogue in one commit* → maximum cross-turn coherence; higher latency to full output.
+     - *Incremental commits* (e.g. 2 turns now, more later) → lower latency; coherence resets per
+       commit. **This is allowed and supported** — pick commit boundaries where a coherence reset is
+       acceptable (scene breaks, complete exchanges).
+   - **Commits are sequential under K=1, not queued (existing server behavior, dia inherits it).** With
+     the v1 per-connection in-flight cap `K=1`, committing the next chunk *before the prior response
+     reaches a terminal state* is **rejected with `error {code: busy, retry_after_ms}`, not enqueued**
+     (`server.py:1021-1024`); the buffer is left intact to retry. So incremental commits must be paced
+     to prior-response completion — they are not pipelined ahead. Because dia commits are longer than
+     the streaming backends', an over-eager next commit is *more* likely to hit `busy`; smaller
+     incremental commits shorten each in-flight window and reduce that. To interrupt a playing dialogue,
+     `response.cancel` → `response.cancelled` (prompt, ~1 ms) → then commit the replacement (the
+     synthesis slot/Metal-lock may lag the cancel by up to `drain_timeout_seconds`, so the replacement
+     commit can briefly see `busy`). **No dia-specific server change** — this is the existing K=1 /
+     barge-in contract (`docs/protocol.md` §4, §7).
+   - **The one hard rule:** a single `[S1]…` turn MUST NOT be split across two commits (mid-utterance
+     fragmentation). Splitting *between* turns across commits is fine. `\n` separates turns/segments
+     within a commit and may be used freely there.
+   - **No `ideal_words` opt-out needed (the coherence-unit invariant holds for free).** `ideal_words` is
+     advisory capability metadata, NOT a server-side splitter — `server.py:979-981` leaves chunking to
+     the client and the whole committed buffer is fed as ONE `generate()` call (`server.py:1006`→
+     `:1157`). So one-commit-=-one-coherence-unit already holds with no new flag; the client simply
+     controls commit boundaries by choosing what to commit. (Do not build a phantom opt-out.)
+   - **Accepted cost (cancel / Metal-lock):** a larger commit is a longer `generate()`, so the Metal
+     lock/slot frees only at the next segment yield boundary (bounded by `drain_timeout_seconds`). The
+     client-visible `response.cancel`→`response.cancelled` stays prompt (~1 ms, decoupled). Incremental
+     commits *also* shorten the lock-hold per call — so the latency-vs-coherence knob doubles as a
+     barge-in-responsiveness knob.
+   - **Smoke expectation change:** the newline-layout smoke (script 2, layouts a-vs-b) now compares
+     prosodic continuity **within one coherent commit**, NOT segment independence. Both layouts ride in
+     one commit; the question is whether inline vs `\n`-separated turn boundaries affect continuity.
 
-## Implementation Checklist (after the design question is settled)
+A `/review-plan` refresh on the original (pre-Phase-0) design was completed 2026-06-29. The Phase 0 gate
+then ran 2026-06-30 and re-opened decision #3; this section reflects the post-gate redesign and **requires
+a fresh `/review-plan` pass before conduct** (the contract changed).
+
+## Implementation Checklist
+
+Conduct-shaped phases. Phase 0 is the model-verification GATE (already run manually — see
+`## Findings`); Phases 1–3 are the implementation. Per-phase completion is tracked in `## Progress`
+below the marker. mlx-gated tests (real-model synth, rate value) are **local-only** and are NOT in the
+conduct test commands — those run lean (`_SpyModel`, no `mlx_audio`) checks only.
 
 ### Phase 0 — Verify dia against the live model (GATE; before any wiring)
 
-`dia`/`mlx-audio` is **not installed** in the repo, so the behavioral claims this plan relies on are
-**assumptions until checked against the real model**. Run this gate first (mlx-gated, local) and do
-**not** proceed to Backend/wiring until every item passes; if one fails, **re-plan** rather than wire
-around it. (`/review-plan` 2026-06-29 flagged each item below as a fact stated without verification.)
+**STATUS: COMPLETE (2026-06-30) — 5/6 passed; segment-independence resolved in the negative →
+decision #3 redesigned (see `## Findings` + redesigned *Resolved design decisions* #3). The gate did
+its job: the "independent segments" premise was falsified before any wiring.** Recorded results:
 
-- [ ] **dia ships in the pinned wheel + concrete repo id.** Confirm `mlx-audio==0.4.4` actually
-  contains a loadable dia family and pin a concrete repo id (as Kokoro/Pocket each do):
-  `python -c "from mlx_audio.tts.models import dia"` plus a `load(<repo-id>)` smoke. If dia only landed
-  in a later release or on `main`, the pin is wrong — stop.
-- [ ] **Live signature.** `inspect.signature(model.generate)` — confirm the surveyed shape and in
-  particular that `ref_text` is a **real** `generate()` kwarg (else its negative-guard guards nothing).
-- [ ] **Bridge contract.** The shared `_stream_util` bridge HARD-REQUIRES `generate()` return a Python
-  iterator whose items expose `.audio` materializing to a **1-D float32 mono** sequence
-  (`_stream_util.py:97,203-207`). Assert iterator-ness and item-0 `.audio` shape/dtype. If dia returns
-  a single result / ndarray / stereo / non-float32, the "reuses the bridge, no server-side changes"
-  claim fails — stop and re-plan.
-- [ ] **No-voice generation works.** Kokoro documents `voice=None` trips a broadcast-shape error in
-  mlx-audio 0.4.4 (`kokoro.py:382-383`). Call `generate(text)` with no voice and confirm it produces
-  audio rather than raising — dia must tolerate no-voice (tag-conditioned) generation.
-- [ ] **`model.sample_rate` populated pre-warmup.** Confirm `getattr(model, "sample_rate", None)` is
-  truthy immediately after `load()` (Kokoro/Pocket treat a missing rate as fatal). Record the value;
-  do not assume Kokoro's 24000.
-- [ ] **Segment independence (decision #3's premise).** Generate a 2-turn input, alter turn 1's text,
-  re-generate; confirm turn 2's audio is unchanged — i.e. dia segments on `split_pattern='\n'` with no
-  cross-segment decoder state. If dia DOES carry state across segments, decision #3 and the
-  newline-layout smoke expectation change — re-open the design.
+- [x] **dia ships in the pinned wheel + concrete repo id** — `mlx-community/Dia-1.6B-fp16` loads via
+  `mlx_audio.tts.utils.load(..., lazy=False, strict=True)` under `mlx-audio==0.4.4`.
+- [x] **Live signature** — `generate(text, voice=None, temperature=1.3, top_p=0.95,
+  split_pattern='\n', max_tokens=None, verbose=False, ref_audio=None, ref_text=None, **kwargs)`;
+  `ref_text` IS a real kwarg (its negative-guard is meaningful).
+- [x] **Bridge contract** — `generate()` returns an iterator of items whose `.audio` is 1-D float32
+  mono. "reuses `_stream_util`, no server-side change" holds (`_stream_util.py:97,203-207`).
+- [x] **No-voice generation works** — `generate(text)` with no voice produces audio (unlike Kokoro's
+  broadcast error, `kokoro.py:382-383`).
+- [x] **`model.sample_rate` populated pre-warmup** — **44100** (NOT Kokoro's 24000).
+- [x] **Segment independence — FALSIFIED (resolved).** dia carries cross-segment state WITHIN a
+  `generate()` call but is STATELESS across calls. Decision #3 was redesigned (one commit = one
+  coherence unit; incremental commits supported), not wired around.
 
-### Backend
-- [ ] `backends/dia.py`. **Re-verify the live signature via `inspect.signature` before wiring**
-  (R7/R8; pin `mlx-audio==0.4.4`). As surveyed 2026-06-24 (source read, line numbers approximate):
-  `generate(text, voice=None, temperature=1.3, top_p=0.95, split_pattern='\n', max_tokens=None,
-  verbose=False, ref_audio=None, ref_text=None, **kwargs)`. **NOT a streaming backend** — no `stream`
-  param, uses `split_pattern` (segment-level, like Kokoro) → advertise **`streaming:false`** (assert
-  `capabilities()["streaming"] is False`). extras `{temperature, top_p}`.
+### Phase 1 — dia backend module + lean tests
+
+**Impl files:** tts_server/backends/dia.py, tts_server/backends/__init__.py
+**Test files:** tests/test_dia_lean.py, tests/test_capabilities_extras.py
+**Test command:** `uv run pytest tests/test_dia_lean.py tests/test_capabilities_extras.py`
+
+Creates the backend module + `make_backend` lazy-import branch and the lean (`_SpyModel`, no `mlx_audio`)
+tests. This may land BEFORE Phase 2 without a red state: creating `dia.py` + a resolver branch does NOT
+add `dia` to argparse, so the dia-absence drift tests stay green. Adding `tests/test_dia_lean.py` to the
+CI pytest allow-list (`.github/workflows/test.yml`) is the ONE workflow edit allowed here — it adds a
+test path, it does not invert any dia-absence assertion (those belong to Phase 2 only).
+
+- [ ] `backends/dia.py`. **Re-verify the live signature via `inspect.signature` before wiring** (R7/R8;
+  pin `mlx-audio==0.4.4`). Phase 0 confirmed: `generate(text, voice=None, temperature=1.3, top_p=0.95,
+  split_pattern='\n', max_tokens=None, verbose=False, ref_audio=None, ref_text=None, **kwargs)`. **NOT a
+  streaming backend** — no `stream` param, uses `split_pattern` (segment-level, like Kokoro) → advertise
+  **`streaming:false`** (assert `capabilities()["streaming"] is False`). extras `{temperature, top_p}`.
+- [ ] **Per-backend `sample_rate` discovery (R1/R3).** Expose `sample_rate` after `start()`/load so
+  `server.hello.audio.rate` advertises the true model rate; read `model.sample_rate` (the config
+  property), **not** a literal. Phase 0 recorded **44100** — treat a missing/zero rate after load as
+  fatal (as Kokoro/Pocket do). The rate-value assertion is mlx-gated/local-only; a lean test may assert
+  the backend reports a `backend=dia` status-reply dict shape (as `tests/test_status.py:27-45`).
 - [ ] Apply dia's **voice-ignore/OMIT rule** at the backend boundary — a **third** kwarg shape neither
-  existing backend has. Pocket (`pocket_tts.py:163-166`) conditionally omits `voice` *when None*; Kokoro
+  existing backend has. Pocket (`pocket_tts.py:164-165`) conditionally omits `voice` *when None*; Kokoro
   (`kokoro.py:312`) *always* passes `voice=self._voice`. dia must do neither: its `_gen_factory` MUST
   **never build a `voice` kwarg under any branch** (ignore `self._voice` entirely), and
   `open_stream(voice=...)` accepts-and-discards. This is the single enforcement point, because the
   server accepts a non-`None` client voice when `voice_count` is falsy (`server.py:752-768`) and carries
   it into `open_stream` (`server.py:1152`) — do **not** copy Pocket's conditional-omit, which would
-  forward a non-None voice (the exact bug).
+  forward a non-None voice (the exact bug). **Call flow** (why the backend discard is mandatory, not
+  redundant with server validation): `commit(voice=X)` → `_validate_voice` accepts (voice_count:0) →
+  `open_stream(voice=X)` → `_gen_factory` ignores it → `generate()` has no `voice` kwarg.
 - [ ] **`voice_count:0` invariant — name both halves.** For `_validate_voice`'s accept branch to be
   reached deterministically, dia MUST (a) **not define a `voices()` method** (so
   `isinstance(backend, SupportsVoices)` is False at `server.py:1429-1441` / `backend.py:130` and
   `_voice_set` stays empty) **and** (b) advertise `voice_count: 0`. `_validate_voice` checks
   `_voice_set` *first* (`server.py:756-768`) and would *reject* a non-member voice if dia ever exposed a
-  voice list. Lean test: a supplied `voice` on a `voice_count:0` dia backend does **not** error at the
-  server boundary (complements the backend-layer "voice never reaches generate()" assertion).
-- [ ] **Leave BOTH `ref_audio` AND `ref_text` unwired** (locked decision #2). Negative-guard test
-  must cover `ref_text` too — assert at **both** layers (capabilities exclusion **and** absence at the
-  `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`. **Phase 0 confirms
-  `ref_text` is a real `generate()` kwarg** — if it is not, the boundary guard for `ref_text` is
-  vacuous (the server already drops unadvertised keys; see `test_pocket_lean.py:142-150`).
-- [ ] **Cancel latency caveat (inherited from Kokoro):** dia is segment-level, so a long single
+  voice list. **Two distinct lean tests at two layers** (the backend-layer `_SpyModel` assertion below
+  bypasses the server pre-filter, so it CANNOT prove the server boundary): (a) backend-layer — `"voice"
+  not in call` via `_SpyModel` in `tests/test_dia_lean.py`; (b) **server-boundary** — a supplied `voice`
+  on a `voice_count:0` dia backend does **not** error through the real `_validate_voice` accept branch,
+  written running-server/connected-client style in `tests/test_capabilities_extras.py` (the
+  already-allow-listed home for server-exercising lean tests). Naming only (a) leaves the accept-branch
+  half unproven.
+- [ ] **Leave BOTH `ref_audio` AND `ref_text` unwired** (locked decision #2). Negative-guard test must
+  cover `ref_text` too — assert at **both** layers (capabilities exclusion **and** absence at the
+  `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`. Phase 0 confirmed
+  `ref_text` is a real `generate()` kwarg, so the boundary guard is non-vacuous (the server already
+  drops unadvertised keys; see `test_pocket_lean.py:142-150`).
+- [ ] **Dialogue-mapping tests** (net-new, the reason this is its own plan) — **LEAN `_SpyModel`
+  assertions, NOT the listen-and-judge smoke** (mirror `tests/test_pocket_lean.py:82-113`: a spy model
+  records `generate()` kwargs, `open_stream` is called directly bypassing the server pre-filter). Assert,
+  deterministically: `call["text"]` contains the `[S1]`/`[S2]` markers verbatim (pass-through intact),
+  `text_format` stays `plain`, `capabilities()` advertises `voice_count: 0`, and `"voice" not in call`
+  **even when `open_stream(voice="...")` was supplied** (decisions #1/#2). Only the *perceptual*
+  speaker-switch effect is left to the smoke; pass-through is asserted here. The `extras == ["temperature",
+  "top_p"]` ordered-list + `streaming is False` + `text_formats == ["plain"]` assertions live in
+  `tests/test_capabilities_extras.py` (already CI-allow-listed).
+- [ ] **Cancel latency caveat (inherited from Kokoro):** dia is segment-level, so a long
   segment's backend `generate()` runs to its yield boundary before the Metal lock frees for the next
-  commit. Per Kokoro's re-measurement (v1 plan Findings → *Phase 2 measured results*, 2026-06-26):
-  the **client-visible cancel** (`response.cancel` → `response.cancelled`) is prompt (**~1 ms**,
+  commit. The **client-visible cancel** (`response.cancel` → `response.cancelled`) is prompt (**~1 ms**,
   decoupled from the worker); only the **lock/slot release** waits for `generate()`'s yield boundary
-  (bounded by `drain_timeout_seconds`). Carry Kokoro's resolution: hard guarantee is "no more deltas
-  after `response.cancelled`"; chunking at sentence/newline boundaries still helps free the Metal lock
-  faster for the NEXT commit (no longer needed for prompt client-visible barge-in).
-- [ ] **Dialogue-mapping tests** (net-new, the reason this is its own plan) — these are **LEAN
-  `_SpyModel` assertions, NOT the listen-and-judge smoke** (mirror `tests/test_pocket_lean.py:82-113`:
-  a spy model records `generate()` kwargs, `open_stream` is called directly bypassing the server
-  pre-filter). Assert, deterministically: `call["text"]` contains the `[S1]`/`[S2]` markers verbatim
-  (pass-through intact), `text_format` stays `plain`, `capabilities()` advertises `voice_count: 0`, and
-  `"voice" not in call` **even when `open_stream(voice="...")` was supplied** (decisions #1/#2). Only
-  the *perceptual* speaker-switch effect is left to the smoke; pass-through is asserted here.
-- [ ] **`tests/smoke/dia_dialogue_smoke.py`** (net-new, mlx-gated, dia-only, **listen-and-judge** —
-  NOT a CI assertion; mirrors `tests/smoke/latency_smoke.py` + `examples/reference_client.py`).
-  Connects a real client to a real dia server, sends crafted dialogue scripts, writes one WAV per
-  script, prints their paths for a human to judge. Only structural assert is non-empty audio per
-  script (perceptual "two distinct speakers" / "natural resumption" cannot be cheaply auto-verified).
-  Scripts:
-  1. **Turn-taking** — `[S1]…[S2]…[S1]…`; does speaker identity stay consistent across turns?
-  2. **Interruption + resumption, BOTH layouts** (the load-bearing test for decision #3): (a) inline
-     tags, single segment (no `\n`) — in-segment continuity; (b) newline-separated turns — does
-     continuity survive dia's per-segment `split_pattern='\n'`? S1 starts a sentence, S2 cuts in, S1
-     finishes the *same* sentence; listen for whether S1 resumes naturally vs disjointly.
-  3. **Short backchannel** — covered inside `podcast_turntaking.txt` as a one-word S2 interjection
-     ("Mm-hmm") inside an S1 turn.
-  This is scripted (in-text) interruption — distinct from protocol `response.cancel` barge-in, which
-  is terminal (no resume). Record the (a)-vs-(b) prosodic-continuity result in Findings after the
-  first dia run; it tells the client whether to keep turns newline-free. (Smoke drivers live in
-  `tests/smoke/` and run manually — no lean allow-list change.) Transcript fixtures are committed
-  ahead of the driver at `tests/smoke/fixtures/dia/` (`podcast_turntaking.txt` for turn-taking;
-  `interview_interruption_inline.txt` vs `interview_interruption_newline.txt` are the same dialogue in
-  layouts (a)/(b) for the continuity comparison — see that dir's `README.md`).
+  (bounded by `drain_timeout_seconds`). Hard guarantee: "no more deltas after `response.cancelled`". See
+  redesigned decision #3 for how this interacts with whole-dialogue vs incremental commits.
 
-### Standard backend-add wiring (follow the v1 Phase 5a/5b pattern)
+### Phase 2 — Atomic dia-enablement wiring (follow the v1 Phase 5a/5b pattern)
+
+**Impl files:** tts_server/__main__.py, pyproject.toml, .github/workflows/test.yml, scripts/render_tts_plist.py, scripts/install_tts_agent.sh, README.md, docs/protocol.md, AGENTS.md, CHANGELOG.md, justfile, tests/smoke/run_smoke.sh, tests/smoke/run_multiconn.sh, tests/smoke/reconnect_smoke.py
+**Test files:** tests/test_justfile_recipes.py, tests/test_import_safety.py, tests/test_render_tts_plist.py
+**Test command:** `uv run pytest tests/test_justfile_recipes.py tests/test_import_safety.py tests/test_render_tts_plist.py`
+
 - [ ] **ONE atomic "dia-enablement" commit (mandatory — avoids a red intermediate state).** Several
   existing drift tests *assert `dia` is absent* and flip to red the instant `dia` becomes a known
-  backend, so every surface that names the backend set MUST change together. In a single commit:
-  1. backend module + `make_backend` resolver (`tts_server/backends/dia.py`,
+  backend, so every surface that names the backend set MUST change together. Phase 1's `dia.py` +
+  `make_backend` branch (item 1) is a prerequisite already landed; this phase wires items 2–8 atomically:
+  1. *(landed in Phase 1)* backend module + `make_backend` resolver (`tts_server/backends/dia.py`,
      `tts_server/backends/__init__.py`, lazy-import branch, `mlx_audio` only in `start()`);
   2. CLI backend surface (`tts_server/__main__.py`): `_resolve_model` default branch
      (`__main__.py:34-56`) plus argparse `--backend` choices tuple (`__main__.py:306-310`) — a
      passing `make_backend` unit test will NOT catch a missing `--backend` choice;
   3. packaging/CI surface: `pyproject.toml` `dia` extra; `.github/workflows/test.yml` macOS
-     `--all-extras` import-smoke block (`test.yml:115-136`) must import the dia backend module; the CI
-     pytest allow-list (`test.yml:37-63`) must include any new dia lean test file; **and add
+     `--all-extras` import-smoke block (`test.yml:115-136`) must import the dia backend module; **and add
      `"tts_server.backends.dia"` to `_TTS_MODULES` in `tests/test_import_safety.py:27-37`** so the
      no-`mlx_audio`-at-module-load invariant is asserted for `dia.py` — a **separate list** from the CI
      allow-list (do not conflate); missing it is a silent gap (a dia.py importing `mlx_audio` at module
@@ -196,37 +245,61 @@ around it. (`/review-plan` 2026-06-29 flagged each item below as a fact stated w
      generic smokes rather than only `dia_dialogue_smoke.py`;
   8. **invert ALL the dia-absence assertions** in `tests/test_justfile_recipes.py` —
      `test_dia_is_absent_from_readme_and_renderer` (`:118-122`), `test_resolve_dia_exits_nonzero`
-     (`:148-150`), the inline `_BACKEND_RE.match("dia")` guard (`:105`), **and the module docstring**
-     (`:12-13`, the easy-to-miss one) — into positive presence assertions, matching the other backends.
+     (`:148-150`), the inline `_BACKEND_RE.match("dia")` guard at `:105` (which lives inside
+     `test_renderer_allowlist_matches_argparse_backends`, NOT a dedicated dia-absence test — easy to miss
+     by function name), **and the module docstring** (`:12-13`, the easy-to-miss one) — into positive
+     presence assertions, matching the other backends.
      A partial inversion leaves a test asserting dia both present and reserved.
-  Add a lean construction/lazy-import test for dia in the same commit. **Sequencing guard:** the
-  Backend-section `dia.py` + its dialogue-mapping/voice lean tests MAY land in an earlier commit
-  (creating `dia.py` + a `make_backend` branch does not add `dia` to argparse, so the drift tests stay
-  green), but the **item-8 assertion inversions MUST belong to this atomic commit only** — inverting
-  `test_dia_is_absent_*` before argparse includes `dia` asserts dia present in a set that still lacks it
-  and goes red immediately. Phase 6 (launchd ops) has **already merged** (v1 plan, PR #7), so the
+  **Sequencing guard:** the **item-8 assertion inversions MUST belong to this atomic commit only** —
+  inverting `test_dia_is_absent_*` before argparse includes `dia` asserts dia present in a set that still
+  lacks it and goes red immediately. Phase 6 (launchd ops) has **already merged** (v1 plan, PR #7), so the
   launchd/operator surfaces are unconditional — not gated on "if Phase 6 has landed."
-- [ ] Per-backend `sample_rate` discovery (R1/R3): expose `sample_rate` after `start()`/load so
-  `server.hello.audio.rate` advertises the true model rate; mlx-gated test reads `model.sample_rate`
-  (the config property), **not** a backend literal, and asserts it is **non-None/non-zero pre-warmup**
-  (Phase 0 confirms the property exists and populates). dia's rate is per-model and unverified — do not
-  assume it matches Kokoro's 24000.
-- [ ] Packaging/CI: add the `pyproject.toml` `dia` extra (`mlx-audio==0.4.4`); the macOS smoke job
-  already syncs `--all-extras` once v1 Phase 5a lands, so a new extra is install-smoked automatically;
-  also add the dia backend module to the macOS import-smoke block so lazy module import is exercised.
-  Backend synth tests stay local/mlx-gated only.
-- [ ] If a new lean test file is added, extend the **CI pytest allow-list**
-  (`.github/workflows/test.yml:37-63` — distinct from `_TTS_MODULES` in atomic item 3) in the same
-  commit, or `pytest -x` skips it silently; prefer folding the negative-guard assertion into the
-  already-allow-listed `tests/test_capabilities_extras.py` to avoid adding a new file at all. (The
-  README/`docs/protocol.md` capabilities & extras table — including dia's `streaming:false` flag — and
-  the justfile/port/renderer/drift-test surfaces are all covered by the single atomic dia-enablement
-  commit above.)
+- [ ] Packaging/CI: the `pyproject.toml` `dia` extra is `mlx-audio==0.4.4`; the macOS smoke job already
+  syncs `--all-extras`, so a new extra is install-smoked automatically; also add the dia backend module
+  to the macOS import-smoke block so lazy module import is exercised. Backend synth tests stay
+  local/mlx-gated only.
+
+### Phase 3 — Dialogue smoke driver (manual, listen-and-judge)
+
+**Impl files:** tests/smoke/dia_dialogue_smoke.py
+**Test files:** none
+
+No `Test command:` (listen-and-judge, mlx-gated, no CI assertion) — conduct creates the driver and skips
+tests with a warning; the human runs it against a live dia server afterward.
+
+- [ ] **`tests/smoke/dia_dialogue_smoke.py`** (net-new, mlx-gated, dia-only, **listen-and-judge** —
+  NOT a CI assertion; mirrors `tests/smoke/latency_smoke.py` + `examples/reference_client.py`).
+  Connects a real client to a real dia server, sends crafted dialogue scripts, writes one WAV per
+  script, prints their paths for a human to judge. Structural asserts (cheap, non-perceptual): non-empty
+  audio per script AND a per-script sample-count sanity bound (finite, roughly proportional to text
+  length). Perceptual "two distinct speakers" / "natural resumption" cannot be cheaply auto-verified —
+  left to the human. **Also add a local-only mlx-gated regression guard** re-running the Phase 0
+  cross-commit byte-identity check (`X_alone == X_after` under `seed`+`temperature=0.0`) so a future
+  `mlx-audio` bump that silently reintroduces cross-call coupling is caught (pins the load-bearing
+  statelessness finding decision #3 rests on).
+  Scripts:
+  1. **Turn-taking** — `[S1]…[S2]…[S1]…`; does speaker identity stay consistent across turns?
+  2. **Interruption + resumption, BOTH layouts** (the load-bearing test for decision #3): (a) inline
+     tags, single segment (no `\n`); (b) newline-separated turns. Both ride in ONE commit (decision #3:
+     cross-segment state holds within a commit), so the comparison is now in-context continuity inline
+     vs `\n`-separated, NOT segment independence. S1 starts a sentence, S2 cuts in, S1 finishes the
+     *same* sentence; listen for whether S1 resumes naturally vs disjointly.
+  3. **Short backchannel** — covered inside `podcast_turntaking.txt` as a one-word S2 interjection
+     ("Mm-hmm") inside an S1 turn.
+  This is scripted (in-text) interruption — distinct from protocol `response.cancel` barge-in, which
+  is terminal (no resume). Record the (a)-vs-(b) prosodic-continuity result in Findings after the
+  first dia run; it tells the client whether to keep turns newline-free. (Smoke drivers live in
+  `tests/smoke/` and run manually — no lean allow-list change.) Transcript fixtures are already
+  committed at `tests/smoke/fixtures/dia/` (`podcast_turntaking.txt` for turn-taking;
+  `interview_interruption_inline.txt` vs `interview_interruption_newline.txt` are the same dialogue in
+  layouts (a)/(b) for the continuity comparison — see that dir's `README.md`).
 
 ## Acceptance Criteria
-- `python -m tts_server serve --backend dia` serves; the `status` **reply dict** carries `backend=dia`
-  + the model rate (lean dict-level assertion, as in `tests/test_status.py:27-45`; the CLI-print path
-  stays a manual/mlx-gated check, not a lean test).
+- `python -m tts_server serve --backend dia` serves; the `status` **reply dict** carries `backend=dia`.
+  The **lean** assertion covers the dict shape + `backend=dia` + presence of the rate field (as in
+  `tests/test_status.py:27-45`); the rate **value** (44100) is **mlx-gated/local-only** — a lean test
+  cannot load the model, so `sample_rate` is `0` until `start()` (cf. `test_pocket_lean.py:178`). The
+  CLI-print path likewise stays a manual/mlx-gated check.
 - `capabilities()["streaming"] is False`; `capabilities()["extras"] == ["temperature", "top_p"]`
   (ordered list, matching `docs/protocol.md` + `tests/test_capabilities_extras.py`) and excludes
   `ref_audio`/`ref_text`.
@@ -242,4 +315,63 @@ around it. (`/review-plan` 2026-06-29 flagged each item below as a fact stated w
   backend-add template; *Locked design decisions* #2 (no `ref_audio`/cloning), R7 (per-backend
   extras), R1/R3 (rate contract), and the *Per sub-phase* checklist all apply here.
 
-<!-- reviewed: 2026-06-29 @ fe4fae4eacd3f64227cb5488d95faca05002b957 -->
+<!-- reviewed: 2026-06-30 @ 0a663bc184ed8dfeaef4f52f2f205df409bd3f56 -->
+
+## Progress
+
+- [x] Phase 0: Verify dia against the live model (GATE) — complete 2026-06-30; 5/6 pass, decision #3 redesigned (see Findings)
+- [ ] Phase 1: dia backend module + lean tests
+- [ ] Phase 2: Atomic dia-enablement wiring
+- [ ] Phase 3: Dialogue smoke driver (manual, listen-and-judge)
+
+## Findings
+
+### Phase 0 gate run — 2026-06-30 (live model, `mlx-community/Dia-1.6B-fp16`, `mlx-audio==0.4.4`)
+
+Ran the six-item gate against the real model (Apple Silicon, throwaway env). **5 of 6 PASS; the
+segment-independence check RESOLVED in the negative — decision #3 RE-OPENS.**
+
+| # | Check | Result | Evidence |
+|---|-------|--------|----------|
+| 1 | dia loads from pinned wheel + concrete repo id | ✅ PASS | `mlx-community/Dia-1.6B-fp16` loads via `mlx_audio.tts.utils.load(..., lazy=False, strict=True)`; model type `Model` |
+| 2 | Live `generate()` signature; `ref_text` real | ✅ PASS | `generate(text, voice=None, temperature=1.3, top_p=0.95, split_pattern='\n', max_tokens=None, verbose=False, ref_audio=None, ref_text=None, **kwargs)` — `ref_text` present, so its negative-guard is meaningful |
+| 5 | `model.sample_rate` populated pre-warmup | ✅ PASS | **`model.sample_rate == 44100`** (NOT Kokoro's 24000) — wire this through the rate contract |
+| 3 | Bridge contract (iterator of 1-D float32 mono `.audio`) | ✅ PASS | iterator-like; item-0 `.audio` ndim=1, dtype=float32. "reuses `_stream_util`, no server change" holds |
+| 4 | No-voice generation works | ✅ PASS | `generate(text)` with no `voice` produces audio (unlike Kokoro's broadcast error) |
+| 6 | Segment independence (decision #3 premise) | ❌ **FALSIFIED** | dia carries **cross-segment state** — see control below |
+
+**Check #6 control experiment (seeded, `temperature=0.0`):** rendered a 2-turn dialogue with a fixed S2
+turn three times — twice with identical input (A, B), once with turn-1 edited (C):
+- **A == B** (same input): `True` → decoding is deterministic; differences are real, not sampling noise.
+- **A == C** (turn-1 edited, S2 unchanged): `False` (S2 = 116299 samples vs 154699) → editing the
+  earlier turn changes the later turn's audio.
+
+Conclusion: dia is **autoregressive across `\n`-separated turns**; the segments are NOT independent.
+This is the opposite of Kokoro and falsifies decision #3's premise. Per the Phase 0 gate instruction,
+**decision #3 re-opens before any wiring.**
+
+**Cross-commit (cross-`generate()`-call) state check — 2026-06-30:** to size the redesign, also checked
+whether a *second* `generate()` call is influenced by the first (the server feeds one commit → one
+`generate(committed_text)` call, so this is the across-commit question). Seeded: `X_alone` = render
+`textX` with no prior call; `X_after` = render `textPRIOR` then `textX`. Result: **`X_alone == X_after`
+→ True** (byte-identical, 575126 samples). dia's `generate()` is **stateless across calls** — no hidden
+order-dependent coupling. So **incremental committing is safe**: each commit is a clean independent
+coherence unit. The only cost is that a later commit is not conditioned on an earlier one (coherence
+resets at the boundary). This makes commit granularity a deliberate client-side latency-vs-coherence
+knob (see redesigned decision #3), not a correctness hazard.
+
+**Implications — RESOLVED in redesigned decision #3 (2026-06-30):**
+1. **Chunking contract.** Resolved: one commit = one coherence unit. The client chooses granularity —
+   whole dialogue in one commit (max coherence) OR incremental commits (lower latency, coherence resets
+   per commit; verified safe via the cross-commit check above). Incremental committing is *supported*,
+   not forbidden — the interim "whole dialogue only" framing was superseded once cross-commit
+   statelessness was confirmed.
+2. **Cancel / Metal-lock tension.** Resolved: the latency-vs-coherence knob doubles as a
+   barge-in-responsiveness knob — smaller commits shorten each `generate()` lock-hold. `response.cancel`
+   stays client-visible-prompt (~1 ms). See decision #3's cancel/Metal-lock bullet.
+3. **Newline-layout smoke (script 2 a-vs-b).** Resolved: both layouts ride in ONE commit, so the smoke
+   now compares in-context continuity (inline vs `\n`-separated) within a coherent commit, not segment
+   independence.
+
+The five passing facts (repo id, `ref_text`, `sample_rate=44100`, bridge contract, no-voice gen) are
+verified and stand regardless of the decision-#3 redesign.
