@@ -135,8 +135,9 @@ holding the lock for the duration of one commit.
 
 Built **per backend** — never copied across backends. **Shipped backends:** `kokoro`
 (`streaming:false`, Apache-2.0), `voxtral_tts` (`streaming:true`, CC-BY-NC weights),
-`pocket_tts` (`streaming:true`, CC-BY-4.0 weights — see README → *Backends & licenses*),
-and the dependency-free `tone` reference. Kokoro example
+`pocket_tts` (`streaming:true`, CC-BY-4.0 weights), `dia` (`streaming:false`,
+multi-speaker **dialogue**, `voice_count:0`, Apache-2.0 weights — see README →
+*Backends & licenses*), and the dependency-free `tone` reference. Kokoro example
 (fields VERIFIED via `scripts/verify_mlx_tts_api.py --load`, 2026-06-24, mlx-audio 0.4.4):
 
 ```jsonc
@@ -158,10 +159,32 @@ and the dependency-free `tone` reference. Kokoro example
 | `binary_audio` | bool | `false` for v1 (audio is base64-in-JSON). |
 | `text_formats` | string[] | Accepted `text_format` values. Only `"plain"` for Kokoro v1. |
 | `languages` | string[] | ISO codes the backend supports (backend maps ISO → its own code, e.g. Kokoro `lang_code`). A `language` outside this list is rejected with `invalid_config` — the server validates before synthesis; it is **not** silently coerced to a default. |
-| `voice_count` | int | Number of distinct voices. Full list via `server.status`. |
+| `voice_count` | int | Number of distinct voices. Full list via `server.status`. `0` ⇒ the backend has **no voice concept** (e.g. `dia`, whose speakers are addressed in-text); the server then **accepts** a supplied `voice` rather than rejecting it, and the backend ignores it. |
 | `extras` | string[] | Names of `generate()` kwargs the backend forwards. **Per-backend, real-and-effective only** (a kwarg the model ignores is dropped, never advertised). Kokoro→`["speed"]`; voxtral_tts→`["temperature","top_k","top_p"]`; pocket_tts→`["temperature"]`; dia→`["temperature","top_p"]`. `ref_audio` is **never** advertised (no voice cloning in v1). |
 | `ideal_words` | int | Soft per-commit size hint; client rounds **up to the next sentence boundary**. Not a hard limit. |
 | `max_text_chars` | int | Hard cap on buffered text per commit; over-limit → error. |
+
+### `dia` dialogue text + the `text_formats` overload (Option A, and the Option B upgrade path)
+
+`dia` is a multi-speaker **dialogue** backend: a client addresses speakers purely
+in-text with `[S1]`/`[S2]` tags inside an ordinary `text_format: "plain"` payload
+(`voice_count: 0`; `voice` is ignored). The server does **not** parse or interpret
+the tags — it forwards the committed buffer to `generate()` untouched, so the
+dialogue contract lives **only in client convention** (this is the deliberate
+"Option A — no server-side change"; `text_formats` stays `["plain"]`).
+
+**Accepted cost (prominent on purpose):** because dialogue text rides inside
+`plain`, the wire format is undocumented and the server cannot tell dialogue text
+from ordinary plain text. It therefore **cannot reject** `[S1]`/`[S2]` tags aimed at
+a non-dialogue backend — Kokoro would read them aloud literally (e.g. "bracket S
+one"). This is a silent-misrender vector the moment a second dialogue-aware consumer
+or a mixed-backend deployment appears.
+
+**Option B (deferred upgrade path):** if a fail-loud guarantee is later wanted, make
+`text_formats` a genuine per-backend capability and the server's text-format
+validation capability-driven (advertise e.g. `dialogue` for `dia`, reject it for
+backends that don't list it). This is the documented upgrade from the Option A
+overload — not optional once mixed-backend or multi-consumer deployments arrive.
 
 ---
 

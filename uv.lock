@@ -1958,6 +1958,10 @@ dependencies = [
 client = [
     { name = "websockets" },
 ]
+dia = [
+    { name = "mlx-audio" },
+    { name = "websockets" },
+]
 examples = [
     { name = "pipecat-ai" },
     { name = "websockets" },
@@ -1990,18 +1994,20 @@ dev = [
 requires-dist = [
     { name = "misaki", extras = ["en"], marker = "extra == 'kokoro'" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'voxtral-tts'", specifier = ">=1.11,<2" },
+    { name = "mlx-audio", marker = "extra == 'dia'", specifier = "==0.4.4" },
     { name = "mlx-audio", marker = "extra == 'kokoro'", specifier = "==0.4.4" },
     { name = "mlx-audio", marker = "extra == 'pocket-tts'", specifier = "==0.4.4" },
     { name = "mlx-audio", marker = "extra == 'voxtral-tts'", specifier = "==0.4.4" },
     { name = "pipecat-ai", marker = "extra == 'examples'", specifier = "==1.4.0" },
     { name = "websockets", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'client'", specifier = ">=13.0" },
+    { name = "websockets", marker = "extra == 'dia'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'examples'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'kokoro'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'pocket-tts'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'voxtral-tts'", specifier = ">=13.0" },
 ]
-provides-extras = ["client", "kokoro", "voxtral-tts", "pocket-tts", "examples"]
+provides-extras = ["client", "kokoro", "voxtral-tts", "pocket-tts", "dia", "examples"]
 
 [package.metadata.requires-dev]
 dev = [

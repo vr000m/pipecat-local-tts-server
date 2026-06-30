@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dia` backend** (formerly v1 Phase 5c, now its own plan) — a multi-speaker
+  **dialogue** backend, `streaming:false` and segment-level (`split_pattern='\n'`,
+  like Kokoro). Speakers are addressed **purely in-text** via `[S1]`/`[S2]` tags
+  inside an ordinary `text_format: "plain"` payload (Option A — no server-side
+  change): the backend advertises `voice_count: 0`, so the server accepts a
+  supplied `voice` and the backend **structurally ignores** it (`_DiaStream` takes
+  no `voice` param). Behind the new `dia` extra (just `mlx-audio==0.4.4`, like
+  Pocket); model `mlx-community/Dia-1.6B-fp16`, **Apache-2.0** (commercial-safe).
+  Rate **44100 Hz** (read from `model.sample_rate`). Advertised `extras`:
+  `temperature`/`top_p` (no `ref_audio`/`ref_text` → no voice cloning, decision #2);
+  `validate_extras` clamps/rejects out-of-range or non-finite values. Wired into
+  `--backend` and `make_backend`; canonical launchd port **9065**. The dialogue
+  contract lives only in client convention — see `docs/protocol.md` §6 (Option A /
+  Option B upgrade path). Manual `tests/smoke/dia_dialogue_smoke.py`
+  (listen-and-judge, mlx-gated) drives the live dialogue check.
+
 ### Fixed
 
 - **Websocket keepalive no longer truncates in-flight TTS under Metal/GIL load.**
@@ -26,7 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the client's keepalive either). New behavioral tests in `test_keepalive.py`
   assert both directions off the live connection objects and that the server reaps
   a peer which completes the handshake then stops answering pings.
-
 ## [0.2.0] - 2026-06-28
 
 ### Added

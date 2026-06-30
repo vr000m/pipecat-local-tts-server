@@ -13,7 +13,7 @@
 #
 # Environment overrides:
 #   PIPECAT_TTS_LABEL    launchd label / plist filename (default: pipecat.tts-server)
-#   PIPECAT_TTS_BACKEND  backend name: tone|kokoro|voxtral_tts|pocket_tts (default: tone)
+#   PIPECAT_TTS_BACKEND  backend name: tone|kokoro|voxtral_tts|pocket_tts|dia (default: tone)
 #   PIPECAT_TTS_HOST     loopback host to bind (default: 127.0.0.1)
 #   PIPECAT_TTS_PORT     TCP port to bind (default: 8665 — the tone agent port)
 #   PIPECAT_TTS_MODEL    model id (optional; backend-aware fallback applies when unset)

@@ -19,9 +19,12 @@ Use `uv` for everything (a bare `python -m tts_server` uses the system interpret
 and fails on the missing `websockets`).
 
 ```sh
-uv sync --extra client     # lean base (websockets) — client/bot consumer
-uv sync --extra kokoro     # Kokoro backend (Apple Silicon; mlx-audio==0.4.4 + misaki[en])
-uv sync --extra examples   # reference Pipecat adapter (pins pipecat-ai==1.4.0)
+uv sync --extra client      # lean base (websockets) — client/bot consumer
+uv sync --extra kokoro      # Kokoro backend (Apple Silicon; mlx-audio==0.4.4 + misaki[en])
+uv sync --extra voxtral_tts # Voxtral TTS — streaming:true (mlx-audio==0.4.4 + mistral-common[audio]); CC-BY-NC weights
+uv sync --extra pocket_tts  # Pocket TTS — streaming:true (mlx-audio==0.4.4); CC-BY-4.0 weights
+uv sync --extra dia         # dia DIALOGUE — streaming:false, voice_count:0 (mlx-audio==0.4.4); Apache-2.0 weights
+uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 ```
 
 ## CLI (`python -m tts_server <subcommand>`)
@@ -30,7 +33,7 @@ Endpoint precedence everywhere: **URI > socket > host+port**.
 
 | Subcommand | Flags | Notes |
 |---|---|---|
-| `serve` (default) | `--backend {tone,kokoro}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). No `--uri` (the listener is built from socket-path/host+port). |
+| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). No `--uri` (the listener is built from socket-path/host+port). |
 | `status` | `--socket-path`, `--host`, `--port`, `--uri <ws://…>`, `--auth-token-file`, `--timeout <s>` (default `3.0`), `--json` | Preflight health probe: handshake + `server.status`, prints backend/model/rate/caps/queue-depth/voices/uptime/pid. Exits non-zero if unreachable. `--json` emits raw `hello`+`status`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
@@ -59,8 +62,9 @@ uv run pytest tests/test_kokoro_backend.py # mlx-gated synthesis (Apple Silicon 
 
 CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
 explicit allow-list of lean test files — extend it when adding a lean test), an
-**examples** job (pinned pipecat-ai), and a **macOS smoke** job (verifies the
-kokoro extra resolves/imports; does not run synthesis). See
+**examples** job (pinned pipecat-ai), and a **macOS smoke** job (`--all-extras`;
+verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
+/ pocket_tts / dia — does not run synthesis). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a

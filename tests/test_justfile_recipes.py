@@ -8,9 +8,9 @@ The backend -> ``(label, host, port)`` map has THREE copies that must agree:
 
 The authoritative backend SET is the ``--backend`` choices tuple in
 ``tts_server/__main__.py`` (the server's trust anchor). This test derives that
-set DYNAMICALLY (it does not hardcode the four names) and asserts the resolver,
-README, and renderer cover exactly those backends, and that ``dia`` (reserved,
-not yet a ``--backend`` choice) is absent from all three. It also drives
+set DYNAMICALLY (it does not hardcode the backend names) and asserts the
+resolver, README, and renderer cover exactly those backends, and that ``dia``
+(now a wired ``--backend`` choice) is present in all three. It also drives
 ``just _resolve <b>`` per backend and asserts the emitted ``(label host port)``.
 
 ``just`` is invoked as a subprocess; if ``just`` is not on PATH the subprocess
@@ -101,8 +101,7 @@ def test_renderer_allowlist_matches_argparse_backends():
     renderer = _load_renderer()
     for b in backends:
         assert renderer._BACKEND_RE.match(b), f"renderer rejects wired backend {b!r}"
-    # And it rejects a reserved/unknown name.
-    assert not renderer._BACKEND_RE.match("dia")
+    # And it rejects an unknown name.
     assert not renderer._BACKEND_RE.match("bogus")
 
 
@@ -115,12 +114,14 @@ def test_readme_table_covers_exactly_the_argparse_backends():
         assert label == f"pipecat.tts-server.{backend}"
 
 
-def test_dia_is_absent_from_readme_and_renderer():
+def test_dia_is_present_in_readme_and_renderer():
+    """``dia`` is now a wired backend: it is in the argparse choices, the README
+    port table, and the renderer allowlist (matching the other backends)."""
     table = _readme_port_table()
-    assert "dia" not in table
+    assert "dia" in table
     renderer = _load_renderer()
-    assert not renderer._BACKEND_RE.match("dia")
-    assert "dia" not in _argparse_backends()
+    assert renderer._BACKEND_RE.match("dia")
+    assert "dia" in _argparse_backends()
 
 
 @_skip_no_just
@@ -145,10 +146,12 @@ def test_resolve_unknown_backend_exits_nonzero():
 
 
 @_skip_no_just
-def test_resolve_dia_exits_nonzero():
-    """``dia`` is reserved and intentionally NOT in the resolver map."""
-    r = _resolve("dia")
-    assert r.returncode != 0
+def test_resolve_dia_exits_zero_with_canonical_port():
+    """``dia`` is now wired into the resolver map at its canonical port 9065."""
+    label, host, port = _resolve_fields("dia")
+    assert label == "pipecat.tts-server.dia"
+    assert host == "127.0.0.1"
+    assert port == 9065
 
 
 # ---------------------------------------------------------------------------

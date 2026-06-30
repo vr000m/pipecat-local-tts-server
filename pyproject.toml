@@ -85,6 +85,22 @@ voxtral_tts = ["websockets>=13.0", "mlx-audio==0.4.4", "mistral-common[audio]>=1
 # commercial-safe. The package ships only runtime; weights download on first
 # ``serve``. See README → "Backends & licenses".
 pocket_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
+# Full server install with the dia multi-speaker DIALOGUE mlx-audio backend
+# (Phase 5c / its own plan) — a segment-level (``split_pattern='\n'``, like
+# Kokoro) ``streaming:false`` backend. Speakers are addressed purely in-text via
+# ``[S1]``/``[S2]`` tags inside ``plain`` text (``voice_count: 0``); no voice
+# cloning (``ref_audio``/``ref_text`` left unwired, decision #2).
+#
+# mlx-audio is pinned to 0.4.4 (R8). dia needs NO bespoke tokenizer dep — like
+# Pocket, its tokenizer and transitive deps come through mlx-audio — so this
+# extra is just mlx-audio (unlike kokoro's misaki / voxtral_tts's
+# mistral-common).
+#
+# LICENSE NOTE: the dia weights (``mlx-community/Dia-1.6B-fp16``) are released
+# under **Apache-2.0** — permissive, commercial use allowed. The package ships
+# only runtime; weights download on first ``serve``. See README → "Backends &
+# licenses".
+dia = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

@@ -42,6 +42,10 @@ uv add "pipecat-local-tts-server[voxtral_tts]"
 # Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.4.4).
 # Weights are CC-BY-4.0 (commercial OK with attribution).
 uv add "pipecat-local-tts-server[pocket_tts]"
+
+# dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
+# tags (Apple Silicon; mlx-audio==0.4.4). Weights are Apache-2.0 (commercial-safe).
+uv add "pipecat-local-tts-server[dia]"
 ```
 
 From source (development):
@@ -61,6 +65,10 @@ uv sync --extra voxtral_tts
 # Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.4.4).
 # Weights are CC-BY-4.0 (commercial OK with attribution).
 uv sync --extra pocket_tts
+
+# dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
+# tags (Apple Silicon; mlx-audio==0.4.4). Weights are Apache-2.0 (commercial-safe).
+uv sync --extra dia
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -101,6 +109,7 @@ and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
 | kokoro | `pipecat.tts-server.kokoro` | 8765 |
 | voxtral_tts | `pipecat.tts-server.voxtral_tts` | 8865 |
 | pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
+| dia | `pipecat.tts-server.dia` | 9065 |
 
 ```sh
 # install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
@@ -112,7 +121,7 @@ just tts-status kokoro   # probe one backend's canonical host:port
 > `kokoro=8765` is assumed free and is **not** collision-checked — it matches
 > this repo's own kokoro examples. A launchd tts agent binds a loopback port, so
 > two installed agents never collide; the only risk is an ad-hoc process you run
-> by hand on the same port. The `dia` backend is reserved and not yet shipped.
+> by hand on the same port.
 
 > **launchd does not inherit your shell environment.** Server-runtime env you set
 > for an ad-hoc `serve` is *not* carried into an installed agent, so it is handled
@@ -235,11 +244,13 @@ Operators are responsible for honouring each model's license.
 | `kokoro` | `kokoro` | `false` | mlx-community/Kokoro-82M-bf16 | Apache-2.0 (commercial-safe) |
 | `voxtral_tts` | `voxtral_tts` | `true` | mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 | **CC-BY-NC (non-commercial)** |
 | `pocket_tts` | `pocket_tts` | `true` | mlx-community/pocket-tts | CC-BY-4.0 (commercial OK w/ attribution) |
+| `dia` | `dia` | `false` | mlx-community/Dia-1.6B-fp16 | Apache-2.0 (commercial-safe) |
 
 > **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
 > **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`
-> (CC-BY-4.0) and Kokoro (Apache-2.0) are commercial-safe (pocket needs
-> attribution). The choice of backend (and thus of model license) is the operator's.
+> (CC-BY-4.0), `dia` (Apache-2.0), and Kokoro (Apache-2.0) are commercial-safe
+> (pocket needs attribution). The choice of backend (and thus of model license)
+> is the operator's.
 
 ### Voxtral TTS capabilities (as shipped)
 
@@ -277,6 +288,35 @@ mlx-community/pocket-tts (mlx-audio 0.4.4):
 | `extras` | `["temperature"]` | Pocket's only effective sampling kwarg (`ref_audio`/`frames_after_eos` never advertised; `streaming_interval` is backend config) |
 | `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
 | `max_text_chars` | `2000` | hard server cap |
+
+### dia capabilities (as shipped)
+
+A multi-speaker **dialogue** backend, `streaming:false` and segment-level
+(`split_pattern='\n'`, like Kokoro). Speakers are addressed **purely in-text** via
+`[S1]`/`[S2]` tags inside an ordinary `plain` payload — the server forwards the
+buffer untouched and never parses the tags. There is **no voice concept**
+(`voice_count: 0`): a supplied `voice` is accepted by the server and structurally
+ignored by the backend. No voice cloning (`ref_audio`/`ref_text` left unwired,
+decision #2). Verified against mlx-community/Dia-1.6B-fp16 (mlx-audio 0.4.4):
+
+| Field | Value | Note |
+|---|---|---|
+| rate | **44100** | from `server.hello.audio.rate`, read from `model.sample_rate` (NOT 24000) |
+| `streaming` | `false` | no sub-segment streaming; each `\n`-separated turn streams as it completes |
+| `binary_audio` | `false` | base64-in-JSON for v1 |
+| `text_formats` | `["plain"]` | dialogue `[S1]`/`[S2]` tags ride **inside** plain text (undocumented on the wire — see `docs/protocol.md` §6, Option A/B) |
+| `languages` | `["en"]` | English verified on-host |
+| `voice_count` | `0` | no enumerable voices; speakers are in-text `[S1]`/`[S2]` tags |
+| `extras` | `["temperature","top_p"]` | dia's effective sampling kwargs (`ref_audio`/`ref_text` never advertised — no cloning) |
+| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
+| `max_text_chars` | `2000` | hard server cap |
+
+> **A commit is the unit of coherence.** dia is autoregressive *within* a single
+> commit (every turn conditions on the others) but **stateless across commits**
+> (context resets at the boundary). Committing the whole dialogue at once maximises
+> cross-turn coherence; incremental commits lower latency at the cost of a coherence
+> reset per commit (both are supported). Never split a single `[S1]…` turn across
+> two commits. See the dev plan's *Resolved design decisions* #3.
 
 ### Kokoro capabilities (as shipped)
 

@@ -16,8 +16,7 @@
 #
 # The Unix socket stays the DEFAULT for a single ad-hoc server / README
 # quick-start (`pipecat.tts-server` -> `tts.sock`); ports are the multi-backend
-# convention. `dia` is reserved and intentionally NOT in this map (no --backend
-# choice until its own plan lands — adding it here would turn the drift test red).
+# convention.
 #
 # tts-disable vs tts-uninstall: the rendered plist sets RunAtLoad=True +
 # KeepAlive=True. So `tts-disable` (launchctl bootout, plist kept) takes the agent
@@ -43,7 +42,6 @@ default:
 # no `mapfile`); fail fast on unknown. `quote()` shell-escapes the interpolated
 # arg so it can never break out of the `case` — the `case` arms are the
 # allowlist. This is the canonical port map (must match README + renderer).
-# `dia` is reserved and deliberately absent.
 _resolve backend:
     #!/usr/bin/env bash
     backend={{quote(backend)}}
@@ -52,7 +50,8 @@ _resolve backend:
       kokoro)      printf '%s\n' "pipecat.tts-server.kokoro"      "127.0.0.1" "8765" ;;
       voxtral_tts) printf '%s\n' "pipecat.tts-server.voxtral_tts" "127.0.0.1" "8865" ;;
       pocket_tts)  printf '%s\n' "pipecat.tts-server.pocket_tts"  "127.0.0.1" "8965" ;;
-      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts)" >&2; exit 1 ;;
+      dia)         printf '%s\n' "pipecat.tts-server.dia"         "127.0.0.1" "9065" ;;
+      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts, dia)" >&2; exit 1 ;;
     esac
 
 # Extract the serve endpoint from an installed agent's plist ProgramArguments.
@@ -168,7 +167,7 @@ tts-list:
 #
 # With NO argument, probes the canonical ad-hoc Unix socket (the README
 # quick-start default). With a known backend name (tone/kokoro/voxtral_tts/
-# pocket_tts) it resolves that backend's canonical --host/--port from the
+# pocket_tts/dia) it resolves that backend's canonical --host/--port from the
 # _resolve map and probes the port. Any other value is treated as a literal
 # socket path (the previous override behaviour is preserved as a fallback).
 #
@@ -193,7 +192,7 @@ tts-status target=(cache_dir / "tts.sock"):
       exec uv run python -m tts_server status --socket-path "$target" --timeout "$timeout"
     fi
     case "$target" in
-      tone|kokoro|voxtral_tts|pocket_tts)
+      tone|kokoro|voxtral_tts|pocket_tts|dia)
         resolved=$(just _resolve "$target") || exit 1
         # One field per line; three reads keep this bash-3.2-compatible.
         { read -r label; read -r host; read -r port; } <<<"$resolved"
@@ -379,6 +378,12 @@ smoke-voxtral_tts *args:
 # Auto-syncs the pocket_tts extra if missing (CC-BY-4.0 weights; see README).
 smoke-pocket_tts *args:
     tests/smoke/run_smoke.sh --backend pocket_tts {{args}}
+
+# dia DIALOGUE backend (streaming:false). Structural WAV round-trip of a tagged
+# [S1]/[S2] dialogue. Auto-syncs the dia extra if missing (Apache-2.0 weights).
+# Perceptual two-speaker check lives in tests/smoke/dia_dialogue_smoke.py.
+smoke-dia *args:
+    tests/smoke/run_smoke.sh --backend dia {{args}}
 
 # Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
 smoke-multiconn *args:

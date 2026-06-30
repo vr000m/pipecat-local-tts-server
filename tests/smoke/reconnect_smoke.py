@@ -48,13 +48,18 @@ try:
 except ImportError:  # pragma: no cover - dependency hint
     sys.exit("This client needs the 'websockets' package: uv pip install websockets")
 
-# Per-backend default voice. Extend as new streaming backends land (voxtral_tts,
-# pocket_tts) so the reconnect cycle is verified per-backend.
+# Per-backend default voice. Extend as new backends land (voxtral_tts,
+# pocket_tts, dia) so the reconnect cycle is verified per-backend. The mlx-backed
+# rows stay commented out by default — they have dedicated smokes and need their
+# extra synced — but enabling a row here is a one-line opt-in. ``dia`` has
+# ``voice_count: 0`` (speakers are in-text via [S1]/[S2]); its default "voice" is
+# ``None`` (the backend ignores any supplied voice).
 DEFAULT_VOICE = {
     "tone": "tone",
     "kokoro": "af_heart",
     # "voxtral_tts": "casual_male",
     # "pocket_tts": None,
+    # "dia": None,
 }
 
 TEXT = "The quick brown fox jumps over the lazy dog."
