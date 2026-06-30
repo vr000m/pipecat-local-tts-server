@@ -1,0 +1,7 @@
+[S1] Welcome back to the show. Last week you went on record saying this thing would never ship on time, and yet here we are.
+[S2] I did say that, and I am happy to eat my words. The numbers came back this morning and they are genuinely hard to argue with.
+[S1] Mm-hmm. So what actually changed your mind?
+[S2] Honestly? The latency. We were staring at almost a full second of lag before, and now it is down to about two hundred milliseconds.
+[S1] That is a massive jump. But does it hold up under real load, or is this just a clean lab result on a quiet afternoon?
+[S2] (laughs) That is exactly the right question. I would want to watch it survive a Friday night traffic spike before I call it production ready.
+[S1] Fair enough. Let us leave it there and pick this back up once you have those Friday numbers.
