@@ -52,6 +52,13 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
         from .pocket_tts import DEFAULT_POCKET_MODEL, PocketBackend
 
         return PocketBackend(model=model or DEFAULT_POCKET_MODEL)
+    if name == "dia":
+        # Lazy import (same invariant): ``dia.py`` imports ``mlx_audio`` only
+        # inside ``start()``, so this branch does NOT pull ``mlx_audio`` — the
+        # missing-extra failure surfaces in ``start()``.
+        from .dia import DEFAULT_DIA_MODEL, DiaBackend
+
+        return DiaBackend(model=model or DEFAULT_DIA_MODEL)
     # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
     # callable outside the CLI, so it must not terminate the process. The CLI
     # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.

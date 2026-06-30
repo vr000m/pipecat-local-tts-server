@@ -106,3 +106,21 @@ async def test_extra_collision_rejected_on_commit_too():
             await client.commit(extras={"voice": "boom"})
             err = await next_event(client, "error")
             assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
+
+
+# --- dia capabilities (lean, no mlx — constructing the backend is lazy) --------
+
+
+async def test_dia_capabilities_advertise_dialogue_contract():
+    """dia is the segment-level DIALOGUE backend: ``streaming:false`` (uses
+    ``split_pattern``, like Kokoro), extras the ordered ``["temperature", "top_p"]``
+    (matching docs/protocol.md), ``text_formats:["plain"]`` ([S1]/[S2] ride inside
+    plain — decision #2), and ``voice_count:0`` (speaker control is in-text only —
+    decision #1). Constructing ``DiaBackend`` does NOT pull mlx_audio (lazy)."""
+    from tts_server.backends.dia import DiaBackend
+
+    caps = DiaBackend().capabilities()
+    assert caps["streaming"] is False
+    assert caps["extras"] == ["temperature", "top_p"]
+    assert caps["text_formats"] == ["plain"]
+    assert caps["voice_count"] == 0
