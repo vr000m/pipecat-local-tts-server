@@ -36,21 +36,24 @@ Two independent `/review-plan` lenses (architecture, spec-and-testing) flagged 5
 
 1. **Speaker control is purely in-text via `[S1]`/`[S2]` tags.** The client emits the tagged text;
    the server does not parse or interpret it. `voice` does **not** select a speaker. dia advertises
-   **`voice_count: 0`** (no enumerable `voices()`), so `_validate_voice` (`server.py:724`) is skipped
-   and `voice` is omitted from `generate()` (the `voice=None`-OMIT rule, copying
-   `pocket_tts.py:161-165` — the existing analogue).
+   **`voice_count: 0`** (no enumerable `voices()`), so `_validate_voice` (`server.py:724-768`) treats
+   the backend as having no voice concept and accepts a supplied `voice` instead of rejecting or
+   stripping it. Therefore the dia backend itself must ignore `voice` and omit the `voice` kwarg from
+   `generate()` even if `open_stream(voice=...)` receives one; Pocket's conditional `voice=None` omit
+   shape (`pocket_tts.py:160-166`) is only an analogue for building kwargs, not sufficient by itself.
 2. **Dialogue text rides inside `text_format: plain` (Option A — no server-side changes).** `[S1]`/
    `[S2]` are literal characters in a normal `plain` payload; the server forwards the committed buffer
-   untouched (verified `server.py:1006` — text is handed whole to the backend, never re-split server
-   side; the only split is `split_pattern='\n'` *inside* mlx-audio's `generate()`).
+   untouched (verified `server.py:904-925` validates/appends `plain` text without parsing,
+   `server.py:1006` snapshots the buffer, and `server.py:1157` feeds that whole string to the backend;
+   the only split is `split_pattern='\n'` *inside* mlx-audio's `generate()`).
    `SUPPORTED_TEXT_FORMATS` stays `("plain",)` — **no protocol/server change**.
    - **Accepted cost:** the format is undocumented on the wire. The server cannot tell dialogue text
      from plain text, so it cannot reject `[S1]` tags aimed at a non-dialogue backend (e.g. Kokoro
      would read them aloud literally as "bracket S one"). The dialogue contract lives only in client
      convention. If a fail-loud guarantee is later wanted, a per-backend `text_formats` capability
-     (Option B, making `server.py:~904` validation capability-driven) is the upgrade path — deferred.
+     (Option B, making `server.py:904-905` validation capability-driven) is the upgrade path — deferred.
 3. **Chunking stays the client's job; turns must not split mid-tag.** `ideal_words` chunking is
-   already client-side (`server.py:980`); dia keeps `split_pattern='\n'`. The client MUST NOT break a
+   already client-side (`server.py:979-981`); dia keeps `split_pattern='\n'`. The client MUST NOT break a
    `[S1]…` turn across two commits, and MUST NOT place a `\n` inside a turn it wants dia to render as
    one segment. **Open model-quality unknown:** dia generates each `\n`-separated turn as an
    independent segment, so prosodic continuity across an interruption is *not* guaranteed — the
@@ -67,10 +70,12 @@ A `/review-plan` refresh on this resolved design is still recommended before con
   verbose=False, ref_audio=None, ref_text=None, **kwargs)`. **NOT a streaming backend** — no `stream`
   param, uses `split_pattern` (segment-level, like Kokoro) → advertise **`streaming:false`** (assert
   `capabilities()["streaming"] is False`). extras `{temperature, top_p}`.
-- [ ] Apply the `voice=None`-OMIT rule by **copying `pocket_tts.py:161-165`** (the existing analogue —
-  conditionally omit `voice` from the `generate()` call when `None`; NOT Kokoro's `speed`-omit, and
-  Kokoro never omits `voice`). Per *Resolved design decision* #1, dia advertises `voice_count: 0`, so
-  `voice` is always omitted and speaker control is purely in-text.
+- [ ] Apply dia's **voice-ignore/OMIT rule** at the backend boundary. Because the existing server
+  accepts non-`None` `voice` values when `voice_count` is falsy (`server.py:752-768`) and then carries
+  them into `open_stream` (`server.py:1001-1015`, `server.py:1152`), dia must never add `voice` to the
+  `generate()` kwargs, even if a client supplied one. Use Pocket's kwargs-building shape
+  (`pocket_tts.py:160-166`) only as the analogue for conditional kwargs; dia's rule is stricter than
+  Pocket's `voice=None` omit. Test both omitted voice and an explicit ignored voice.
 - [ ] **Leave BOTH `ref_audio` AND `ref_text` unwired** (locked decision #2). Negative-guard test
   must cover `ref_text` too — assert at **both** layers (capabilities exclusion **and** absence at the
   `generate()` call boundary, as in v1 Phase 5b) for `{ref_audio, ref_text}`.
@@ -85,7 +90,7 @@ A `/review-plan` refresh on this resolved design is still recommended before con
 - [ ] **Dialogue-mapping tests** (net-new, the reason this is its own plan): per *Resolved design
   decisions* #1/#2 — assert `[S1]`/`[S2]` text passes through to `generate()` intact (boundary test,
   as in 5b), `text_format` stays `plain`, `capabilities()` advertises `voice_count: 0`, and `voice`
-  is omitted from the `generate()` call.
+  is omitted from the `generate()` call even when a client supplies `voice`.
 - [ ] **`tests/smoke/dia_dialogue_smoke.py`** (net-new, mlx-gated, dia-only, **listen-and-judge** —
   NOT a CI assertion; mirrors `tests/smoke/latency_smoke.py` + `examples/reference_client.py`).
   Connects a real client to a real dia server, sends crafted dialogue scripts, writes one WAV per
@@ -97,7 +102,8 @@ A `/review-plan` refresh on this resolved design is still recommended before con
      tags, single segment (no `\n`) — in-segment continuity; (b) newline-separated turns — does
      continuity survive dia's per-segment `split_pattern='\n'`? S1 starts a sentence, S2 cuts in, S1
      finishes the *same* sentence; listen for whether S1 resumes naturally vs disjointly.
-  3. **Short backchannel** — a one-word S2 interjection ("mm-hmm") inside an S1 turn.
+  3. **Short backchannel** — covered inside `podcast_turntaking.txt` as a one-word S2 interjection
+     ("Mm-hmm") inside an S1 turn.
   This is scripted (in-text) interruption — distinct from protocol `response.cancel` barge-in, which
   is terminal (no resume). Record the (a)-vs-(b) prosodic-continuity result in Findings after the
   first dia run; it tells the client whether to keep turns newline-free. (Smoke drivers live in
@@ -110,25 +116,44 @@ A `/review-plan` refresh on this resolved design is still recommended before con
 - [ ] **ONE atomic "dia-enablement" commit (mandatory — avoids a red intermediate state).** Several
   existing drift tests *assert `dia` is absent* and flip to red the instant `dia` becomes a known
   backend, so every surface that names the backend set MUST change together. In a single commit:
-  1. `make_backend` resolver (`tts_server/backends/__init__.py`, lazy-import branch, `mlx_audio` only
-     in `start()`);
-  2. argparse `--backend` choices tuple (`tts_server/__main__.py`) — a passing `make_backend` unit
-     test will NOT catch a missing `--backend` choice;
-  3. renderer `_BACKEND_RE` (`scripts/render_tts_plist.py`) + `render_tts_plist.py` defaults;
-  4. README port table + the `docs/protocol.md`/README capabilities & extras table;
-  5. justfile `_resolve` `(label, port)` row (`pipecat.tts-server.dia` → 9065 — the v1-reserved port);
-  6. **invert the dia-absence assertions** in `tests/test_justfile_recipes.py`
+  1. backend module + `make_backend` resolver (`tts_server/backends/dia.py`,
+     `tts_server/backends/__init__.py`, lazy-import branch, `mlx_audio` only in `start()`);
+  2. CLI backend surface (`tts_server/__main__.py`): `_resolve_model` default branch
+     (`__main__.py:34-56`) plus argparse `--backend` choices tuple (`__main__.py:306-310`) — a
+     passing `make_backend` unit test will NOT catch a missing `--backend` choice;
+  3. packaging/CI surface: `pyproject.toml` `dia` extra; `.github/workflows/test.yml` macOS
+     `--all-extras` import-smoke block (`test.yml:115-136`) must import the dia backend module, and
+     the lean allow-list (`test.yml:37-63`) must include any new dia lean test file;
+  4. renderer/launchd validation surface: renderer `_BACKEND_RE` and backend hint string
+     (`scripts/render_tts_plist.py:56-58`, `scripts/render_tts_plist.py:186-191`) plus
+     `scripts/install_tts_agent.sh:16` backend comment;
+  5. docs/operator surfaces that name the shipped backend set: README install snippets, port table,
+     backend/license/capabilities tables (`README.md:35-44`, `README.md:98-115`, `README.md:217-264`);
+     `docs/protocol.md` shipped-backends/extras table (`docs/protocol.md:136-162`); `AGENTS.md`
+     quick CLI/install/CI references (`AGENTS.md:21-24`, `AGENTS.md:33`, `AGENTS.md:59-63`);
+     `CHANGELOG.md` reserved-dia note if the release notes are updated in the same branch;
+  6. justfile backend-name surfaces: `_resolve` `(label, port)` row
+     (`pipecat.tts-server.dia` → 9065 — the v1-reserved port), unknown-backend message, and
+     `tts-status` backend-name case (`justfile:41-56`, `justfile:169-201`);
+  7. generic/manual smoke surfaces that name or branch on the backend set: `tests/smoke/run_smoke.sh`
+     backend validation / mlx-extra sync / synthesis case (`run_smoke.sh:52-59`, `run_smoke.sh:163-181`),
+     `tests/smoke/run_multiconn.sh` mlx-extra sync list (`run_multiconn.sh:43-52`), and
+     `tests/smoke/reconnect_smoke.py` `DEFAULT_VOICE` / argparse choices
+     (`reconnect_smoke.py:51-58`, `reconnect_smoke.py:234-237`) if dia is expected to run those
+     generic smokes rather than only `dia_dialogue_smoke.py`;
+  8. **invert the dia-absence assertions** in `tests/test_justfile_recipes.py`
      (`test_dia_is_absent_from_readme_and_renderer`, `test_resolve_dia_exits_nonzero`, and the inline
      `_BACKEND_RE.match("dia")` guard) into positive presence assertions, matching the other backends.
   Add a lean construction/lazy-import test for dia in the same commit. Phase 6 (launchd ops) has
-  **already merged** (v1 plan, PR #7), so all of 3–6 are unconditional — not gated on "if Phase 6 has
-  landed."
+  **already merged** (v1 plan, PR #7), so the launchd/operator surfaces are unconditional — not gated
+  on "if Phase 6 has landed."
 - [ ] Per-backend `sample_rate` discovery (R1/R3): expose `sample_rate` after `start()`/load so
   `server.hello.audio.rate` advertises the true model rate; mlx-gated test reads `model.sample_rate`
   (the config property), **not** a backend literal. dia's rate is per-model and unverified — do not
   assume it matches Kokoro's 24000.
 - [ ] Packaging/CI: add the `pyproject.toml` `dia` extra (`mlx-audio==0.4.4`); the macOS smoke job
-  already syncs `--all-extras` once v1 Phase 5a lands, so a new extra is install-smoked automatically.
+  already syncs `--all-extras` once v1 Phase 5a lands, so a new extra is install-smoked automatically;
+  also add the dia backend module to the macOS import-smoke block so lazy module import is exercised.
   Backend synth tests stay local/mlx-gated only.
 - [ ] If a new lean test file is added, extend the lean allow-list (`.github/workflows/test.yml`) in
   the same commit; prefer folding the negative-guard assertion into the already-allow-listed
@@ -142,7 +167,8 @@ A `/review-plan` refresh on this resolved design is still recommended before con
   (ordered list, matching `docs/protocol.md` + `tests/test_capabilities_extras.py`) and excludes
   `ref_audio`/`ref_text`.
 - `capabilities()` advertises `voice_count: 0` and `text_formats: ["plain"]`; `voice` is omitted from
-  `generate()` and `[S1]`/`[S2]` tags pass through to `generate()` intact (decisions #1/#2).
+  `generate()` even when supplied by a client, and `[S1]`/`[S2]` tags pass through to `generate()`
+  intact (decisions #1/#2).
 - `tests/smoke/dia_dialogue_smoke.py` runs against a live dia server and writes one WAV per script
   (both interruption layouts); the (a)-vs-(b) prosodic-continuity result is recorded in Findings.
 - Lean CI unaffected; `mlx_audio` absent at import time (lazy).
@@ -152,4 +178,4 @@ A `/review-plan` refresh on this resolved design is still recommended before con
   backend-add template; *Locked design decisions* #2 (no `ref_audio`/cloning), R7 (per-backend
   extras), R1/R3 (rate contract), and the *Per sub-phase* checklist all apply here.
 
-<!-- reviewed: 2026-06-29 @ be904cc9fc19e122c94c473512b6a84139104092 -->
+<!-- reviewed: 2026-06-29 @ 3b3f1a0ce66de9bfb7a238730d14be1b47827488 -->

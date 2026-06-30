@@ -13,7 +13,7 @@ dia interprets the `[S1]`/`[S2]` tags itself. The server never parses them.
 
 | File | Scenario | What to listen for |
 |------|----------|--------------------|
-| `podcast_turntaking.txt` | Two podcasters, clean turn-taking + a one-word backchannel (`Mm-hmm`) and a nonverbal (`(laughs)`) | Speaker identity stays consistent across turns; S1 ≠ S2; backchannel and laugh land naturally |
+| `podcast_turntaking.txt` | Two podcasters, clean turn-taking plus an inline one-word S2 backchannel (`Mm-hmm`) inside an S1 turn and a nonverbal (`(laughs)`) | Speaker identity stays consistent across turns; S1 ≠ S2; backchannel and laugh land naturally |
 | `interview_interruption_inline.txt` | Interruption + resumption, **layout (a)**: single segment, no newlines, em-dashes mark the cut and resume | Does S1 resume the *same* sentence with continuous prosody after S2 cuts in? |
 | `interview_interruption_newline.txt` | Interruption + resumption, **layout (b)**: identical text, but each turn on its own line | dia splits on `split_pattern='\n'`, so each turn is an **independent segment** — does S1's resumed line still sound continuous, or does the per-segment boundary make it disjoint? |
 
