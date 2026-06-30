@@ -180,6 +180,10 @@ elif [[ "$BACKEND" == "dia" ]]; then
   # in-text via [S1]/[S2] tags inside a plain payload; no --voice is passed
   # (voice is structurally ignored). This is a structural WAV round-trip; the
   # perceptual two-speaker check lives in dia_dialogue_smoke.py (listen-and-judge).
+  # No latency_check here (unlike voxtral/pocket above): dia decodes at RTF≈2.0
+  # (model floor) and TTFB scales with the first \n-segment's length, so no fixed
+  # --ttfb-bound is meaningful. Latency is measured perceptually in
+  # dia_dialogue_smoke.py instead (see dev plan Phase 3 live smoke run).
   verify "dia/dialogue" "$RUN_DIR/dia.wav" \
     --text "[S1] The quick brown fox jumps over the lazy dog. [S2] Indeed it does."
 elif [[ "$MULTILINGUAL" -eq 0 ]]; then

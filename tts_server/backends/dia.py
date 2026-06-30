@@ -41,7 +41,6 @@ lean-base invariant). Heavy deps stay behind the ``dia`` extra.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import math
 import threading
@@ -63,8 +62,10 @@ _DIA_EXTRAS = ["temperature", "top_p"]
 
 # Params dia's generate() accepts that this backend MUST NEVER forward:
 # ``ref_audio``/``ref_text`` are the voice-cloning channel (decision #2 — no
-# cloning in v1). Kept here to document intent and anchor the negative-guard test;
-# they are dropped by the advertised-extras filter regardless.
+# cloning in v1). This constant is DOCUMENTARY ONLY (and anchors the negative-guard
+# test); it enforces nothing at runtime. The actual enforcement is the allow-list in
+# ``_EXTRA_COERCERS`` — ``open_stream``/``_gen_factory`` copy ONLY those keys, so any
+# kwarg not advertised (these two included) can never reach ``generate()``.
 _FORBIDDEN_GENERATE_KWARGS = ("ref_audio", "ref_text")
 
 # Accepted ranges for the sampling extras. Forwarded under the process-wide Metal
@@ -281,7 +282,17 @@ class DiaBackend:
         an upstream reshape surfaces in the operator log instead of wedging serve.
         Phase 0 (mlx-audio 0.4.4): ``generate(text, voice=None, temperature=1.3,
         top_p=0.95, split_pattern='\\n', max_tokens=None, verbose=False,
-        ref_audio=None, ref_text=None, **kwargs)``."""
+        ref_audio=None, ref_text=None, **kwargs)``.
+
+        Why ONLY dia does this (the siblings — Kokoro/Pocket/Voxtral — pin the
+        same wheel but do NOT re-introspect): dia's ``generate()`` is the only one
+        whose signature carries the live voice-cloning channel (``ref_audio``/
+        ``ref_text`` as real kwargs) alongside a positional-defaulted ``voice``, so
+        an upstream reshape here is both more likely and more consequential. If
+        this guard is ever needed by a second backend, lift it into a shared
+        helper rather than copying it."""
+        import inspect
+
         try:
             sig = inspect.signature(self._loaded_model.generate)
         except (TypeError, ValueError) as exc:  # pragma: no cover - upstream shape

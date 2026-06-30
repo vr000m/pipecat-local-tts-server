@@ -318,6 +318,22 @@ decision #2). Verified against mlx-community/Dia-1.6B-fp16 (mlx-audio 0.4.4):
 > reset per commit (both are supported). Never split a single `[S1]…` turn across
 > two commits. See the dev plan's *Resolved design decisions* #3.
 
+### dia cancellation caveat
+
+dia (like Kokoro) yields one segment per `\n` boundary and the cancel flag is
+only checked at a segment boundary. The **client-visible** cancel is prompt
+regardless: a `response.cancel` is acknowledged with `response.cancelled` in
+~1 ms and no audio follows it. What runs to the segment boundary is the backend
+worker / Metal lock: because dia decodes at **RTF ≈ 2.0** (≈ 2× slower than real
+time — a model floor, not server overhead), a **long single-segment** commit
+holds the lock until its `generate()` reaches the yield (which can be tens of
+seconds for a full turn, bounded by `drain_timeout_seconds`), so the *next*
+commit can't start synthesizing until then. To free the lock sooner for
+back-to-back commits, **chunk at sentence/newline boundaries** — incremental
+commits also shorten the first-segment generate that dominates TTFB. The
+server's hard guarantee is "no more audio after `response.cancelled`". (See the
+dev plan's *Phase 3 live smoke run* for the measured RTF / per-segment latency.)
+
 ### Kokoro capabilities (as shipped)
 
 Built per-backend (`server.hello.capabilities`). Verified against
