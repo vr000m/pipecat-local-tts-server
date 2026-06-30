@@ -74,6 +74,14 @@ Usage:
   # ONLY the mlx-gated checks (no live server needed)
   uv run python tests/smoke/dia_dialogue_smoke.py --statelessness-only --seed 42
 
+  # ALSO run the abrupt-disconnect poison regression guard (live dia server)
+  uv run python tests/smoke/dia_dialogue_smoke.py --socket-path /tmp/tts.sock \
+      --check-disconnect
+
+  # ONLY the disconnect guard
+  uv run python tests/smoke/dia_dialogue_smoke.py --socket-path /tmp/tts.sock \
+      --disconnect-only
+
 Endpoint precedence mirrors the protocol: --uri > --socket-path > --host/--port.
 Exit code 0 only if every structural assert holds and the greedy guard passes
 (the production-temp diagnostic only soft-flags — it never fails the run).
@@ -86,7 +94,9 @@ import asyncio
 import base64
 import statistics
 import sys
+import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 
 from tts_server.backends.dia import DEFAULT_DIA_MODEL
@@ -148,28 +158,50 @@ def _make_client(args: argparse.Namespace) -> TTSClient:
     return TTSClient(host=args.host, port=args.port, auth_token=args.token)
 
 
-async def _synthesize(client: TTSClient, text: str, timeout: float) -> bytes:
+@dataclass
+class _SynthResult:
+    """One synthesis round-trip's audio + measured latency. ``ttfb`` is commit ->
+    first ``response.audio.delta``. dia is ``streaming:false`` (no SUB-segment
+    streaming) but the server emits one delta per ``\\n``-segment as it lands, so
+    ``ttfb`` = the FIRST segment's generate time, NOT the full synth — it only
+    ≈ ``total`` for a single-segment (no-``\\n``) commit. Keeping the first segment
+    short is the biggest TTFB lever (see plan Findings). ``total`` is commit ->
+    ``response.audio.done``."""
+
+    pcm: bytes
+    ttfb: float
+    total: float
+
+
+async def _synthesize(client: TTSClient, text: str, timeout: float) -> _SynthResult:
     """One round-trip on an already-connected client: append the tagged dialogue,
     commit (NO voice — dia is voice_count:0, it ignores any supplied voice), and
-    reassemble the pcm16 deltas in ``seq`` order."""
+    reassemble the pcm16 deltas in ``seq`` order. Measures TTFB (commit -> first
+    delta) and total synth time (commit -> done) off a monotonic clock."""
     await client.append(text)
+    t_commit = time.monotonic()
     await client.commit()
     frames: dict[int, bytes] = {}
     expected = 0
+    ttfb = float("nan")
+    total = float("nan")
     async with asyncio.timeout(timeout):
         async for ev in client.events():
             t = ev.get("type")
             if t == "response.audio.delta":
+                if expected == 0:
+                    ttfb = time.monotonic() - t_commit
                 seq = ev["seq"]
                 if seq != expected:
                     raise RuntimeError(f"seq gap: expected {expected}, got {seq}")
                 frames[seq] = base64.b64decode(ev["audio"])
                 expected += 1
             elif t == "response.audio.done":
+                total = time.monotonic() - t_commit
                 break
             elif t in ("error", "response.failed"):
                 raise RuntimeError(f"server returned {t}: {ev}")
-    return b"".join(frames[i] for i in range(expected))
+    return _SynthResult(pcm=b"".join(frames[i] for i in range(expected)), ttfb=ttfb, total=total)
 
 
 def _write_wav(path: Path, pcm: bytes, rate: int) -> None:
@@ -209,18 +241,26 @@ async def _run_perceptual(args: argparse.Namespace) -> int:
                 "[S1]/[S2] tags will likely be read aloud literally"
             )
         try:
-            pcm = await _synthesize(client, text, args.timeout)
+            res = await _synthesize(client, text, args.timeout)
         finally:
             await client.close()
 
+        pcm = res.pcm
         samples = len(pcm) // 2  # int16 mono
         out_path = out_dir / f"dia_{label}.wav"
         _write_wav(out_path, pcm, rate or 44100)
         written.append(out_path)
         approx_s = samples / rate if rate else float("nan")
+        # RTF = synth wall-clock / audio duration. <1 is faster than real time.
+        rtf = res.total / approx_s if approx_s else float("nan")
         print(
             f"[{label}] wrote {out_path} — {samples} samples "
             f"(~{approx_s:.1f}s @ {rate}Hz), {len(text)} chars of text"
+        )
+        print(
+            f"[{label}] LATENCY: ttfb={res.ttfb:.2f}s total_synth={res.total:.2f}s "
+            f"audio={approx_s:.2f}s rtf={rtf:.2f} "
+            f"(per-\\n-segment deltas: ttfb=first segment, ≈total only if single-segment)"
         )
 
         # --- structural asserts (cheap, non-perceptual) ---
@@ -486,13 +526,101 @@ def _run_statelessness(args: argparse.Namespace) -> int:
     return rc
 
 
+# --- abrupt-disconnect poison regression guard (live server) --------------------
+# A PRIOR session (memory ``dia-abrupt-disconnect-poisons-shared-model``, 2026-06-30)
+# observed that an abrupt client ws-disconnect MID-``generate()`` could poison the
+# process-wide shared dia model: the NEXT commit — even on a fresh connection —
+# returned ~0.13s of truncated *step-13-EOS* audio (~5707 samples) or stalled, then
+# self-recovered. A same-day follow-up could NOT reproduce it (0/7 abrupt aborts →
+# every fresh commit returned full audio). The dia source explains the
+# non-reproduction: KV caches are LOCAL to each ``_generate()`` call (no persistent
+# model state), the generator suspends at a clean yield boundary AFTER ``_generate()``
+# already returned, and the cancellation-aware Metal-lock acquire + ``worker_done``
+# teardown was already in place. This guard PINS that non-reproduction so a future
+# regression (a teardown change that reintroduces the poison) flips it to FAIL: it
+# abruptly aborts a mid-generate connection, then asserts a fresh commit still
+# returns FULL audio. Live-server / local-only, like the perceptual scripts.
+
+# Multi-segment so the abort lands INSIDE segment 1's autoregressive loop (the worker
+# is holding the Metal lock and cannot observe the cancel until the segment yields).
+_DISCONNECT_LONG = (
+    "[S1] Welcome back to the show, it is great to have you here again after such a "
+    "long time away from the studio.\n"
+    "[S2] Thank you, it is genuinely good to be back and I have a lot to talk about.\n"
+    "[S1] Let us dive straight into the numbers then."
+)
+# Short fresh-commit probe rendered AFTER the abrupt abort.
+_DISCONNECT_PROBE = "[S1] Anyway, let us get back to the main topic. [S2] Yes, where were we?"
+# Below this the probe audio is "truncated" — the poison symptom was ~5707 samples.
+_DISCONNECT_MIN_SAMPLES = 100_000
+
+
+async def _abrupt_disconnect_midgenerate(args: argparse.Namespace, hold: float) -> None:
+    """Connect, commit a multi-segment dialogue, wait ``hold`` s so ``generate()`` is
+    mid-flight (inside segment 1, holding the Metal lock), then ABRUPTLY drop the TCP
+    transport — no ws close handshake, no ``session.close`` drain. This is the exact
+    teardown path the prior session reported could poison the shared model."""
+    client = _make_client(args)
+    await client.connect()
+    await client.append(_DISCONNECT_LONG)
+    await client.commit()
+    await asyncio.sleep(hold)
+    transport = getattr(client._ws, "transport", None)
+    if transport is None:
+        raise RuntimeError("disconnect guard: could not reach client transport to abort")
+    transport.abort()  # hard TCP reset, no close frame
+
+
+async def _run_disconnect_guard(args: argparse.Namespace) -> int:
+    """Abrupt-disconnect poison regression guard. Aborts a mid-generate connection,
+    then asserts a FRESH commit returns full (non-truncated, non-stalled) audio —
+    proving the shared model is not poisoned. Returns 0 PASS / 1 FAIL."""
+    print("=== abrupt-disconnect poison regression guard (live server) ===")
+    await _abrupt_disconnect_midgenerate(args, args.disconnect_hold)
+    # Let the server run its teardown (cancel + worker break at the next segment
+    # boundary) before the fresh commit races in.
+    await asyncio.sleep(args.disconnect_settle)
+
+    client = _make_client(args)
+    await client.connect()
+    try:
+        res = await _synthesize(client, _DISCONNECT_PROBE, args.timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        print(
+            f"   FAIL: fresh commit after abrupt disconnect TIMED OUT (> {args.timeout}s) "
+            "— the shared dia model may be poisoned/stalled (regression of memory "
+            "dia-abrupt-disconnect-poisons-shared-model)."
+        )
+        return 1
+    finally:
+        await client.close()
+
+    samples = len(res.pcm) // 2
+    if samples < _DISCONNECT_MIN_SAMPLES:
+        print(
+            f"   FAIL: fresh commit returned only {samples} samples "
+            f"(< {_DISCONNECT_MIN_SAMPLES}) — truncated/step-13-EOS audio, the shared "
+            "model is poisoned (regression). See memory "
+            "dia-abrupt-disconnect-poisons-shared-model."
+        )
+        return 1
+    print(
+        f"   PASS: fresh commit after abrupt mid-generate disconnect returned full audio "
+        f"({samples} samples, ~{samples / 44100:.1f}s) — no poison."
+    )
+    return 0
+
+
 # --- entrypoint -----------------------------------------------------------------
 
 
 async def _amain(args: argparse.Namespace) -> int:
     rc = 0
-    if not args.statelessness_only:
+    if not args.statelessness_only and not args.disconnect_only:
         rc |= await _run_perceptual(args)
+    if args.check_disconnect or args.disconnect_only:
+        print()
+        rc |= await _run_disconnect_guard(args)
     if args.statelessness_only or args.check_statelessness:
         print()
         rc |= _run_statelessness(args)
@@ -527,6 +655,31 @@ def main() -> int:
         "--statelessness-only",
         action="store_true",
         help="run ONLY the mlx-gated checks (no live server / perceptual scripts)",
+    )
+    ap.add_argument(
+        "--check-disconnect",
+        action="store_true",
+        help=(
+            "ALSO run the abrupt-disconnect poison regression guard (live server): "
+            "abort a mid-generate connection, then assert a fresh commit returns full audio"
+        ),
+    )
+    ap.add_argument(
+        "--disconnect-only",
+        action="store_true",
+        help="run ONLY the abrupt-disconnect poison regression guard (no perceptual scripts)",
+    )
+    ap.add_argument(
+        "--disconnect-hold",
+        type=float,
+        default=8.0,
+        help="seconds to let generate() run before the abrupt abort (default 8.0)",
+    )
+    ap.add_argument(
+        "--disconnect-settle",
+        type=float,
+        default=2.0,
+        help="seconds to pause after the abort before the fresh-commit probe (default 2.0)",
     )
     ap.add_argument(
         "--seed",

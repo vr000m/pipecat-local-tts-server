@@ -414,6 +414,7 @@ tests with a warning; the human runs it against a live dia server afterward.
 - [x] Phase 2: Atomic dia-enablement wiring — complete 2026-06-30; 44 phase tests + full suite 259 passed/3 skipped, reviewer 2 Minor (1 sibling-plan doc-sync addressed, 1 historical/intentional) (commit 82f9d87)
 - [x] Phase 3: Dialogue smoke driver (manual, listen-and-judge) — complete 2026-06-30; driver py_compile+ruff clean, import-safe without mlx_audio; 3 reviewer Minors folded in (dead code removed, per-script ndim==1 mono guard added, Phase 0 seed caveat recorded) (commit 4df7b00)
 - CI-parity gate (2026-06-30): caught that `tests/test_dia_lean.py` was missing from the lean CI allow-list (Phase 1 mandate); added it. Lean CI job replicated locally: 220 passed/2 skipped (the 2 skips = mlx-gated dia tests); ruff check+format clean; lean import-safety OK.
+- [x] Phase 3 live smoke run (real model, listen-and-judge) — complete 2026-06-30; measured latency, falsified the "one big delta" assumption (dia streams per-`\n`-segment), abrupt-disconnect poison NOT reproduced (0/7) → added a `--check-disconnect` regression guard. See Findings → "Phase 3 live smoke run".
 
 ## Findings
 
@@ -495,3 +496,76 @@ against the redesigned contract. raw=14 → 13 unique findings (1 merge, 1 cross
 | 11 | Minor | sequencing | Partial item-8 inversion risk (`:105` guard, `:12-13` docstring) | Added a `grep '"dia"'` completeness guard to the Phase 2 sequencing guard |
 | 12 | Minor | assumptions | Bridge `.audio` shape a single-run snapshot; tolerant `_audio_to_pcm` | Added `audio.ndim == 1` structural assert to the Phase 3 smoke |
 | 13 | Minor (related) | spec-and-testing | Lean status-reply test could assert `44100` not `0` | Folded into resolution #7 (same `:300` anchor, cross-category related) |
+
+### Phase 3 live smoke run — 2026-06-30 (real model, `mlx-community/Dia-1.6B-fp16`, this host)
+
+Ran the perceptual smoke + mlx-gated statelessness checks + a new abrupt-disconnect
+regression guard against the live model. The driver gained TTFB/total/RTF
+instrumentation for this run.
+
+**Latency (3 perceptual scripts, server-streamed, rate 44100):**
+
+| Script | chars | TTFB | total synth | audio | RTF |
+|--------|------:|-----:|------------:|------:|----:|
+| `podcast_turntaking` (7 `\n` lines) | 819 | **55.3 s** | 448.5 s | 214.9 s | 2.09 |
+| `interview_interruption_inline` (1 line, no `\n`) | 313 | **59.0 s** | 59.2 s | 30.0 s | 1.98 |
+| `interview_interruption_newline` (3 lines) | 313 | **59.3 s** | 181.3 s | 89.9 s | 2.02 |
+
+Findings:
+1. **RTF ≈ 2.0 is a model floor** — dia generates at ~2× slower than real time regardless
+   of script. This is intrinsic to the autoregressive descript-codec decode; not a server
+   overhead we can tune away.
+2. **dia DOES stream per-`\n`-segment** (server emits each segment's audio as it lands).
+   So **TTFB = the *first* `\n`-segment's generate time** (~55 s on the 7-turn podcast), **not**
+   the full synth time. This **corrects** the earlier note (memory + prior framing) that
+   "dia is streaming:false → one big delta after the full generate, TTFB ≈ full synth." That
+   only holds for a **single-segment** (no-`\n`) commit — confirmed by the inline script
+   (TTFB 59.0 s ≈ total 59.2 s, one segment = one delta at the end). **Biggest latency lever:
+   keep the first segment short** (incremental commits / smaller leading turn), since TTFB is
+   dominated by it.
+3. **Same text, very different output by layout:** the identical 313-char interruption dialogue
+   produced **30.0 s** of audio inline vs **89.9 s** newline-split (≈3×). Splitting on `\n`
+   makes each segment a fuller, slower utterance — a perceptual item for listen-and-judge
+   (WAVs in `/tmp/dia_smoke/`).
+
+**Statelessness checks (mlx-gated, `--statelessness-only --seed 42 --diag-seeds 6`):**
+- Per-script **mono-shape guard PASS** (all 3 scripts' first item `audio.ndim == 1`).
+- **Greedy guard PASS** — `X_alone == X_after` byte-identical at `temperature=0.0`. Re-confirms
+  the Phase 0 cross-call statelessness finding: the dia **model carries no cross-call state**.
+- **Production-temp diagnostic SOFT-FLAGGED** (N=6): `X_alone` mean 377931 vs `X_after` mean
+  266656, shift 111275 > pooled stdev 86427. **Interpretation (not a hard failure):** the
+  diagnostic deliberately does **not** re-seed between the prior render and the `textX` render,
+  so at `temperature=1.3` the two `textX` renders start from **different global mx-RNG states**.
+  That RNG drift alone shifts the duration distribution **without any model coupling**. The
+  greedy guard (RNG-independent) + the dia source (KV caches are **local per `_generate()`** —
+  see disconnect analysis) both prove the model is stateless, so the soft-flag is attributed to
+  benign global-RNG advance, not cross-call model state. RNG drift never makes output *wrong*,
+  only non-byte-reproducible (already true for `temp>0`). Decision #3 ("incremental commits are
+  safe") **stands**. A cleaner future diagnostic would re-seed before `textX` in both arms to
+  isolate model coupling from RNG.
+
+**Abrupt-disconnect poison — NOT REPRODUCED (0/7), regression guard added:**
+The memory note `dia-abrupt-disconnect-poisons-shared-model` (earlier 2026-06-30 session) reported
+that an abrupt client ws-disconnect **mid-`generate()`** poisoned the process-wide shared model so
+the next commit returned ~0.13 s of truncated *step-13-EOS* audio (~5707 samples) or stalled, then
+self-recovered. This run **could not reproduce it**: 1 standalone repro (conn B + conn C both full
+audio) + a 6-iteration loop = **0/7 poison events**; every fresh commit after an abrupt
+`transport.abort()` mid-generate returned full audio (1322059 samples, `term=done`).
+
+Root-cause analysis of `mlx_audio/tts/models/dia/dia.py` explains the non-reproduction:
+- KV caches (`decoder_self_attention_cache`, `decoder_cross_attention_cache`) are **local
+  variables created fresh inside `_generate()`** — there is **no persistent model state** across
+  segments or calls.
+- `generate()` yields **after `_generate()` has fully returned**; the generator suspends at a
+  clean yield boundary, so an early break / GC-time `GeneratorExit` unwinds with no half-finished
+  MLX computation. The only skipped line is `mx.clear_cache()` (memory hygiene), not correctness.
+- The cancellation-aware Metal-lock acquire + `worker_done` teardown (`_stream_util.py`, commits
+  `3b79c9e` / `8befc39`) was **already in place** when the poison was first observed.
+
+**Decision (operator, 2026-06-30): record non-reproduction + add a regression guard; no
+speculative code fix.** A true fix for the one real gap (the skipped `mx.clear_cache()` on abort)
+would require mlx-specific code in the deliberately mlx-free lean bridge — not worth it for an
+unreproducible symptom. Added `tests/smoke/dia_dialogue_smoke.py --check-disconnect` /
+`--disconnect-only`: aborts a mid-generate connection, then asserts a fresh commit returns full
+(non-truncated, non-stalled) audio. **Guard PASS** this run. If a future teardown change
+reintroduces the poison, the guard flips to FAIL.
