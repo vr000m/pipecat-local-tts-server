@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Websocket keepalive no longer truncates in-flight TTS under Metal/GIL load.**
+  The `websockets` library default (`ping_interval=20s`, `ping_timeout=20s`)
+  closed a live connection with `1011 keepalive ping timeout` when GIL-holding
+  mlx/Metal compute starved the asyncio loop past 20s during a heavy or cold-start
+  generation, cutting off the spoken line. The server and `TTSClient` now keep the
+  periodic ping but **disable the pong timeout by default** (a starved loop can't
+  drop a live connection; a dead peer is still caught by the per-send timeout and
+  TCP). Both knobs are configurable: `ServerConfig(ping_interval_seconds=,
+  ping_timeout_seconds=)`, `serve(...)`, env `TTS_WS_PING_INTERVAL` /
+  `TTS_WS_PING_TIMEOUT` (server), and `TTSClient(ping_interval=, ping_timeout=)`
+  (so a starved server loop can't trip the client's keepalive either). New
+  behavioral tests in `test_keepalive.py` assert both directions off the live
+  connection objects.
+
 ## [0.2.0] - 2026-06-28
 
 ### Added

@@ -45,6 +45,7 @@ use `--auth-token-file`.
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to re-advertise after installing their extra G2P package. |
+| `TTS_WS_PING_INTERVAL` / `TTS_WS_PING_TIMEOUT` | server | Keepalive ping period / pong timeout (seconds). Defaults `20` / `none`: ping kept, pong timeout **disabled** so GIL-holding Metal compute can't trip a `1011` mid-generation. `none`/`off`/`0` disables a knob; a number re-enables it. Mirror knobs on `TTSClient(ping_interval=, ping_timeout=)`. |
 
 CLI flags and env vars are **trusted** inputs; untrusted input is websocket
 traffic. The UDS (default mode `0o600`, parent-dir guarded) is the trust boundary.
