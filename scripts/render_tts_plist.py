@@ -65,10 +65,18 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
 # ``ja,zh``). Validated before being baked into the plist's EnvironmentVariables.
 _EXTRA_LANGS_RE = re.compile(r"^[A-Za-z]{2,8}(,[A-Za-z]{2,8})*$")
 # TTS_WS_PING_INTERVAL / TTS_WS_PING_TIMEOUT — websocket keepalive knobs the server
-# reads via ``tts_server.__main__._resolve_keepalive``. Accept a positive number or
-# a disable token; the server re-validates, so this allowlist is defense-in-depth
-# (it deliberately rejects ``inf``/``nan``/negatives, like the other patterns here).
-_KEEPALIVE_RE = re.compile(r"^(none|off|disable|disabled|[0-9]+(\.[0-9]+)?)$", re.IGNORECASE)
+# reads via ``tts_server.__main__._resolve_keepalive``. Accept a disable token or a
+# bounded positive number; the server re-validates, so this allowlist is
+# defense-in-depth (it rejects ``inf``/``nan``/negatives, like the other patterns
+# here). The digit count is CAPPED at 9 integer / 6 fractional: an unbounded run of
+# digits overflows ``float()`` to ``+inf`` at server startup, which
+# ``_resolve_keepalive`` rejects — a launchd boot loop from an install that
+# "passed". Nine seconds-digits (~31 years) is absurdly generous for a timeout, so
+# the cap rejects the overflow case here instead, keeping install-time validation
+# in step with the server's runtime check.
+_KEEPALIVE_RE = re.compile(
+    r"^(none|off|disable|disabled|[0-9]{1,9}(\.[0-9]{1,6})?)$", re.IGNORECASE
+)
 
 
 def _log_basename(label: str) -> str:

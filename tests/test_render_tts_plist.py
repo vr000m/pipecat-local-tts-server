@@ -308,10 +308,24 @@ def test_main_bakes_ws_ping_disable_token(tmp_path):
     assert env["TTS_WS_PING_TIMEOUT"] == "none"
 
 
-@pytest.mark.parametrize("bad", ["nan", "inf", "-5", "1e3", "abc", "20; rm -rf /"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "nan",
+        "inf",
+        "-5",
+        "1e3",
+        "abc",
+        "20; rm -rf /",
+        # A digit run long enough to overflow float() to +inf at server startup —
+        # rejected at install time by the capped digit count, not baked into a
+        # plist that would boot-loop the agent.
+        "9" * 10,
+    ],
+)
 def test_main_rejects_malformed_ws_ping(tmp_path, bad):
-    """Non-finite, negative, or otherwise unparseable ping values are rejected
-    before reaching the plist (defense-in-depth; the server also re-validates)."""
+    """Non-finite, negative, overlong, or otherwise unparseable ping values are
+    rejected before reaching the plist (defense-in-depth; the server re-validates)."""
     proc, plist_dst = _run_main(tmp_path, {"TTS_WS_PING_TIMEOUT": bad})
     assert proc.returncode == 2
     assert not plist_dst.exists()

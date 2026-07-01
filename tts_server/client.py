@@ -61,7 +61,10 @@ class TTSClient:
         # keepalive and tear down an in-flight utterance, while a genuinely dead
         # server is still detected within the bound. Fixing only the server
         # direction is not enough. ``ping_timeout=None`` disables the timeout
-        # entirely (opt-in).
+        # entirely (opt-in). The param names deliberately drop the ``_seconds``
+        # suffix that ``ServerConfig`` uses: they thread straight into the
+        # ``websockets`` ``ws_connect(ping_interval=, ping_timeout=)`` kwargs, so
+        # they mirror that library API rather than the server-side field names.
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._ws: ClientConnection | None = None

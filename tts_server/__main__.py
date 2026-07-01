@@ -65,6 +65,14 @@ def _resolve_keepalive(env_name: str, default: float | None) -> float | None:
     positive, finite float. An unparseable, non-finite, or negative value raises
     ``SystemExit`` rather than silently reverting to a default an operator did not
     intend.
+
+    Keepalive is the one timing knob given env exposure (the sibling
+    ``send_timeout_seconds`` / ``drain_timeout_seconds`` are code-only
+    ``ServerConfig`` defaults): it's the value an operator may need to tune in the
+    field to match their model's worst-case generation latency, and it must be
+    reachable on a launchd-run server (baked into the plist by
+    ``scripts/render_tts_plist.py``). The send/drain timeouts are internal safety
+    bounds with no such tuning need, so they stay code-only by design.
     """
     raw = os.environ.get(env_name)
     if raw is None:
