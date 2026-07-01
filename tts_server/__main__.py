@@ -56,6 +56,29 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
     return None
 
 
+def _resolve_keepalive(env_name: str, default: float | None) -> float | None:
+    """Resolve a websocket keepalive knob (seconds) from the environment.
+
+    Unset → the code default. ``none``/``off``/``disable``/``disabled``/``0`` →
+    ``None`` (disable that knob). Otherwise a positive float. An unparseable or
+    non-positive value raises ``SystemExit`` rather than silently reverting to a
+    default an operator did not intend.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in {"", "none", "off", "disable", "disabled", "0"}:
+        return None
+    try:
+        parsed = float(val)
+    except ValueError:
+        raise SystemExit(f"tts_server: {env_name}={raw!r} is not a number")
+    if parsed <= 0:
+        raise SystemExit(f"tts_server: {env_name}={raw!r} must be > 0 (or 'none' to disable)")
+    return parsed
+
+
 def _resolve_auth_token(token_file: str | None, *, client: bool = False) -> str | None:
     # A plaintext ``--auth-token`` CLI flag is intentionally unsupported: any
     # local user could read the token via ``ps``.
@@ -167,6 +190,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         # that into a clean exit rather than a traceback. (``--backend`` choices
         # normally prevent this, but the translation keeps the contract honest.)
         raise SystemExit(f"tts_server: {exc}")
+    from . import protocol as P
+
     asyncio.run(
         serve(
             backend,
@@ -174,6 +199,12 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             host=args.host,
             port=args.port,
             auth_token=_resolve_auth_token(args.auth_token_file),
+            ping_interval_seconds=_resolve_keepalive(
+                "TTS_WS_PING_INTERVAL", P.KEEPALIVE_PING_INTERVAL_SECONDS
+            ),
+            ping_timeout_seconds=_resolve_keepalive(
+                "TTS_WS_PING_TIMEOUT", P.KEEPALIVE_PING_TIMEOUT_SECONDS
+            ),
         )
     )
 

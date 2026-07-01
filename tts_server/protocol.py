@@ -57,6 +57,23 @@ SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 10.0
 # making zero progress; 5 s is generous headroom for that "dead reader" verdict.
 SEND_TIMEOUT_SECONDS = 5.0
 
+# --- Websocket keepalive (ping/pong) defaults ---
+# The ``websockets`` library defaults to ping_interval=20s AND ping_timeout=20s:
+# if a pong is not received within 20s of a ping, it CLOSES the connection with
+# 1011 "keepalive ping timeout". Synthesis runs off-loop (daemon thread), but
+# mlx/Metal compute can hold the GIL and starve the asyncio loop that services
+# pongs for >20s during a heavy or cold-start generation — tripping the keepalive
+# and truncating an in-flight utterance. For a local single-user UDS/loopback
+# deployment, aggressive dead-peer detection buys little, so we KEEP the periodic
+# ping (cheap liveness / NAT keepalive) but DISABLE the pong timeout by default:
+# a briefly-starved loop no longer drops a live connection. A truly dead peer is
+# still caught by ``SEND_TIMEOUT_SECONDS`` on the next send and by TCP. Both knobs
+# are configurable (``ServerConfig`` / ``TTSClient`` / env) for operators who want
+# tighter detection. ``None`` for the interval disables pings entirely; ``None``
+# for the timeout keeps pings but never closes on a slow pong.
+KEEPALIVE_PING_INTERVAL_SECONDS: float | None = 20.0
+KEEPALIVE_PING_TIMEOUT_SECONDS: float | None = None
+
 # --- Synthesis backpressure caps (R4, Phase 3) ---
 # Bounded GLOBAL synthesis backlog (commits waiting on the shared Metal lock
 # across all connections). When this many commits are admitted-but-not-yet-done,
