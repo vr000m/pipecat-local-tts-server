@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -59,22 +60,30 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
 def _resolve_keepalive(env_name: str, default: float | None) -> float | None:
     """Resolve a websocket keepalive knob (seconds) from the environment.
 
-    Unset → the code default. ``none``/``off``/``disable``/``disabled``/``0`` →
-    ``None`` (disable that knob). Otherwise a positive float. An unparseable or
-    non-positive value raises ``SystemExit`` rather than silently reverting to a
-    default an operator did not intend.
+    Unset → the code default. ``none``/``off``/``disable``/``disabled`` or any
+    numeric zero (``0``, ``0.0``) → ``None`` (disable that knob). Otherwise a
+    positive, finite float. An unparseable, non-finite, or negative value raises
+    ``SystemExit`` rather than silently reverting to a default an operator did not
+    intend.
     """
     raw = os.environ.get(env_name)
     if raw is None:
         return default
     val = raw.strip().lower()
-    if val in {"", "none", "off", "disable", "disabled", "0"}:
+    if val in {"", "none", "off", "disable", "disabled"}:
         return None
     try:
         parsed = float(val)
     except ValueError:
         raise SystemExit(f"tts_server: {env_name}={raw!r} is not a number")
-    if parsed <= 0:
+    # ``float()`` accepts ``nan``/``inf``; reject them (a NaN would also slip past
+    # the ``< 0`` guard below and reach websockets). Any zero disables the knob so
+    # ``0`` and ``0.0`` agree with the docstring.
+    if not math.isfinite(parsed):
+        raise SystemExit(f"tts_server: {env_name}={raw!r} must be a finite number")
+    if parsed == 0:
+        return None
+    if parsed < 0:
         raise SystemExit(f"tts_server: {env_name}={raw!r} must be > 0 (or 'none' to disable)")
     return parsed
 

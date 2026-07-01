@@ -105,6 +105,7 @@ async def test_client_threads_keepalive_onto_connection() -> None:
         ("disable", None),
         ("disabled", None),
         ("0", None),
+        ("0.0", None),  # any numeric zero disables, consistent with "0"
         ("", None),
         ("  NONE  ", None),  # trimmed + case-insensitive
         ("120", 120.0),
@@ -119,7 +120,7 @@ def test_resolve_keepalive(monkeypatch, raw, expected) -> None:
     assert _resolve_keepalive("TTS_WS_PING_TIMEOUT", 20.0) == expected
 
 
-@pytest.mark.parametrize("raw", ["abc", "-5", "-1.0"])
+@pytest.mark.parametrize("raw", ["abc", "-5", "-1.0", "nan", "inf", "-inf"])
 def test_resolve_keepalive_rejects_bad_values(monkeypatch, raw) -> None:
     monkeypatch.setenv("TTS_WS_PING_INTERVAL", raw)
     with pytest.raises(SystemExit):
