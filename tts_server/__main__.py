@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -54,6 +55,45 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
 
         return DEFAULT_POCKET_MODEL
     return None
+
+
+def _resolve_keepalive(env_name: str, default: float | None) -> float | None:
+    """Resolve a websocket keepalive knob (seconds) from the environment.
+
+    Unset → the code default. ``none``/``off``/``disable``/``disabled`` or any
+    numeric zero (``0``, ``0.0``) → ``None`` (disable that knob). Otherwise a
+    positive, finite float. An unparseable, non-finite, or negative value raises
+    ``SystemExit`` rather than silently reverting to a default an operator did not
+    intend.
+
+    Keepalive is the one timing knob given env exposure (the sibling
+    ``send_timeout_seconds`` / ``drain_timeout_seconds`` are code-only
+    ``ServerConfig`` defaults): it's the value an operator may need to tune in the
+    field to match their model's worst-case generation latency, and it must be
+    reachable on a launchd-run server (baked into the plist by
+    ``scripts/render_tts_plist.py``). The send/drain timeouts are internal safety
+    bounds with no such tuning need, so they stay code-only by design.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in {"", "none", "off", "disable", "disabled"}:
+        return None
+    try:
+        parsed = float(val)
+    except ValueError:
+        raise SystemExit(f"tts_server: {env_name}={raw!r} is not a number")
+    # ``float()`` accepts ``nan``/``inf``; reject them (a NaN would also slip past
+    # the ``< 0`` guard below and reach websockets). Any zero disables the knob so
+    # ``0`` and ``0.0`` agree with the docstring.
+    if not math.isfinite(parsed):
+        raise SystemExit(f"tts_server: {env_name}={raw!r} must be a finite number")
+    if parsed == 0:
+        return None
+    if parsed < 0:
+        raise SystemExit(f"tts_server: {env_name}={raw!r} must be > 0 (or 'none' to disable)")
+    return parsed
 
 
 def _resolve_auth_token(token_file: str | None, *, client: bool = False) -> str | None:
@@ -167,6 +207,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         # that into a clean exit rather than a traceback. (``--backend`` choices
         # normally prevent this, but the translation keeps the contract honest.)
         raise SystemExit(f"tts_server: {exc}")
+    from . import protocol as P
+
     asyncio.run(
         serve(
             backend,
@@ -174,6 +216,12 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             host=args.host,
             port=args.port,
             auth_token=_resolve_auth_token(args.auth_token_file),
+            ping_interval_seconds=_resolve_keepalive(
+                "TTS_WS_PING_INTERVAL", P.KEEPALIVE_PING_INTERVAL_SECONDS
+            ),
+            ping_timeout_seconds=_resolve_keepalive(
+                "TTS_WS_PING_TIMEOUT", P.KEEPALIVE_PING_TIMEOUT_SECONDS
+            ),
         )
     )
 

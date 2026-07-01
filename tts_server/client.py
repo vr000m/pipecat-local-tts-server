@@ -45,6 +45,8 @@ class TTSClient:
         port: int | None = None,
         uri: str | None = None,
         auth_token: str | None = None,
+        ping_interval: float | None = P.KEEPALIVE_PING_INTERVAL_SECONDS,
+        ping_timeout: float | None = P.KEEPALIVE_PING_TIMEOUT_SECONDS,
     ) -> None:
         if uri is None and socket_path is None and (host is None or port is None):
             raise ValueError("Provide uri=, socket_path=, or host+port")
@@ -53,6 +55,18 @@ class TTSClient:
         self._port = port
         self._uri = uri
         self._auth_token = auth_token
+        # Keepalive knobs mirror the server's: keep the ping, but use a LARGE
+        # FINITE pong timeout so a GIL-starved SERVER loop — which stops answering
+        # the client's pings during a heavy generation — can't trip the CLIENT-side
+        # keepalive and tear down an in-flight utterance, while a genuinely dead
+        # server is still detected within the bound. Fixing only the server
+        # direction is not enough. ``ping_timeout=None`` disables the timeout
+        # entirely (opt-in). The param names deliberately drop the ``_seconds``
+        # suffix that ``ServerConfig`` uses: they thread straight into the
+        # ``websockets`` ``ws_connect(ping_interval=, ping_timeout=)`` kwargs, so
+        # they mirror that library API rather than the server-side field names.
+        self._ping_interval = ping_interval
+        self._ping_timeout = ping_timeout
         self._ws: ClientConnection | None = None
         self._closed = False
 
@@ -75,17 +89,27 @@ class TTSClient:
                 )
             headers["Authorization"] = f"Bearer {self._auth_token}"
         if self._uri:
-            self._ws = await ws_connect(self._uri, additional_headers=headers or None)
+            self._ws = await ws_connect(
+                self._uri,
+                additional_headers=headers or None,
+                ping_interval=self._ping_interval,
+                ping_timeout=self._ping_timeout,
+            )
         elif self._socket_path:
             self._ws = await ws_unix_connect(
                 self._socket_path,
                 "ws://localhost/",
                 additional_headers=headers or None,
+                ping_interval=self._ping_interval,
+                ping_timeout=self._ping_timeout,
             )
         else:
             host = format_host_for_uri(self._host)
             self._ws = await ws_connect(
-                f"ws://{host}:{self._port}/", additional_headers=headers or None
+                f"ws://{host}:{self._port}/",
+                additional_headers=headers or None,
+                ping_interval=self._ping_interval,
+                ping_timeout=self._ping_timeout,
             )
         hello = await self._recv_json()
         if hello.get("type") != P.EVT_SERVER_HELLO:

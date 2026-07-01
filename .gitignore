@@ -16,3 +16,4 @@ dist/
 
 # conduct skill state (local, run-specific — must not be committed)
 .conduct/
+/.deep-review

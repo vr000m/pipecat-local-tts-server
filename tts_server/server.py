@@ -183,6 +183,14 @@ class ServerConfig:
     send_queue_high_water_bytes: int = P.SEND_QUEUE_HIGH_WATER_BYTES
     send_timeout_seconds: float = P.SEND_TIMEOUT_SECONDS
     drain_timeout_seconds: float = P.SHUTDOWN_DRAIN_TIMEOUT_SECONDS
+    # Websocket keepalive. The default keeps the ping but uses a LARGE FINITE pong
+    # timeout — long enough not to trip on a GIL-starved loop mid-generation, yet
+    # bounded so a dead idle peer is still reaped (see ``protocol`` for why
+    # ``ping_timeout=None`` would leak such peers). ``ping_interval_seconds=None``
+    # disables pings entirely; ``ping_timeout_seconds=None`` keeps the ping but
+    # never closes on a slow pong (opt-in; reintroduces the idle-leak).
+    ping_interval_seconds: float | None = P.KEEPALIVE_PING_INTERVAL_SECONDS
+    ping_timeout_seconds: float | None = P.KEEPALIVE_PING_TIMEOUT_SECONDS
     # chmod applied to the UDS after bind. 0o600 restricts connect to the owning
     # user; the UDS is the v1 trust boundary.
     unix_socket_mode: int | None = 0o600
@@ -476,6 +484,8 @@ class TTSServer:
                     self._handle_connection,
                     path=str(socket_path),
                     process_request=self._process_request,
+                    ping_interval=self._config.ping_interval_seconds,
+                    ping_timeout=self._config.ping_timeout_seconds,
                 )
             finally:
                 os.umask(prior_umask)
@@ -490,6 +500,8 @@ class TTSServer:
                 host=self._config.host,
                 port=self._config.port,
                 process_request=self._process_request,
+                ping_interval=self._config.ping_interval_seconds,
+                ping_timeout=self._config.ping_timeout_seconds,
             )
         self._scheduler.start()
         self._started = True
@@ -1575,11 +1587,20 @@ async def serve(
     host: str | None = None,
     port: int | None = None,
     auth_token: str | None = None,
+    ping_interval_seconds: float | None = P.KEEPALIVE_PING_INTERVAL_SECONDS,
+    ping_timeout_seconds: float | None = P.KEEPALIVE_PING_TIMEOUT_SECONDS,
     install_signal_handlers: bool = True,
     ready: Callable[[TTSServer], Awaitable[None]] | None = None,
 ) -> None:
     """Start the server, wait for a shutdown signal, then drain and exit."""
-    cfg = ServerConfig(socket_path=socket_path, host=host, port=port, auth_token=auth_token)
+    cfg = ServerConfig(
+        socket_path=socket_path,
+        host=host,
+        port=port,
+        auth_token=auth_token,
+        ping_interval_seconds=ping_interval_seconds,
+        ping_timeout_seconds=ping_timeout_seconds,
+    )
     # Default backend is built through the same lazy resolver as every other
     # backend (``make_backend``) so the server depends only on the abstract
     # protocol types, never on a concrete backend class.

@@ -285,3 +285,47 @@ def test_main_rejects_malformed_extra_langs(tmp_path):
     proc, plist_dst = _run_main(tmp_path, {"PIPECAT_TTS_KOKORO_EXTRA_LANGS": "ja;rm -rf /"})
     assert proc.returncode == 2
     assert not plist_dst.exists()
+
+
+def test_main_bakes_ws_ping_overrides_into_plist(tmp_path):
+    """TTS_WS_PING_* survive into the agent under the SAME names the server reads,
+    so ``_resolve_keepalive`` sees them from the launchd process env."""
+    proc, plist_dst = _run_main(
+        tmp_path,
+        {"TTS_WS_PING_INTERVAL": "30", "TTS_WS_PING_TIMEOUT": "180.5"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    env = plistlib.loads(plist_dst.read_bytes())["EnvironmentVariables"]
+    assert env["TTS_WS_PING_INTERVAL"] == "30"
+    assert env["TTS_WS_PING_TIMEOUT"] == "180.5"
+
+
+def test_main_bakes_ws_ping_disable_token(tmp_path):
+    """A disable token (``none``) is accepted and baked verbatim for the server."""
+    proc, plist_dst = _run_main(tmp_path, {"TTS_WS_PING_TIMEOUT": "none"})
+    assert proc.returncode == 0, proc.stderr
+    env = plistlib.loads(plist_dst.read_bytes())["EnvironmentVariables"]
+    assert env["TTS_WS_PING_TIMEOUT"] == "none"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "nan",
+        "inf",
+        "-5",
+        "1e3",
+        "abc",
+        "20; rm -rf /",
+        # A digit run long enough to overflow float() to +inf at server startup —
+        # rejected at install time by the capped digit count, not baked into a
+        # plist that would boot-loop the agent.
+        "9" * 10,
+    ],
+)
+def test_main_rejects_malformed_ws_ping(tmp_path, bad):
+    """Non-finite, negative, overlong, or otherwise unparseable ping values are
+    rejected before reaching the plist (defense-in-depth; the server re-validates)."""
+    proc, plist_dst = _run_main(tmp_path, {"TTS_WS_PING_TIMEOUT": bad})
+    assert proc.returncode == 2
+    assert not plist_dst.exists()

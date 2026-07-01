@@ -64,6 +64,19 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
 # PIPECAT_TTS_KOKORO_EXTRA_LANGS — a comma-separated list of ISO codes (e.g.
 # ``ja,zh``). Validated before being baked into the plist's EnvironmentVariables.
 _EXTRA_LANGS_RE = re.compile(r"^[A-Za-z]{2,8}(,[A-Za-z]{2,8})*$")
+# TTS_WS_PING_INTERVAL / TTS_WS_PING_TIMEOUT — websocket keepalive knobs the server
+# reads via ``tts_server.__main__._resolve_keepalive``. Accept a disable token or a
+# bounded positive number; the server re-validates, so this allowlist is
+# defense-in-depth (it rejects ``inf``/``nan``/negatives, like the other patterns
+# here). The digit count is CAPPED at 9 integer / 6 fractional: an unbounded run of
+# digits overflows ``float()`` to ``+inf`` at server startup, which
+# ``_resolve_keepalive`` rejects — a launchd boot loop from an install that
+# "passed". Nine seconds-digits (~31 years) is absurdly generous for a timeout, so
+# the cap rejects the overflow case here instead, keeping install-time validation
+# in step with the server's runtime check.
+_KEEPALIVE_RE = re.compile(
+    r"^(none|off|disable|disabled|[0-9]{1,9}(\.[0-9]{1,6})?)$", re.IGNORECASE
+)
 
 
 def _log_basename(label: str) -> str:
@@ -251,6 +264,22 @@ def main() -> None:
             )
             sys.exit(2)
         extra_env["PIPECAT_TTS_KOKORO_EXTRA_LANGS"] = extra_langs
+
+    # Websocket keepalive overrides. Baked under the SAME names the server reads
+    # (not a PIPECAT_TTS_* alias), so the launchd process env drives
+    # ``_resolve_keepalive`` directly. Unset → nothing baked → the 120s code
+    # default applies.
+    for ping_var in ("TTS_WS_PING_INTERVAL", "TTS_WS_PING_TIMEOUT"):
+        ping_val = os.environ.get(ping_var)
+        if ping_val:
+            if not _KEEPALIVE_RE.match(ping_val):
+                print(
+                    f"error: {ping_var}={ping_val!r} rejected by allowlist "
+                    "(a positive number, or none/off/disable to disable)",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            extra_env[ping_var] = ping_val
 
     try:
         xml = render_plist(
