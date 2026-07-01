@@ -25,6 +25,9 @@
 #                        renderer rejects an install where it is set without the file.
 #   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
 #                        the agent's plist EnvironmentVariables so it survives launchd.
+#   TTS_WS_PING_INTERVAL / TTS_WS_PING_TIMEOUT  websocket keepalive overrides (seconds);
+#                        baked into the plist EnvironmentVariables so they survive
+#                        launchd. Unset → the server's 120s pong-timeout default applies.
 #   PIPECAT_TTS_LOG_DIR  log directory (default: $HOME/Library/Logs/pipecat-tts)
 #
 # Operational constraint: this script manages exactly ONE agent per invocation,
@@ -64,9 +67,10 @@ render_plist() {
     # renderer subprocess; the command word "$PYTHON" uses the parent shell's
     # (identical) value, so SC2097/SC2098 are false positives here.
     #
-    # PIPECAT_TTS_AUTH_TOKEN / PIPECAT_TTS_KOKORO_EXTRA_LANGS are forwarded
-    # explicitly (not left to implicit inheritance) so the renderer's silent-drop
-    # guard + EnvironmentVariables pass-through act on the operator's actual env.
+    # PIPECAT_TTS_AUTH_TOKEN / PIPECAT_TTS_KOKORO_EXTRA_LANGS / TTS_WS_PING_* are
+    # forwarded explicitly (not left to implicit inheritance) so the renderer's
+    # silent-drop guard + EnvironmentVariables pass-through act on the operator's
+    # actual env.
     # shellcheck disable=SC2097,SC2098
     PYTHON="$PYTHON" REPO_ROOT="$REPO_ROOT" BACKEND="$BACKEND" \
         HOST="$HOST" PORT="$PORT" MODEL="$MODEL" \
@@ -74,6 +78,8 @@ render_plist() {
         PLIST_DST="$PLIST_DST" PIPECAT_TTS_LABEL="$LABEL" \
         PIPECAT_TTS_AUTH_TOKEN="${PIPECAT_TTS_AUTH_TOKEN:-}" \
         PIPECAT_TTS_KOKORO_EXTRA_LANGS="${PIPECAT_TTS_KOKORO_EXTRA_LANGS:-}" \
+        TTS_WS_PING_INTERVAL="${TTS_WS_PING_INTERVAL:-}" \
+        TTS_WS_PING_TIMEOUT="${TTS_WS_PING_TIMEOUT:-}" \
         "$PYTHON" "$RENDER_PY"
 }
 
