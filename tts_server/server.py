@@ -183,10 +183,12 @@ class ServerConfig:
     send_queue_high_water_bytes: int = P.SEND_QUEUE_HIGH_WATER_BYTES
     send_timeout_seconds: float = P.SEND_TIMEOUT_SECONDS
     drain_timeout_seconds: float = P.SHUTDOWN_DRAIN_TIMEOUT_SECONDS
-    # Websocket keepalive. ``ping_interval_seconds=None`` disables pings entirely;
-    # ``ping_timeout_seconds=None`` keeps the periodic ping but never closes the
-    # connection on a slow pong (the default — see ``protocol`` for the rationale:
-    # GIL-holding Metal compute must not trip a 20s pong timeout mid-generation).
+    # Websocket keepalive. The default keeps the ping but uses a LARGE FINITE pong
+    # timeout — long enough not to trip on a GIL-starved loop mid-generation, yet
+    # bounded so a dead idle peer is still reaped (see ``protocol`` for why
+    # ``ping_timeout=None`` would leak such peers). ``ping_interval_seconds=None``
+    # disables pings entirely; ``ping_timeout_seconds=None`` keeps the ping but
+    # never closes on a slow pong (opt-in; reintroduces the idle-leak).
     ping_interval_seconds: float | None = P.KEEPALIVE_PING_INTERVAL_SECONDS
     ping_timeout_seconds: float | None = P.KEEPALIVE_PING_TIMEOUT_SECONDS
     # chmod applied to the UDS after bind. 0o600 restricts connect to the owning

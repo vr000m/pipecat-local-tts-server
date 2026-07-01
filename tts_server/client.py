@@ -55,11 +55,13 @@ class TTSClient:
         self._port = port
         self._uri = uri
         self._auth_token = auth_token
-        # Keepalive knobs mirror the server's. Defaults keep the periodic ping but
-        # disable the pong timeout (``ping_timeout=None``) so a GIL-starved SERVER
-        # loop — which stops answering the client's pings during a heavy
-        # generation — can't trip the CLIENT-side keepalive and tear down an
-        # in-flight utterance. Fixing only the server direction is not enough.
+        # Keepalive knobs mirror the server's: keep the ping, but use a LARGE
+        # FINITE pong timeout so a GIL-starved SERVER loop — which stops answering
+        # the client's pings during a heavy generation — can't trip the CLIENT-side
+        # keepalive and tear down an in-flight utterance, while a genuinely dead
+        # server is still detected within the bound. Fixing only the server
+        # direction is not enough. ``ping_timeout=None`` disables the timeout
+        # entirely (opt-in).
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._ws: ClientConnection | None = None

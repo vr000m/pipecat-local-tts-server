@@ -14,6 +14,9 @@ that drops the wiring — not just the config default — is caught.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
+import os
 
 import pytest
 
@@ -27,15 +30,18 @@ from tts_server.server import ServerConfig, TTSServer
 def test_serverconfig_keepalive_defaults() -> None:
     cfg = ServerConfig(host="127.0.0.1", port=0)
     assert cfg.ping_interval_seconds == P.KEEPALIVE_PING_INTERVAL_SECONDS == 20.0
-    # The crux: the default DISABLES the pong timeout so a starved loop can't
-    # drop a live connection mid-generation.
-    assert cfg.ping_timeout_seconds is P.KEEPALIVE_PING_TIMEOUT_SECONDS is None
+    # The crux: the default pong timeout is FINITE (so a dead idle peer is reaped)
+    # but comfortably larger than the interval (so a GIL-starved loop doesn't drop
+    # a live connection mid-generation).
+    assert cfg.ping_timeout_seconds == P.KEEPALIVE_PING_TIMEOUT_SECONDS == 120.0
+    assert cfg.ping_timeout_seconds is not None
+    assert cfg.ping_timeout_seconds > cfg.ping_interval_seconds
 
 
 def test_client_keepalive_defaults_and_override() -> None:
     c = TTSClient(host="127.0.0.1", port=1)
     assert c._ping_interval == 20.0
-    assert c._ping_timeout is None
+    assert c._ping_timeout == 120.0
     c2 = TTSClient(host="127.0.0.1", port=1, ping_interval=None, ping_timeout=45.0)
     assert c2._ping_interval is None
     assert c2._ping_timeout == 45.0
@@ -92,6 +98,62 @@ async def test_client_threads_keepalive_onto_connection() -> None:
             assert c._ws.ping_timeout is None
         finally:
             await c.close()
+    finally:
+        await srv.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_server_reaps_peer_that_never_answers_pings() -> None:
+    """A FINITE pong timeout must reap a peer that completes the handshake then
+    goes silent — the regression a ``ping_timeout=None`` default would reintroduce
+    (an idle dead peer has no application send, so the send-timeout can't catch it).
+
+    A raw socket does the RFC 6455 handshake and then NEVER sends a pong frame
+    (unlike ``TTSClient``, which auto-answers pings), so the server's keepalive is
+    the only thing that can close it. With a 0.2s interval + 0.2s timeout, the
+    server must drop the connection well within the generous wait below.
+    """
+    srv = TTSServer(
+        make_backend("tone"),
+        ServerConfig(
+            host="127.0.0.1",
+            port=0,
+            reject_browser_origins=False,
+            ping_interval_seconds=0.2,
+            ping_timeout_seconds=0.2,
+        ),
+    )
+    await srv.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", srv.listening_port())
+        try:
+            key = base64.b64encode(os.urandom(16)).decode()
+            request = (
+                "GET / HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "\r\n"
+            )
+            writer.write(request.encode())
+            await writer.drain()
+            header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=3.0)
+            assert b" 101 " in header.split(b"\r\n", 1)[0]
+
+            async def drain_until_eof() -> None:
+                # Discard server.hello + pings + the eventual close frame; we never
+                # write a pong. ``read`` returns b"" at EOF once the server closes.
+                while await reader.read(4096):
+                    pass
+
+            # interval + timeout = 0.4s; 5s headroom before we call it a leak.
+            await asyncio.wait_for(drain_until_eof(), timeout=5.0)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
     finally:
         await srv.shutdown()
 

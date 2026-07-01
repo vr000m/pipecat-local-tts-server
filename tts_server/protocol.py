@@ -63,16 +63,22 @@ SEND_TIMEOUT_SECONDS = 5.0
 # 1011 "keepalive ping timeout". Synthesis runs off-loop (daemon thread), but
 # mlx/Metal compute can hold the GIL and starve the asyncio loop that services
 # pongs for >20s during a heavy or cold-start generation — tripping the keepalive
-# and truncating an in-flight utterance. For a local single-user UDS/loopback
-# deployment, aggressive dead-peer detection buys little, so we KEEP the periodic
-# ping (cheap liveness / NAT keepalive) but DISABLE the pong timeout by default:
-# a briefly-starved loop no longer drops a live connection. A truly dead peer is
-# still caught by ``SEND_TIMEOUT_SECONDS`` on the next send and by TCP. Both knobs
-# are configurable (``ServerConfig`` / ``TTSClient`` / env) for operators who want
-# tighter detection. ``None`` for the interval disables pings entirely; ``None``
-# for the timeout keeps pings but never closes on a slow pong.
+# and truncating an in-flight utterance.
+#
+# The fix is NOT to disable the pong timeout (``ping_timeout=None``): that keeps
+# sending pings but never fails on a missing pong, so an IDLE peer that vanishes
+# is never reaped. ``SEND_TIMEOUT_SECONDS`` can't cover this — it only fires on an
+# application send, and an idle session has none — so a dead idle client would
+# hold a server connection (and growing pending-ping state) until TCP eventually
+# gives up (default ~2h). Instead we keep the ping AND use a LARGE FINITE pong
+# timeout: comfortably longer than any plausible single loop-starvation window
+# (so it never trips mid-generation), but bounded so a dead peer is still reaped
+# within ``interval + timeout`` (~140s at the defaults). Both knobs are
+# configurable (``ServerConfig`` / ``TTSClient`` / env). ``None`` for the interval
+# disables pings entirely; ``None`` for the timeout keeps pings but never closes
+# on a slow pong (opt-in only — it reintroduces the idle-leak above).
 KEEPALIVE_PING_INTERVAL_SECONDS: float | None = 20.0
-KEEPALIVE_PING_TIMEOUT_SECONDS: float | None = None
+KEEPALIVE_PING_TIMEOUT_SECONDS: float | None = 120.0
 
 # --- Synthesis backpressure caps (R4, Phase 3) ---
 # Bounded GLOBAL synthesis backlog (commits waiting on the shared Metal lock

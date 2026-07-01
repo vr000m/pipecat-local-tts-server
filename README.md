@@ -153,17 +153,20 @@ Endpoint precedence (server and client both): **URI > socket > host+port**. The
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer token the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to advertise after installing their extra G2P package. See [Kokoro language support](#kokoro-language-support-advertised--synthesizable). |
 | `TTS_WS_PING_INTERVAL` | server | Keepalive ping period in seconds (default `20`). `none`/`off`/`0` disables pings. |
-| `TTS_WS_PING_TIMEOUT` | server | Seconds to wait for a pong before closing (default `none` = never close on a slow pong). A number re-enables the timeout. |
+| `TTS_WS_PING_TIMEOUT` | server | Seconds to wait for a pong before closing (default `120`). `none`/`off`/`0` disables the timeout (keeps pings, never closes on a slow pong — reintroduces the idle-leak below). |
 
 Keepalive notes: the `websockets` library default (`ping_interval=20`,
 `ping_timeout=20`) closes a live connection with `1011 keepalive ping timeout`
 if a pong is late by 20s. During a heavy or cold-start generation, GIL-holding
 Metal compute can starve the asyncio loop past that window and truncate the
 in-flight utterance. So the server (and `TTSClient`) keep the periodic ping but
-**disable the pong timeout by default** — a briefly-starved loop no longer drops
-the connection; a truly dead peer is still caught by the per-send timeout and by
-TCP. `TTSClient(ping_interval=…, ping_timeout=…)` exposes the same knobs so a
-starved *server* loop can't trip the *client's* keepalive either.
+use a **large finite pong timeout (120s) by default** — long enough that a
+briefly-starved loop never drops a live connection, yet bounded so a dead *idle*
+peer is still reaped within `interval + timeout` (~140s). (Disabling the timeout
+entirely with `none` would leak such peers: an idle session has no application
+send, so the per-send timeout can't catch it, and TCP only gives up after ~2h.)
+`TTSClient(ping_interval=…, ping_timeout=…)` exposes the same knobs so a starved
+*server* loop can't trip the *client's* keepalive either.
 
 Auth notes: the server reads `PIPECAT_TTS_AUTH_TOKEN`; the client/probe reads
 `TTS_WS_TOKEN` (the two are deliberately separate so a probe can never mask a
