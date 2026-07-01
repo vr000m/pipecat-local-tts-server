@@ -570,3 +570,25 @@ unreproducible symptom. Added `tests/smoke/dia_dialogue_smoke.py --check-disconn
 `--disconnect-only`: aborts a mid-generate connection, then asserts a fresh commit returns full
 (non-truncated, non-stalled) audio. **Guard PASS** this run. If a future teardown change
 reintroduces the poison, the guard flips to FAIL.
+
+### Deferred follow-ups (`/deep-review`, 2026-06-30)
+
+`/deep-review` (4 lenses; no Critical/Important correctness or security defects) surfaced two
+**Logic Minors** that were **deferred, not fixed**, because a dia-only fix would diverge from the
+sibling-parity the plan mandates (`_DiaStream` is "structurally identical to `_KokoroStream`"; rate
+discovery mirrors Kokoro/Pocket). Both are latent — unreachable in the shipped path — and the Logic
+lens rated each "None required". Revisit as a **cross-cutting hardening across all four backends**
+(dia + Kokoro + Pocket + Voxtral) so parity is preserved:
+
+1. **`tts_server/backends/dia.py` rate discovery (`~:262`)** — `int(rate)` on `model.sample_rate`
+   would raise an unhandled `ValueError` if a future upstream returned a non-numeric truthy value.
+   Phase 0 verified mlx-audio returns an int, so theoretical. Siblings share the exact pattern.
+2. **`tts_server/backends/dia.py` `open_stream` (`~:367`)** — the extras re-coercion would surface a
+   mid-call `ValueError` as `BACKEND_ERROR` rather than the trust-boundary `INVALID_CONFIG` **if**
+   `open_stream` were ever called without `validate_extras` first. The server always validates first
+   (`server.py:700-703`), so unreachable in production; would only bite a future refactor or a direct
+   backend unit test. Siblings share the pattern.
+
+(A third finding — `dia_dialogue_smoke.py` sample-count shape convention — was a genuine non-issue,
+no behaviour to change. The deep-review Security Minor, the predictable smoke WAV path, was fixed in
+`f096ae8` by moving to a `mkdtemp` dir.)
