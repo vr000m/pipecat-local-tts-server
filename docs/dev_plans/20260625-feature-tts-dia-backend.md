@@ -526,7 +526,8 @@ Findings:
 3. **Same text, very different output by layout:** the identical 313-char interruption dialogue
    produced **30.0 s** of audio inline vs **89.9 s** newline-split (≈3×). Splitting on `\n`
    makes each segment a fuller, slower utterance — a perceptual item for listen-and-judge
-   (WAVs in `/tmp/dia_smoke/`).
+   (WAVs in `/tmp/dia_smoke/` for that run; the driver now defaults to a fresh secure
+   `mkdtemp` dir — like `run_smoke.sh` — and prints the path to listen at).
 
 **Statelessness checks (mlx-gated, `--statelessness-only --seed 42 --diag-seeds 6`):**
 - Per-script **mono-shape guard PASS** (all 3 scripts' first item `audio.ndim == 1`).

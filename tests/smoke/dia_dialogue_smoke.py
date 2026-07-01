@@ -94,6 +94,7 @@ import asyncio
 import base64
 import statistics
 import sys
+import tempfile
 import time
 import wave
 from dataclasses import dataclass
@@ -215,8 +216,15 @@ def _write_wav(path: Path, pcm: bytes, rate: int) -> None:
 async def _run_perceptual(args: argparse.Namespace) -> int:
     """Connect to the live dia server, render each script, write one WAV each, and
     apply the cheap structural asserts. Perceptual judgement is the human's."""
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Default to a fresh secure per-run dir (0700), mirroring run_smoke.sh's
+    # `mktemp -d` — no predictable world-writable path to race. An explicit
+    # --out-dir is honoured as-is (the operator owns that choice). Either way the
+    # written paths are printed below so the human knows where to listen.
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = Path(tempfile.mkdtemp(prefix="dia-smoke."))
 
     rc = 0
     written: list[Path] = []
@@ -642,8 +650,11 @@ def main() -> int:
     ap.add_argument("--token", help="bearer token (else none)")
     ap.add_argument(
         "--out-dir",
-        default="/tmp/dia_smoke",
-        help="directory to write the per-script WAVs (default: /tmp/dia_smoke)",
+        default=None,
+        help=(
+            "directory to write the per-script WAVs (default: a fresh secure "
+            "mkdtemp dir, like run_smoke.sh; the path is printed for listening)"
+        ),
     )
     ap.add_argument("--timeout", type=float, default=300.0, help="per-script synthesis timeout (s)")
     ap.add_argument(
