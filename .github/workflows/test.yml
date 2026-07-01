@@ -47,6 +47,7 @@ jobs:
             tests/test_capabilities_extras.py \
             tests/test_config_validation.py \
             tests/test_endpoint_resolution.py \
+            tests/test_keepalive.py \
             tests/test_server_cleartext_guard.py \
             tests/test_pcm16_clip.py \
             tests/test_kokoro_lazy_import.py \

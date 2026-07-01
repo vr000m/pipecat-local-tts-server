@@ -3,8 +3,9 @@
 Regression coverage for the 1011 "keepalive ping timeout" mid-generation
 truncation: the library defaults (ping_interval=20s, ping_timeout=20s) close a
 live connection when GIL-holding Metal compute starves the asyncio loop past 20s.
-The server and client both default to keeping the periodic ping but DISABLING the
-pong timeout, and expose both knobs.
+The server and client both default to keeping the periodic ping but using a large
+finite pong timeout (120s) — long enough not to trip mid-generation, yet bounded
+so a dead idle peer is still reaped — and expose both knobs.
 
 These assertions are behavioral: they read ``ping_interval`` / ``ping_timeout``
 off the live ``websockets`` connection objects (both directions), so a regression
