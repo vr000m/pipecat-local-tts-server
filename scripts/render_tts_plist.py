@@ -53,9 +53,8 @@ DEFAULT_LABEL = "pipecat.tts-server"
 # legitimate path characters and must not be rejected.
 _ABSPATH_RE = re.compile(r"^/[^\x00-\x1f]+$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
-# The four merge-time backends (see the justfile _resolve map + README port
-# table). ``dia`` is reserved and intentionally NOT accepted here.
-_BACKEND_RE = re.compile(r"^(tone|kokoro|voxtral_tts|pocket_tts)$")
+# The five shipped backends (see the justfile _resolve map + README port table).
+_BACKEND_RE = re.compile(r"^(tone|kokoro|voxtral_tts|pocket_tts|dia)$")
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 # A bare hostname / IP literal. Allows loopback names and IPv4/IPv6 literals;
 # the loopback-vs-remote auth decision is made by ``is_loopback_host``, not this
@@ -200,7 +199,7 @@ def main() -> None:
         "BACKEND",
         os.environ.get("BACKEND"),
         _BACKEND_RE,
-        "tone|kokoro|voxtral_tts|pocket_tts",
+        "tone|kokoro|voxtral_tts|pocket_tts|dia",
     )
     host = _require("HOST", os.environ.get("HOST"), _HOST_RE, "hostname or IP literal")
     port_raw = _require("PORT", os.environ.get("PORT"), re.compile(r"^[0-9]+$"), "integer")

@@ -33,6 +33,11 @@ _TTS_MODULES = [
     "tts_server.__main__",
     "tts_server.backends",
     "tts_server.backends._stream_util",
+    # dia.py must import with only the lean base — ``mlx_audio`` lazy (Phase 1).
+    # Listed explicitly because ``_TTS_MODULES`` imports submodules, not just the
+    # ``backends`` package, so the no-mlx-at-module-load invariant covers dia.py
+    # from the commit that introduces it (review 2026-06-30, moved from Phase 2).
+    "tts_server.backends.dia",
 ]
 
 # Top-level package names that must NEVER appear in ``sys.modules`` as a side

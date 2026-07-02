@@ -49,13 +49,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" ]]; then
-  echo "--backend must be tone, kokoro, voxtral_tts, or pocket_tts (got '$BACKEND')" >&2; exit 2
+if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" ]]; then
+  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, or dia (got '$BACKEND')" >&2; exit 2
 fi
 # mlx-backed backends need a longer first-call timeout (model load/JIT/first-run
 # download); tone is fast.
 IS_MLX=0
-[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" ]] && IS_MLX=1
+[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" ]] && IS_MLX=1
 [[ -z "$TIMEOUT" ]] && { [[ "$IS_MLX" -eq 1 ]] && TIMEOUT=180 || TIMEOUT=30; }
 
 # --- locate repo + run dir --------------------------------------------------
@@ -175,6 +175,17 @@ elif [[ "$BACKEND" == "pocket_tts" ]]; then
   verify "pocket_tts/default" "$RUN_DIR/pocket.wav" \
     --text "The quick brown fox jumps over the lazy dog."
   latency_check --ttfb-bound 3.0
+elif [[ "$BACKEND" == "dia" ]]; then
+  # dia is a streaming:false DIALOGUE backend (voice_count:0). Speakers ride
+  # in-text via [S1]/[S2] tags inside a plain payload; no --voice is passed
+  # (voice is structurally ignored). This is a structural WAV round-trip; the
+  # perceptual two-speaker check lives in dia_dialogue_smoke.py (listen-and-judge).
+  # No latency_check here (unlike voxtral/pocket above): dia decodes at RTF≈2.0
+  # (model floor) and TTFB scales with the first \n-segment's length, so no fixed
+  # --ttfb-bound is meaningful. Latency is measured perceptually in
+  # dia_dialogue_smoke.py instead (see dev plan Phase 3 live smoke run).
+  verify "dia/dialogue" "$RUN_DIR/dia.wav" \
+    --text "[S1] The quick brown fox jumps over the lazy dog. [S2] Indeed it does."
 elif [[ "$MULTILINGUAL" -eq 0 ]]; then
   verify "en/af_heart" "$RUN_DIR/en.wav" \
     --voice af_heart --speed 1.1 --text "The quick brown fox jumps over the lazy dog."

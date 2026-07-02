@@ -755,7 +755,13 @@ class TTSServer:
           any client-supplied voice; the client must omit it and take the server
           default. (Skipping the check here is the fail-OPEN bug this guards.)
         - The backend has no voice concept at all (``voice_count`` falsy / no
-          ``SupportsVoices``): there is nothing to validate, so accept.
+          ``SupportsVoices``): there is nothing to validate, so accept. This
+          accept branch is LOAD-BEARING for dialogue backends like dia
+          (``voice_count: 0``, speakers addressed in-text via ``[S1]``/``[S2]``):
+          a client ``voice`` is carried through to ``open_stream`` and discarded
+          there. A ``voice_count: 0`` backend MUST therefore NOT implement
+          ``SupportsVoices`` — do not "fix" this branch to reject without
+          accounting for that contract.
 
         Membership is checked against ``self._voice_set`` — a ``frozenset`` cached
         once after ``start()`` so this per-commit/per-update call is O(1) and

@@ -54,6 +54,7 @@ jobs:
             tests/test_kokoro_language_advertise.py \
             tests/test_voxtral_lean.py \
             tests/test_pocket_lean.py \
+            tests/test_dia_lean.py \
             tests/test_status.py \
             tests/test_auth.py \
             tests/test_resource_limits.py \
@@ -133,6 +134,8 @@ jobs:
           import tts_server.backends.kokoro as k
           import tts_server.backends.voxtral_tts as v  # 5a: extra resolves + module imports
           import tts_server.backends.pocket_tts as p   # 5b: extra resolves + module imports
-          print("OK: mlx_audio imports; kokoro + voxtral_tts + pocket_tts modules load;",
-                k.DEFAULT_KOKORO_MODEL, v.DEFAULT_VOXTRAL_MODEL, p.DEFAULT_POCKET_MODEL)
+          import tts_server.backends.dia as d          # 5c: extra resolves + module imports
+          print("OK: mlx_audio imports; kokoro + voxtral_tts + pocket_tts + dia modules load;",
+                k.DEFAULT_KOKORO_MODEL, v.DEFAULT_VOXTRAL_MODEL, p.DEFAULT_POCKET_MODEL,
+                d.DEFAULT_DIA_MODEL)
           PY

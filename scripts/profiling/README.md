@@ -172,6 +172,58 @@ odd one out (RTF > 1).
   pick **kokoro** if voice variety / languages / non-streaming batch throughput matter more.
   Both clear the realtime bar with large margin; Voxtral does not.
 
+## dia vs siblings — normalized single-paragraph comparison (M4 Max 16-core, 2026-07-01)
+
+Added when `dia` landed. Unlike the 2026-06-27 per-sentence tables above, this run feeds **one
+identical ~485-char paragraph** (single utterance, no newlines) to all four backends, so audio
+lengths land in the same ballpark (~26–30 s) and absolute TTFB/wall become directly comparable —
+not just RTF (which is already length-normalized as `wall/audio`). `dia` gets a leading `[S1]` tag
+(its only input difference); the others get the bare text. `--warm 2` (3 runs/phrase), warm-stable
+values shown. **Caveat:** this was a *contended-but-idle* run — a pocket `tts_server`, a nemotron
+`stt_server`, and a second `dia` server were resident at 0% CPU; memory pressure inflated dia's
+`start()` to 9–27 s (vs ~9 s isolated). Treat as directional, not pristine.
+
+| Metric (in-process, same 485-char text) | kokoro | pocket_tts | voxtral_tts | dia |
+|---|---|---|---|---|
+| rate | 24 kHz | 24 kHz | 24 kHz | **44.1 kHz** |
+| Cold load + warmup (`start()`) | 2.7 s | **2.1 s** | 4.8 s | 9–27 s |
+| audio produced (same text) | 27.9 s | 26.1 s | 26.6 s | 29.7 s |
+| TTFB (commit → first audio) | 0.64 s | **0.02 s** | 0.44 s | **~55 s** |
+| wall to full render | **0.65 s** | 1.31 s | ~30 s | ~55 s |
+| RTF (wall / audio) | **0.02** | 0.05 | 1.07–1.21 | 1.82–1.89 |
+
+To render ~28 s of speech: kokoro **0.65 s**, pocket **1.3 s**, voxtral **~30 s**, dia **~55 s**
+(dia ≈85× slower than kokoro, ≈42× slower than pocket). First-audio latency is sub-second for the
+three siblings and **~55 s for dia** (non-streaming single segment → you wait for the whole
+render). kokoro's TTFB reads 0.64 s here — not the ~0.08 s of the short-sentence table — because
+`streaming:false` + a longer single segment means it renders the full ~28 s clip before flushing,
+so TTFB ≈ wall on long single commits; the two only split for the streaming backends.
+
+### dia per-phrase (short prompts, `[S1]`-tagged, 2026-07-01)
+
+| Phrase | audio_s | TTFB | wall_s | RTF |
+|---|---|---|---|---|
+| 1-sentence (~50 chars) | 29.98 | ~52 s | ~53 s | 1.74–1.80 |
+| 2-sentence, 1 seg (~90 chars) | 28.81 | ~52 s | ~53 s | 1.81–1.88 |
+| 3-seg, newlines (~140 chars) | 95.22 | ~71 s | ~190 s | 1.97–2.04 |
+
+**~30 s single-segment output ceiling (the load-bearing dia finding).** Every single-segment
+`generate()` produced ~30 s of audio *regardless of input length* — a 50-char one-liner and a
+485-char paragraph both landed at ~30 s. This is the ~3072-token `max_tokens` default
+(≈30 s @ 44.1 kHz): short text is padded toward it, and text longer than ~485 chars in one segment
+is truncated at it. Splitting on `\n` resets the budget per segment — hence the 3-newline row makes
+~95 s (3 × ~30 s) and its TTFB (~71 s) sits below its total (~190 s, confirming per-segment
+streaming). A client that needs the full text spoken must chunk into `\n` segments under ~30 s each.
+
+**Recommendation:** dia is a *dialogue-rendering* backend (multi-speaker, offline), not a
+low-latency single-voice engine. For short, single-voice, latency-sensitive output (e.g. game
+alerts), **kokoro or pocket_tts** win by ≈40–85× on throughput and ≈100× on first-audio latency;
+dia's ~55 s TTFB and 30 s-per-segment ceiling make it unsuitable there.
+
+Reproduce: siblings via `rtf_benchmark.py --backend <name>`. dia needs `[S1]`-tagged input (the
+committed `PHRASES` are untagged), so both dia tables used a one-off wrapper feeding tagged text
+through the same `_synth_once` harness.
+
 ## Phase 5 wire-level smoke + concurrency (M4 Max 16-core, 2026-06-27)
 
 Measured over the **wire path** — a real `tts_server` on a Unix socket, driven by

@@ -54,6 +54,10 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
         from .backends.pocket_tts import DEFAULT_POCKET_MODEL
 
         return DEFAULT_POCKET_MODEL
+    if backend == "dia":
+        from .backends.dia import DEFAULT_DIA_MODEL
+
+        return DEFAULT_DIA_MODEL
     return None
 
 
@@ -353,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_endpoint_flags(p_serve)
     p_serve.add_argument(
         "--backend",
-        choices=("tone", "kokoro", "voxtral_tts", "pocket_tts"),
+        choices=("tone", "kokoro", "voxtral_tts", "pocket_tts", "dia"),
         default="tone",
     )
     # Default None so ``_resolve_model`` applies a backend-aware fallback
