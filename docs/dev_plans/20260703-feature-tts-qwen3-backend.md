@@ -1,6 +1,7 @@
 # Task: tts-server — `qwen3_tts` streaming backend
 
-**Status**: Not Started
+**Status**: Complete
+**Completed**: 2026-07-03
 **Component**: tts-server (backends)
 **Assigned to**: Varun Singh
 **Priority**: Medium
@@ -406,7 +407,7 @@ Context lifecycle:
 - [x] Phase 0: Model verification gate
 - [x] Phase 1: Backend module + unit tests (mlx-gated + lean)
 - [x] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, docs
-- [ ] Phase 3: Profiling + comparison table
+- [x] Phase 3: Profiling + comparison table
 
 ## Findings
 
@@ -515,4 +516,31 @@ findings folded into the contract above:
 
 ## Final Results
 
-(fill when complete)
+### Summary
+`qwen3_tts` streaming backend shipped end-to-end in one conducted run (4 phases, 2 fix-loop
+iterations): Phase-0 gate → re-plan (Base has no speakers → CustomVoice default) → backend +
+two-layer tests → full wiring (registry/CLI/extra/justfile/smoke/renderer/CI/docs, port 9165)
+→ profiling. Commits 856c484, 187926a, 5089eae, be6aed0, 0d92988 on
+`feature/tts-qwen3-backend`.
+
+### Outcomes
+- Best latency in the stable: TTFB 0.12 s backend-level / 0.128 s end-to-end through the
+  server; RTF 0.27–0.28 flat with utterance length; peak memory ~3.1 GB (gate-sourced).
+- 9 named voices (lowercase), default `ryan`; dynamic languages; extras temperature/top_k/top_p.
+- All acceptance criteria met: suite 321 passed / 3 skipped (drift tests green),
+  `just smoke-qwen3_tts` PASS, `just smoke-multiconn-qwen3_tts` PASS, ruff clean, docs updated.
+
+### Learnings
+- **mlx thread-local CompilerCache segfault**: qwen3 is the only model using `mx.compile`; the
+  cache is destroyed without the GIL on worker-thread exit → hard segfault. Fixed with
+  `mx.disable_compile()` in `start()` (cost noise). Candidate upstream mlx/mlx-audio report.
+- **CustomVoice renders a whole commit as one generation** (no \n split): the max_tokens=4096
+  ceiling (≈328 s audio) truncates silently, and repetitive text degenerates to ~0.18 s/char —
+  `_MAX_TEXT_CHARS = 800` caps worst-case single-generation length.
+- Gate-before-code paid off twice (dia precedent holds): speaker-list falsification re-planned
+  the default model BEFORE any backend code; the gate's peak-memory/licence records fed docs.
+
+### Follow-up Work
+- Consider filing the mlx CompilerCache thread-exit segfault upstream (like #803).
+- Optional: expose `instruct` (emotion/style) as a capability-gated extra in a v2.
+- Base-bf16 voice-cloning support if the WS protocol ever grows reference-audio transport.
