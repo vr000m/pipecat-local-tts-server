@@ -121,14 +121,21 @@ _BRIDGE_MAXSIZE = 32
 # model facts. On CustomVoice a whole commit renders as ONE autoregressive
 # generation (``generate_custom_voice()`` has no ``split_pattern`` — a
 # multi-``\n`` commit is a single segment), so these must respect the
-# SINGLE-generation ceiling: ``max_tokens=4096`` at 12.5 tokens/s is ≈5.5 min
-# of audio, far above any sane commit. Voxtral's values (40 words / 2000
-# chars: ~2000 chars ≈ 350 words ≈ 2.5 min speech) sit comfortably inside
-# that ceiling AND inside the streaming sweet spot, so they carry over —
-# streaming yields every ~5 tokens regardless of commit length, so latency is
-# unaffected by the one-generation shape.
+# SINGLE-generation ceiling: ``max_tokens=4096`` at 12.5 tokens/s is ≈328 s
+# (~5.5 min) of audio, after which output is silently TRUNCATED mid-utterance.
+#
+# Voxtral's 2000-char cap does NOT carry over. Measured on the multiconn-smoke
+# fix loop (2026-07-03, CustomVoice-bf16, voice=ryan): long repetitive text
+# degenerates to ~0.17-0.19 s of audio PER CHAR (~3x normal pacing — 400 chars
+# -> 68 s, 1001 chars -> 194.5 s), and a 1701-char commit hit the 4096-token
+# ceiling EXACTLY (16384 x 960 B deltas = 327.68 s) — i.e. truncation from
+# ~1700 chars at worst-case pacing, with ~93 s of wall time pinning the Metal
+# lock for that one commit. 800 chars caps the worst case at ~160 s of audio
+# (2x margin under the token ceiling) and ~45 s of generation. Normal prose
+# (~0.07 s/char measured) stays unaffected: 800 chars ≈ 140 words ≈ 60 s of
+# speech. Streaming still yields every ~5 tokens, so latency is unchanged.
 _IDEAL_WORDS = 40
-_MAX_TEXT_CHARS = 2000
+_MAX_TEXT_CHARS = 800
 
 # Sampling-extra bounds. ``generate()`` forwards these under the process-wide
 # Metal lock, so unbounded values are a denial-of-service / correctness

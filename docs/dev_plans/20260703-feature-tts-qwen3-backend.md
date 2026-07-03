@@ -404,8 +404,8 @@ Context lifecycle:
 ## Progress
 
 - [x] Phase 0: Model verification gate
-- [ ] Phase 1: Backend module + unit tests (mlx-gated + lean)
-- [ ] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, docs
+- [x] Phase 1: Backend module + unit tests (mlx-gated + lean)
+- [x] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, docs
 - [ ] Phase 3: Profiling + comparison table
 
 ## Findings
@@ -450,6 +450,39 @@ review explicitly deferred these decisions to the gate).
 **Gate-script fixes during Phase 0** (folded into `qwen3_phase0_gate.py`): Q5 helpers thread
 `speaker` (CustomVoice requires voice); single-segment renders record within-commit N/A instead
 of failing; cross-call prior render re-seeded via the shared helper.
+
+### Phase 1 findings 2026-07-03
+
+- **mlx CompilerCache segfault (fix-loop iteration 1).** mlx 0.31.2's compile cache is
+  thread-local and holds Python objects freed WITHOUT the GIL by pthread TLS cleanup on thread
+  exit (`CompilerCache::~CompilerCache` → `tupledealloc`, EXC_BAD_ACCESS). qwen3 is the only
+  model in our stable whose code calls `mx.compile` (talker rotary/swiglu + vocoder decoder via
+  `post_load_hook`), so the bridge's per-stream `tts-synth` worker thread poisoned its own exit —
+  voxtral shares the identical bridge and never crashes. Fix: `mx.disable_compile()` in
+  `Qwen3Backend.start()` (measured cost: RTF 0.248→0.267, TTFB 0.103→0.111 s — noise).
+  Candidate upstream mlx issue; consider filing like #803.
+- Suites: 28 passed, 2 xfailed (make_backend/argparse membership — flip in Phase 2).
+
+### Phase 2 findings 2026-07-03 (multiconn fix loop)
+
+- **Multiconn smoke keepalive failure = runaway single generation, NOT loop starvation.**
+  `just smoke-multiconn-qwen3_tts` died in `run_busy_probe` with a CLIENT-side
+  `1011 keepalive ping timeout`. Measured with a ping-RTT probe against a live server: the
+  asyncio loop stays responsive the whole time (max pong RTT 3.7 ms across a 92.8 s
+  generation) — GIL-starvation (hypothesis 1) and shared-bridge backpressure (hypothesis 2)
+  both falsified. Root cause: on CustomVoice, long REPETITIVE text degenerates to
+  ~0.17–0.19 s of audio per char (fox-sentence: 400 chars → 68 s, 1001 chars → 194.5 s), and
+  the smoke's 1701-char turn hit the `max_tokens=4096` ceiling EXACTLY (16384×960 B deltas =
+  327.68 s audio; silent mid-utterance truncation) taking ~93 s of wall time. That busts the
+  smoke's 60 s per-turn drain: the client abandons the drain → its recv queue fills → the
+  server's send stalls → the server drops the session per contract (`send exceeded 5.0s
+  (stalled reader)` — the designed slow-reader guard) → the half-torn connection can no longer
+  pong → the client's keepalive kills conn0 → the busy probe inherits a dead socket. No shared
+  code (`_stream_util.py` / `server.py` / keepalive constants) was at fault or changed.
+- **Fix: `_MAX_TEXT_CHARS` 2000 → 800** (Phase-1's voxtral carry-over is falsified — the plan
+  contract says the cap must reflect single-generation limits). 800 chars caps worst-case
+  pacing at ~160 s audio (2× margin under the 328 s token ceiling) and ~45 s generation;
+  normal prose (~0.07 s/char measured) is unaffected. `_IDEAL_WORDS=40` stays.
 
 ### Review resolution 2026-07-03
 
