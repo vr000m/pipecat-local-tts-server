@@ -9,10 +9,19 @@
 
 ## Objective
 
-Add a `qwen3_tts` streaming TTS backend (mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16 via the
-already-pinned mlx-audio 0.4.4) as a voxtral-derived sub-segment streamer behind its own lazy
-extra, with tests, justfile smoke recipes, and a cross-backend profiling entry. **No server-side
-changes** — the backend plugs into the existing session loop / re-chunker / `_stream_util` bridge.
+Add a `qwen3_tts` streaming TTS backend (mlx-community/Qwen3-TTS-12Hz-0.6B-**CustomVoice**-bf16
+via the already-pinned mlx-audio 0.4.4) as a voxtral-derived sub-segment streamer behind its own
+lazy extra, with tests, justfile smoke recipes, and a cross-backend profiling entry. **No
+server-side changes** — the backend plugs into the existing session loop / re-chunker /
+`_stream_util` bridge.
+
+> **Post-gate re-plan (2026-07-03).** The plan originally targeted the `0.6B-Base-bf16` variant
+> on the assumption it carried named speakers. Gate Q3 falsified that: Base's config has
+> `spk_id: {}` (no speakers; voice-cloning/unconditioned only). The CustomVoice variant carries
+> 9 named speakers, routes through the SAME `generate(voice=…, stream=True,
+> streaming_interval=…)` entry (`qwen3_tts.py:1219-1236` → `generate_custom_voice`), and passed
+> gate Q1/Q2/Q3/Q5 with equivalent latency. Default model is therefore CustomVoice; Base remains
+> usable via `--model` as a no-voice (`voices() == []`) model. See `## Findings`.
 
 ## Context
 
@@ -25,8 +34,8 @@ changes** — the backend plugs into the existing session loop / re-chunker / `_
   so the net-new work is a Phase-0 verification gate (dia precedent: the gate falsified a core
   assumption and forced a re-plan *before* wiring) plus the standard backend-add wiring.
 - Out of scope for v1 of this backend: voice cloning (`ref_audio`+`ref_text` — the WS protocol
-  cannot carry reference audio), the CustomVoice/VoiceDesign model variants
-  (`generate_custom_voice()` / `generate_voice_design()` entry points and their `instruct` knob),
+  cannot carry reference audio), the VoiceDesign variant and the `instruct` (emotion/style) knob
+  (the backend never passes `instruct`, even though the CustomVoice entry point accepts it),
   and the `repetition_penalty`/`speed`/`split_pattern`/`max_tokens`/`streaming_context_size`
   sampling knobs. Out-of-scope kwargs are **actively guarded** (lean negative tests, Phase 1),
   not merely undocumented — `generate()` accepts them all and ICL cloning silently activates
@@ -36,7 +45,10 @@ changes** — the backend plugs into the existing session loop / re-chunker / `_
 
 - Backend name, extra name, and justfile recipe suffix are all **`qwen3_tts`** (consistent with
   `voxtral_tts` / `pocket_tts`).
-- Default model `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`, exported as `DEFAULT_QWEN3_MODEL`.
+- Default model `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16`, exported as
+  `DEFAULT_QWEN3_MODEL` (gate-verified: 9 speakers, streaming parity with Base, apache-2.0).
+  `--model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` remains supported as a no-voice model
+  (`voices() == []`; backend omits the `voice` kwarg — base path is speaker-unconditioned).
 - Lean-base invariant holds: `import tts_server` and `make_backend("qwen3_tts", …)` succeed with
   only the lean base installed; `mlx_audio` enters the process only in `start()`. Enforced by a
   dedicated `tests/test_qwen3_lean.py` (every sibling backend has one) wired into the CI lean
@@ -45,11 +57,15 @@ changes** — the backend plugs into the existing session loop / re-chunker / `_
   through the shared `_stream_util.stream_generate` bridge; `sample_rate` read from
   `model.sample_rate` in `start()` before warmup (never hardcode 24000 — the ModelConfig default
   is a dataclass default, not the repo-confirmed value; the gate records the real one).
-- Voice knob maps to named speakers (`generate(voice=<speaker>)`; base models route it as
-  `speaker`). `voices()` enumerates dynamically from `model.get_supported_speakers()` (which reads
-  `config.talker_config.spk_id`) — do NOT hardcode the speaker list, and record/advertise the
-  **exact-case** strings the model returns (`generate()` lowercases its lookup; the server
-  validates verbatim against `frozenset(voices())`, `server.py:775`).
+- Voice knob maps to named speakers (`generate(voice=<speaker>)`). `voices()` enumerates
+  dynamically from `model.get_supported_speakers()` (which reads `config.talker_config.spk_id`)
+  — do NOT hardcode the speaker list, and advertise the **exact-case** strings the model returns
+  (gate-verified all-lowercase: `serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric,
+  dylan`; the server validates verbatim against `frozenset(voices())`, `server.py:775`).
+  CustomVoice models REQUIRE a voice (`generate()` raises without one, `qwen3_tts.py:1219-1222`):
+  when the client sends no voice, the backend injects `DEFAULT_QWEN3_VOICE = "ryan"` (English
+  male; perceptual confirmation lands in the smoke run). When `voices()` is empty (Base models),
+  the backend omits the `voice` kwarg entirely (unconditioned path, dia-style `voice_count: 0`).
 - **Language policy**: advertise `capabilities()["languages"]` dynamically from
   `model.get_supported_languages()`; `open_stream(language=…)` maps the client's validated
   `language` to `generate(lang_code=…)`, defaulting to `"auto"` when the client sends none. (The
@@ -83,11 +99,10 @@ changes** — the backend plugs into the existing session loop / re-chunker / `_
 - **Phase-0 gate completeness**: does the gate actually falsify the assumptions the later phases
   depend on (incremental yield, cross-segment state, `voice=None` behavior, speaker list casing,
   languages, sample rate, license)?
-- **Voice/None semantics**: qwen3's base path has **no default speaker** — when `speaker` is
-  None/unknown, `speaker_embed` stays None and output is speaker-*unconditioned*
-  (`qwen3_tts.py:381-389`; no else-default branch). The backend decision is inject-a-discovered-
-  default-speaker vs omit-and-accept-unconditioned-output, decided by gate Q4. Do not reuse
-  Voxtral's "the model's own default stands" framing — it is a false analogy here.
+- **Voice/None semantics (gate-decided)**: CustomVoice REQUIRES voice → backend injects
+  `DEFAULT_QWEN3_VOICE = "ryan"` on None. Base has no speakers → backend omits `voice` kwarg
+  (speaker-unconditioned, `qwen3_tts.py:381-389`). Review should check both branches and that
+  the injected default is a member of the discovered `voices()` when non-empty.
 - **Chunk cadence math**: qwen3's chunk quantum is `max(1, int(streaming_interval * 12.5))` codec
   tokens (12.5 tokens/s) — the provisional `_STREAMING_INTERVAL = 0.4` (5 tokens ≈ 0.4 s audio)
   differs from Voxtral's 0.3 semantics; TTFB math in review should use tokens, not seconds.
@@ -152,12 +167,13 @@ before proceeding. Findings land in `## Findings` below the marker.
   streaming_interval=_STREAMING_INTERVAL, **kwargs)` through `stream_generate` with
   `maxsize=_BRIDGE_MAXSIZE`.
 - `_STREAMING_INTERVAL` module constant, value set from Phase 0 Q2 findings (provisional 0.4).
-- Voice handling per Phase 0 Q4 (inject-default vs unconditioned — NOT Voxtral's omit-rule
-  framing); `voices()` dynamic via `get_supported_speakers()` with exact-case strings. NOTE:
-  `_discover_voices` here is **net-new code**, not a Voxtral copy (Voxtral walks
-  `_voice_embedding_files`; qwen3 reads model API) — define the empty-`spk_id` fallback
-  (`config.py` default is `None` → `[]`) with a static fallback mirroring Voxtral's `_STATIC_*`
-  pattern, populated from gate Q3.
+- Voice handling per gate decision: inject `DEFAULT_QWEN3_VOICE = "ryan"` when the client sends
+  none AND `voices()` is non-empty; omit the `voice` kwarg when `voices()` is empty (Base
+  models, unconditioned path). `voices()` dynamic via `get_supported_speakers()` with exact-case
+  strings. NOTE: `_discover_voices` here is **net-new code**, not a Voxtral copy (Voxtral walks
+  `_voice_embedding_files`; qwen3 reads model API). Empty `get_supported_speakers()` is a VALID
+  state (Base), not an error — `voice_count: 0`, no static fallback list (a fake list would
+  advertise voices the model ignores).
 - Language mapping: `open_stream(language=…)` → `generate(lang_code=…)`, `None` → `"auto"`;
   `capabilities()["languages"]` from `get_supported_languages()` (gate-informed static fallback).
 - Extras: exactly `temperature`, `top_k`, `top_p` with validation/clamping mirroring Voxtral's
@@ -176,8 +192,9 @@ before proceeding. Findings land in `## Findings` below the marker.
   fold into Phase 2's run), locked-value assertion `_STREAMING_INTERVAL == <final>` plus
   `max(1, int(_STREAMING_INTERVAL * 12.5)) == <expected tokens>`, `streaming: True` caps shape,
   `"streaming_interval" not in caps["extras"]` and `caps["extras"] == ["temperature", "top_k",
-  "top_p"]`, spy-model tests for the Q4 voice-None decision, the language→lang_code mapping,
-  and the forbidden-kwargs negative guard.
+  "top_p"]`, spy-model tests for BOTH voice branches (None→`"ryan"` injection when voices
+  non-empty; kwarg omitted when voices empty), the language→lang_code mapping, and the
+  forbidden-kwargs negative guard.
 - Cancel-mid-stream/bridge-teardown and `wait_closed` (SupportsWaitClosed slot-accounting,
   protocol.md §7) are covered by the backend-agnostic `tests/test_streaming_and_cancel.py`
   suite — cite in test docstrings rather than duplicating.
@@ -251,11 +268,21 @@ land in the same commit or `just smoke-qwen3_tts` is red at every intermediate p
 - **Voxtral template, not Pocket**: qwen3 streams via `stream=True` + `streaming_interval` exactly
   like Voxtral (`voxtral_tts.py:264–303`). `_discover_voices` is the one net-new piece (model-API
   driven, not embedding-file walk).
-- **`voice` kwarg passthrough with exact-case discovery**: qwen3's `generate()` routes `voice` →
-  `speaker` for base models (`qwen3_tts.py:1294-1295`) via a **lowercased** lookup, while the
-  server validates the client's voice case-exactly against `voices()`. Advertising the model's
-  verbatim `spk_id` keys keeps both sides consistent. None-handling decided by Phase 0 Q4
-  (inject-default vs unconditioned — there is no model-side default speaker).
+- **CustomVoice default model (post-gate re-plan)**: Base-bf16 has `spk_id: {}` — no named
+  speakers (gate Q3 FAIL). CustomVoice-bf16 has 9, routes through the SAME `generate()` entry
+  with identical streaming behavior (gate-verified: TTFB 0.10 s, RTF 0.24, cross-call
+  stateless), same license. The voice knob only works there, so it is the default; Base stays
+  reachable via `--model` as a `voice_count: 0` model (dia precedent in the server).
+- **`voice` kwarg with exact-case discovery + injected default**: `generate()` matches speakers
+  via a **lowercased** lookup while the server validates case-exactly against `voices()`;
+  advertising the model's verbatim `spk_id` keys (all lowercase in this repo) keeps both sides
+  consistent. CustomVoice raises without a voice, so the backend injects
+  `DEFAULT_QWEN3_VOICE = "ryan"` on None; with empty `voices()` (Base) it omits the kwarg.
+- **Whole-commit = one segment on CustomVoice**: `generate_custom_voice()` has no
+  `split_pattern` (`qwen3_tts.py:2074-2088`) — a multi-`\n` commit renders as ONE autoregressive
+  generation (streaming still yields every ~5 tokens, so latency is unaffected). `ideal_words`/
+  `max_text_chars` must reflect single-generation limits (`max_tokens=4096` ≈ 5.5 min audio),
+  not per-segment ones.
 - **Language → `lang_code` mapping**: advertise `get_supported_languages()`; forward the
   server-validated client `language` as `lang_code`, defaulting `"auto"`. Voxtral's ignore-
   language approach does not fit qwen3 (language is a real generate() knob here, not a voice-
@@ -282,7 +309,7 @@ land in the same commit or `just smoke-qwen3_tts` is red at every intermediate p
 |------|---------------|---------------|----------|
 | `make_backend("qwen3_tts")` | Phase 2 registry branch | CLI / rtf_benchmark / smoke scripts | Lazy import; ValueError on unknown; `model or DEFAULT_QWEN3_MODEL` |
 | argparse choices / `_BACKEND_RE` / README port table / `_resolve` | Phase 2 | `test_justfile_recipes.py` drift tests | all four sets identical; port 9165 |
-| `open_stream(voice=…)` | Phase 1 backend | server session loop | voice pre-validated by server against exact-case `voices()`; None per Q4 decision |
+| `open_stream(voice=…)` | Phase 1 backend | server session loop | voice pre-validated by server against exact-case `voices()`; None → inject `"ryan"` (voices non-empty) or omit kwarg (voices empty) |
 | `open_stream(language=…)` | Phase 1 backend | server session loop | server-validated language → `lang_code`; None → `"auto"` |
 | `stream_generate` bridge | Phase 1 `_gen_factory` | `_stream_util.py` | generator yields `GenerationResult` with `.audio` float32 mx.array; backend sets `maxsize` |
 | `sample_rate` attr | Phase 1 `start()` | server `hello.audio.rate` | set before first `open_stream`; from model, never hardcoded (gate-verified value) |
@@ -370,18 +397,59 @@ Context lifecycle:
   verified license) in the same PR.
 - `ruff format` + `ruff check` clean.
 
-<!-- reviewed: 2026-07-03 @ 19fadeaded582e9450585610433a9e0c2ee3e0aa -->
+<!-- reviewed: 2026-07-03 @ 051a81115b24aca1e7d6f43e7423186611d87f44 -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
 ## Progress
 
-- [ ] Phase 0: Model verification gate
+- [x] Phase 0: Model verification gate
 - [ ] Phase 1: Backend module + unit tests (mlx-gated + lean)
 - [ ] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, docs
 - [ ] Phase 3: Profiling + comparison table
 
 ## Findings
+
+### Phase 0 gate results 2026-07-03 (both runs; script: `tests/smoke/qwen3_phase0_gate.py`)
+
+**Run 1 — `0.6B-Base-bf16`: GATE FAILED (Q3) → re-plan.**
+- Q1 PASS: 8 chunks @ interval 0.4, gaps ~0.10 s, genuinely incremental (yield span 0.67 s of
+  0.80 s wall). Streaming yields set `is_streaming_chunk=True`; only the terminal yield sets
+  `is_final_chunk=True`.
+- Q2: TTFB **0.10 s** @0.4 / 0.46 s @2.0; RTF **0.24–0.25** (≈4× realtime); peak memory
+  3.10 GB (@0.4) / 4.10–4.32 GB (@2.0 — larger decode chunks cost more). sample_rate=24000.
+  Far better than the upstream README claims (RTF 1.67x, TTFB 85 ms was tokens-level, ours is
+  end-to-end audio).
+- Q3 **FAIL**: `get_supported_speakers() == []` — Base's config has `spk_id: {}` (confirmed by
+  reading the cached HF config.json directly). Family-README names (Ryan/Aiden) do NOT exist in
+  this variant. Languages: `['auto','chinese','english','german','italian','portuguese',
+  'spanish','japanese','korean','french','russian']`.
+- Q4: no-voice generate() succeeds → speaker-unconditioned clean audio (nan=0, max_abs 0.41).
+- Q5 PASS: within-commit segments INDEPENDENT (A==C segment-2 byte-identical under seeded
+  greedy; unlike dia) AND cross-call stateless (X_alone == X_after byte-identical).
+- Q6: HF card `license: apache-2.0` (tag `license:apache-2.0`); **no LICENSE file in the repo**
+  — the smoke README note quotes exactly this.
+
+**Run 2 — `0.6B-CustomVoice-bf16`: GATE PASSED.**
+- Q3 PASS: 9 speakers, exact-case all-lowercase: `serena, vivian, uncle_fu, ryan, aiden,
+  ono_anna, sohee, eric, dylan`. Same languages list, sample_rate=24000.
+- Q1 PASS: 11 chunks @0.4, same ~0.10 s cadence. Q2: TTFB 0.10–0.11 s @0.4, RTF 0.23–0.25,
+  peak mem 3.08–4.30 GB — parity with Base.
+- Q4: `generate()` WITHOUT voice raises `ValueError: CustomVoice model requires 'voice'` →
+  backend must inject a default (decision: `DEFAULT_QWEN3_VOICE = "ryan"`).
+- Q5 PASS: cross-call stateless. Within-commit coupling **N/A** — `generate_custom_voice()` has
+  no `split_pattern`; a two-line input renders as ONE segment (whole commit = one generation).
+- Q6: same `apache-2.0` card tag, no LICENSE file.
+
+**Re-plan decision**: default model → CustomVoice-bf16 (voice knob only works there; identical
+streaming/latency; same generate() entry). Base stays reachable via `--model` as a
+`voice_count: 0` unconditioned model. Contract sections amended above the marker; marker
+refreshed (conduct resume-refresh semantics — the amendment is gate-driven, and the original
+review explicitly deferred these decisions to the gate).
+
+**Gate-script fixes during Phase 0** (folded into `qwen3_phase0_gate.py`): Q5 helpers thread
+`speaker` (CustomVoice requires voice); single-segment renders record within-commit N/A instead
+of failing; cross-call prior render re-seeded via the shared helper.
 
 ### Review resolution 2026-07-03
 
