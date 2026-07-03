@@ -263,6 +263,38 @@ Reading the table:
 
 Reproduce: `uv run --extra qwen3_tts python scripts/profiling/rtf_benchmark.py --backend qwen3_tts`.
 
+### Same-day cross-backend re-run (2026-07-03, identical phrase set)
+
+To make the qwen3 comparison strictly like-for-like (the sections above cite 2026-06-27
+numbers), all five backends were re-benchmarked back-to-back on 2026-07-03 with the unchanged
+`PHRASES` set (`rtf_benchmark.py` untouched since 2026-06-26, commit `1999c2a`). Warm-run
+values (`warm1`; ranges span warm1–warm3):
+
+| backend | load+warmup | TTFB warm (1-sent) | RTF 1-sent | RTF 2-sent | RTF 3-seg |
+|---|---|---|---|---|---|
+| kokoro | 2.3 s | 0.08 s | 0.02 | 0.02 | 0.03 |
+| voxtral_tts | 5.4 s | 0.37–0.38 s | 1.09 | 1.08–1.13 | 1.16–1.17 |
+| pocket_tts | 1.6 s | 0.02 s | 0.05 | 0.05 | 0.05 |
+| dia | — | (segment-level; see dia plan) | — | — | 2.16–2.40 |
+| **qwen3_tts** | 2.5 s | **0.12 s** | **0.27** | **0.28** | **0.28** |
+
+Every historical number reproduced within noise (kokoro 0.02–0.03 vs 0.03; voxtral 1.08–1.17
+vs 1.09–1.29; pocket 0.05 vs 0.05; dia RTF ~2.2–2.4 vs ~2.0 — dia renders the untagged 3-seg
+phrase as a 65 s dialogue, its known behavior on untagged text, so its row is not
+phrase-comparable and lives in the dia plan's Findings). The 2026-06-27 sections above remain
+valid as-is. Standings unchanged: kokoro fastest raw throughput, pocket fastest TTFB,
+**qwen3_tts is the fastest *quality-voice* streamer** (RTF 0.27 ≈ 3.7× realtime, TTFB 0.12 s)
+and the only streaming backend with voxtral-class voices at sub-realtime RTF.
+
+Raw output: session scratchpad `rtf-cross-backend-20260703.txt` (regenerate with the loop
+below):
+
+```sh
+for b in kokoro voxtral_tts pocket_tts dia qwen3_tts; do
+  uv run --extra "$b" python scripts/profiling/rtf_benchmark.py --backend "$b"
+done
+```
+
 ## Phase 5 wire-level smoke + concurrency (M4 Max 16-core, 2026-06-27)
 
 Measured over the **wire path** — a real `tts_server` on a Unix socket, driven by
