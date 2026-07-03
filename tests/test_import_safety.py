@@ -38,6 +38,9 @@ _TTS_MODULES = [
     # ``backends`` package, so the no-mlx-at-module-load invariant covers dia.py
     # from the commit that introduces it (review 2026-06-30, moved from Phase 2).
     "tts_server.backends.dia",
+    # qwen3_tts.py must likewise import with only the lean base — ``mlx_audio``
+    # stays lazy inside ``start()`` (same invariant as dia above).
+    "tts_server.backends.qwen3_tts",
 ]
 
 # Top-level package names that must NEVER appear in ``sys.modules`` as a side

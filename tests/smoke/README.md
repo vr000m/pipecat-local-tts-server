@@ -32,6 +32,15 @@ tests/smoke/run_smoke.sh --backend voxtral_tts
 
 # pocket_tts backend — streaming:true, fast. WAV + latency/cadence. CC-BY-4.0.
 tests/smoke/run_smoke.sh --backend pocket_tts
+
+# qwen3_tts backend — streaming:true. WAV + latency/cadence. Auto-runs
+# `uv sync --extra qwen3_tts` if needed. License (gate Q6, verified 2026-07-03):
+# the default weights (mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16) carry
+# the HF card `license: apache-2.0` (tag `license:apache-2.0`); **no LICENSE
+# file in the repo**. Default model: CustomVoice-bf16, 9 speakers (lowercase:
+# serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan);
+# default voice `ryan` injected when the client omits one.
+tests/smoke/run_smoke.sh --backend qwen3_tts
 ```
 
 > **Multi-connection driver + fast streaming backends.** `run_multiconn.sh`'s
@@ -58,9 +67,11 @@ just smoke-kokoro
 just smoke-multilingual
 just smoke-voxtral_tts
 just smoke-pocket_tts
+just smoke-qwen3_tts
 just smoke-multiconn
 just smoke-multiconn-voxtral_tts          # concurrency against voxtral
 just smoke-multiconn-pocket_tts --turns 3 # concurrency against pocket (fast backend)
+just smoke-multiconn-qwen3_tts --turns 3  # concurrency against qwen3 (fast backend, RTF≈0.25×)
 ```
 
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)

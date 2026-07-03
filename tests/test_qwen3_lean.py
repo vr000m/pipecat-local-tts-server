@@ -22,9 +22,10 @@ WITHOUT loading the 0.6B CustomVoice model:
   activate ICL voice cloning upstream, so this is load-bearing;
 - lazy-import: the module import pulls neither ``mlx_audio`` nor ``numpy``.
 
-``make_backend``/argparse wiring lands in Phase 2 — those two tests are
-``xfail(strict=False)`` until the registry branch exists. The mlx-gated
-synthesis assertions live in ``tests/test_qwen3_backend.py``.
+- the dual-wire (Phase 2): ``make_backend`` resolves ``qwen3_tts`` without
+  pulling mlx, and argparse accepts ``--backend qwen3_tts``.
+
+The mlx-gated synthesis assertions live in ``tests/test_qwen3_backend.py``.
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from tts_server.backends import qwen3_tts as Q
 
@@ -358,7 +358,6 @@ def test_default_model_constant_importable_lean():
     )
 
 
-@pytest.mark.xfail(reason="make_backend registry branch lands in Phase 2", strict=False)
 def test_make_backend_resolves_qwen3_without_mlx():
     _assert_lean(
         "from tts_server.backends import make_backend\n"
@@ -368,14 +367,12 @@ def test_make_backend_resolves_qwen3_without_mlx():
     )
 
 
-@pytest.mark.xfail(reason="argparse --backend choice lands in Phase 2", strict=False)
 def test_qwen3_is_accepted_backend_choice():
-    """The argparse ``--backend`` choices half of the dual-wire (Phase 2)."""
+    """The argparse ``--backend`` choices tuple half of the dual-wire: a passing
+    ``make_backend`` is not enough — argparse must also accept the name, else
+    ``--backend qwen3_tts`` dies before the resolver. Parse real argv."""
     from tts_server.__main__ import build_parser
 
     parser = build_parser()
-    try:
-        args = parser.parse_args(["serve", "--backend", "qwen3_tts"])
-    except SystemExit:
-        pytest.fail("qwen3_tts is not yet an accepted --backend choice")
+    args = parser.parse_args(["serve", "--backend", "qwen3_tts"])
     assert args.backend == "qwen3_tts"

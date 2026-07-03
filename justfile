@@ -51,7 +51,8 @@ _resolve backend:
       voxtral_tts) printf '%s\n' "pipecat.tts-server.voxtral_tts" "127.0.0.1" "8865" ;;
       pocket_tts)  printf '%s\n' "pipecat.tts-server.pocket_tts"  "127.0.0.1" "8965" ;;
       dia)         printf '%s\n' "pipecat.tts-server.dia"         "127.0.0.1" "9065" ;;
-      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts, dia)" >&2; exit 1 ;;
+      qwen3_tts)   printf '%s\n' "pipecat.tts-server.qwen3_tts"   "127.0.0.1" "9165" ;;
+      *) echo "error: unknown backend '$backend' (valid: tone, kokoro, voxtral_tts, pocket_tts, dia, qwen3_tts)" >&2; exit 1 ;;
     esac
 
 # Extract the serve endpoint from an installed agent's plist ProgramArguments.
@@ -385,6 +386,11 @@ smoke-pocket_tts *args:
 smoke-dia *args:
     tests/smoke/run_smoke.sh --backend dia {{args}}
 
+# Qwen3-TTS backend (streaming:true). WAV round-trip + TTFB/cadence assertion.
+# Auto-syncs the qwen3_tts extra if missing (apache-2.0 card tag; see README).
+smoke-qwen3_tts *args:
+    tests/smoke/run_smoke.sh --backend qwen3_tts {{args}}
+
 # Two clients interleaving through one backend: fairness + max-buffer + 429/BUSY.
 smoke-multiconn *args:
     tests/smoke/run_multiconn.sh {{args}}
@@ -396,6 +402,10 @@ smoke-multiconn-voxtral_tts *args:
 # Multi-connection concurrency against the streaming pocket_tts backend.
 smoke-multiconn-pocket_tts *args:
     tests/smoke/run_multiconn.sh --backend pocket_tts {{args}}
+
+# Multi-connection concurrency against the streaming qwen3_tts backend.
+smoke-multiconn-qwen3_tts *args:
+    tests/smoke/run_multiconn.sh --backend qwen3_tts {{args}}
 
 # Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
 smoke-reconnect *args:

@@ -46,6 +46,10 @@ uv add "pipecat-local-tts-server[pocket_tts]"
 # dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
 # tags (Apple Silicon; mlx-audio==0.4.4). Weights are Apache-2.0 (commercial-safe).
 uv add "pipecat-local-tts-server[dia]"
+
+# Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
+# Silicon; mlx-audio==0.4.4). Weights carry the HF card tag apache-2.0.
+uv add "pipecat-local-tts-server[qwen3_tts]"
 ```
 
 From source (development):
@@ -69,6 +73,10 @@ uv sync --extra pocket_tts
 # dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
 # tags (Apple Silicon; mlx-audio==0.4.4). Weights are Apache-2.0 (commercial-safe).
 uv sync --extra dia
+
+# Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
+# Silicon; mlx-audio==0.4.4). Weights carry the HF card tag apache-2.0.
+uv sync --extra qwen3_tts
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -110,6 +118,7 @@ and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
 | voxtral_tts | `pipecat.tts-server.voxtral_tts` | 8865 |
 | pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
 | dia | `pipecat.tts-server.dia` | 9065 |
+| qwen3_tts | `pipecat.tts-server.qwen3_tts` | 9165 |
 
 ```sh
 # install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
@@ -245,6 +254,7 @@ Operators are responsible for honouring each model's license.
 | `voxtral_tts` | `voxtral_tts` | `true` | mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 | **CC-BY-NC (non-commercial)** |
 | `pocket_tts` | `pocket_tts` | `true` | mlx-community/pocket-tts | CC-BY-4.0 (commercial OK w/ attribution) |
 | `dia` | `dia` | `false` | mlx-community/Dia-1.6B-fp16 | Apache-2.0 (commercial-safe) |
+| `qwen3_tts` | `qwen3_tts` | `true` | mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 | apache-2.0 (HF card tag; no LICENSE file in the repo) |
 
 > **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
 > **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`

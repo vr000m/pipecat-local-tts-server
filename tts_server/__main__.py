@@ -58,6 +58,10 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
         from .backends.dia import DEFAULT_DIA_MODEL
 
         return DEFAULT_DIA_MODEL
+    if backend == "qwen3_tts":
+        from .backends.qwen3_tts import DEFAULT_QWEN3_MODEL
+
+        return DEFAULT_QWEN3_MODEL
     return None
 
 
@@ -357,7 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_endpoint_flags(p_serve)
     p_serve.add_argument(
         "--backend",
-        choices=("tone", "kokoro", "voxtral_tts", "pocket_tts", "dia"),
+        choices=("tone", "kokoro", "voxtral_tts", "pocket_tts", "dia", "qwen3_tts"),
         default="tone",
     )
     # Default None so ``_resolve_model`` applies a backend-aware fallback

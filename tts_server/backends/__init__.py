@@ -59,6 +59,13 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
         from .dia import DEFAULT_DIA_MODEL, DiaBackend
 
         return DiaBackend(model=model or DEFAULT_DIA_MODEL)
+    if name == "qwen3_tts":
+        # Lazy import (same invariant): ``qwen3_tts.py`` imports ``mlx_audio``
+        # only inside ``start()``, so this branch does NOT pull ``mlx_audio`` —
+        # the missing-extra failure surfaces in ``start()``.
+        from .qwen3_tts import DEFAULT_QWEN3_MODEL, Qwen3Backend
+
+        return Qwen3Backend(model=model or DEFAULT_QWEN3_MODEL)
     # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
     # callable outside the CLI, so it must not terminate the process. The CLI
     # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.
