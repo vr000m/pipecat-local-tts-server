@@ -34,6 +34,7 @@ from __future__ import annotations
 import pytest
 
 from tts_server.backends import qwen3_tts as Q
+from tts_server.backends._extras_util import TEMPERATURE_MAX, TOP_K_MAX, TOP_P_MAX
 
 from ._helpers import lean_import_offenders
 
@@ -309,9 +310,9 @@ async def test_allowed_extras_clamped_to_bounds():
         language=None,
         extras={"temperature": 99, "top_k": 10_000, "top_p": 2.0},
     )
-    assert call["temperature"] == Q._TEMPERATURE_MAX
-    assert call["top_k"] == Q._TOP_K_MAX
-    assert call["top_p"] == Q._TOP_P_MAX
+    assert call["temperature"] == TEMPERATURE_MAX
+    assert call["top_k"] == TOP_K_MAX
+    assert call["top_p"] == TOP_P_MAX
 
 
 async def test_unset_extras_are_omitted_not_none():

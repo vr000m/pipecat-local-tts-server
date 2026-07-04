@@ -100,7 +100,9 @@ _STATIC_LANGUAGES = ["en"]
 
 
 # Coercion dispatch for the advertised extras. Kept as a dict so the
-# filter/validate code is identical in shape to Pocket/Voxtral.
+# filter/validate code is identical in shape to Pocket/Voxtral. Entry ORDER is
+# load-bearing — the advertised extras list is derived from this dict and its
+# order is asserted by the lean tests / documented in docs/protocol.md.
 _EXTRA_COERCERS = {"temperature": _coerce_temperature, "top_p": _coerce_top_p}
 
 # Derived, not restated — the advertised list cannot drift from the coercer

@@ -64,12 +64,6 @@ from typing import Any, AsyncGenerator
 
 from ..backend import AudioEvent, TTSStream
 from ._extras_util import (
-    TEMPERATURE_MAX,
-    TEMPERATURE_MIN,
-    TOP_K_MAX,
-    TOP_K_MIN,
-    TOP_P_MAX,
-    TOP_P_MIN,
     coerce_temperature,
     coerce_top_k,
     coerce_top_p,
@@ -149,19 +143,6 @@ _BRIDGE_MAXSIZE = 32
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 800
 
-# Sampling-extra coercion is shared across backends — see ``_extras_util``
-# for the bounds and the clamp/reject rationale. Aliased under the historical
-# private names so tests and in-module references keep working.
-_TEMPERATURE_MIN = TEMPERATURE_MIN
-_TEMPERATURE_MAX = TEMPERATURE_MAX
-_TOP_K_MIN = TOP_K_MIN
-_TOP_K_MAX = TOP_K_MAX
-_TOP_P_MIN = TOP_P_MIN
-_TOP_P_MAX = TOP_P_MAX
-_coerce_temperature = coerce_temperature
-_coerce_top_k = coerce_top_k
-_coerce_top_p = coerce_top_p
-
 # Gate-verified language list (Phase 0 Q3), used ONLY as the static fallback
 # if ``get_supported_languages()`` is absent on a future mlx-audio. The live
 # list from the loaded model is authoritative.
@@ -186,10 +167,13 @@ _STATIC_LANGUAGES = [
 # what keeps the forbidden kwargs (ref_audio/ref_text/instruct/speed/
 # split_pattern/max_tokens/streaming_context_size/repetition_penalty) provably
 # out of ``generate()``.
+# NOTE: entry ORDER is load-bearing — the advertised extras list is derived
+# from this dict, and its order is asserted by the lean tests / documented in
+# docs/protocol.md. Do not reorder.
 _EXTRA_COERCERS = {
-    "temperature": _coerce_temperature,
-    "top_k": _coerce_top_k,
-    "top_p": _coerce_top_p,
+    "temperature": coerce_temperature,
+    "top_k": coerce_top_k,
+    "top_p": coerce_top_p,
 }
 
 # Derived, not restated — see the comment above ``_STREAMING_INTERVAL``.

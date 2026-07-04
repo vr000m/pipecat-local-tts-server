@@ -135,7 +135,9 @@ _coerce_top_p = coerce_top_p
 
 
 # Coercion dispatch for the advertised extras. Keyed by extra name so
-# ``validate_extras`` and ``open_stream`` share one source of truth.
+# ``validate_extras`` and ``open_stream`` share one source of truth. Entry
+# ORDER is load-bearing — the advertised extras list is derived from this dict
+# and its order is asserted by the lean tests / documented in docs/protocol.md.
 _EXTRA_COERCERS = {
     "temperature": _coerce_temperature,
     "top_k": _coerce_top_k,

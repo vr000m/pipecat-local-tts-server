@@ -99,7 +99,9 @@ _STATIC_LANGUAGES = ["en"]
 
 
 # Coercion dispatch for the advertised extras (one entry — kept as a dict so the
-# filter/validate code is identical in shape to Voxtral's).
+# filter/validate code is identical in shape to Voxtral's). Entry ORDER is
+# load-bearing once more entries exist — the advertised extras list is derived
+# from this dict and its order is asserted by the lean tests.
 _EXTRA_COERCERS = {"temperature": _coerce_temperature}
 
 # Derived, not restated — the advertised list cannot drift from the coercer
