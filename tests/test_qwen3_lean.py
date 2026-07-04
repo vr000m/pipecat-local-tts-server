@@ -30,7 +30,8 @@ The mlx-gated synthesis assertions live in ``tests/test_qwen3_backend.py``.
 
 from __future__ import annotations
 
-import logging
+
+import pytest
 
 from tts_server.backends import qwen3_tts as Q
 
@@ -168,7 +169,11 @@ class _SpyModel:
 
     def generate(self, text, **kwargs):
         self.calls.append({"text": text, **kwargs})
-        return iter(())
+        # ``results`` lets a test script the yielded GenerationResults (e.g.
+        # the truncation-ceiling path); default stays an empty generator.
+        return iter(self.results)
+
+    results: tuple = ()
 
 
 def _spy_backend(*, speakers=None, languages=None):
@@ -343,27 +348,49 @@ def test_validate_extras_rejects_booleans():
 class _SegRes:
     """Minimal GenerationResult stand-in for the truncation tripwire."""
 
-    def __init__(self, segment_idx: int, token_count: int):
+    def __init__(self, segment_idx: int, token_count: int, audio=(0.0, 0.1, -0.1)):
         self.segment_idx = segment_idx
         self.token_count = token_count
+        # A bare float sequence — the bridge's converter accepts it (the
+        # documented mlx-free test path), so events() can be driven end-to-end.
+        self.audio = list(audio)
 
 
-def test_truncation_tripwire_is_per_segment(caplog):
+def test_truncation_tripwire_is_per_segment():
     """The 4096-token ceiling is PER SEGMENT: the Base path splits the commit
     on ``\\n`` into independent generations, each with its own ``max_tokens``
-    loop. Two naturally-completed 2500-token segments must NOT false-alarm
-    (their sum exceeds the cap), while any single segment reaching the cap
-    must fire — including one in the middle of the stream."""
+    loop. Two naturally-completed 2500-token segments must NOT trip (their sum
+    exceeds the cap), while any single segment reaching the cap must raise —
+    including one in the middle of the stream."""
     stream = object.__new__(Q._Qwen3Stream)
     stream._text = "x" * 100
 
-    with caplog.at_level(logging.ERROR, logger="tts_server.backends.qwen3_tts"):
-        list(stream._count_tokens(iter([_SegRes(0, 2500), _SegRes(1, 2500)])))
-    assert not caplog.records, "false alarm: cross-segment sum tripped the per-segment cap"
+    # Cross-segment sum > cap, each segment under it: natural completion.
+    list(stream._count_tokens(iter([_SegRes(0, 2500), _SegRes(1, 2500)])))
 
-    with caplog.at_level(logging.ERROR, logger="tts_server.backends.qwen3_tts"):
+    with pytest.raises(Q.Qwen3TruncationError, match="ceiling"):
         list(stream._count_tokens(iter([_SegRes(0, 100), _SegRes(1, 4200), _SegRes(2, 50)])))
-    assert sum("TRUNCATED" in r.message for r in caplog.records) == 1
+
+
+async def test_truncated_segment_fails_response_not_silent_success():
+    """Adversarial-review fix: a ceiling-hit must be a CLIENT-VISIBLE failure,
+    not an operator log line. Drive the full ``events()`` drain through the
+    real bridge with a generation that reaches the cap and assert the raise
+    propagates with NO ``completed`` event — the server turns that exception
+    into ``response.failed`` (BACKEND_ERROR), so truncated audio can never
+    masquerade as a clean completion."""
+    backend, spy = _spy_backend()
+    spy.results = (_SegRes(0, 4096),)
+    stream = await backend.open_stream(voice=None, language=None, extras=None)
+    await stream.feed("hello")
+    await stream.end()
+
+    events = []
+    with pytest.raises(Q.Qwen3TruncationError, match="ceiling"):
+        async for ev in stream.events():
+            events.append(ev)
+    assert all(ev.kind != "completed" for ev in events)
+    await stream.wait_closed(timeout=5.0)
 
 
 # --- lazy-import / dual-wire (make_backend + argparse choices) --------------------

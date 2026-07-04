@@ -202,9 +202,18 @@ _QWEN3_EXTRAS = list(_EXTRA_COERCERS)
 # mid-utterance and the client still sees a clean ``completed``.
 # ``_MAX_TEXT_CHARS`` keeps normal inputs far below this, but pacing is
 # input-dependent (measured up to ~0.19 s audio/char on degenerate text), so
-# the drain ALSO counts tokens and logs an ERROR when the cap is reached —
-# the invariant check, not just the proxy cap.
+# the drain ALSO counts tokens and RAISES when the cap is reached — the raise
+# propagates through the bridge to ``events()`` and the server emits
+# ``response.failed`` (BACKEND_ERROR), so truncated audio is a client-visible
+# failure, never a clean ``completed`` with missing tail audio. The invariant
+# check, not just the proxy cap.
 _MAX_TOKENS_CEILING = 4096
+
+
+class Qwen3TruncationError(RuntimeError):
+    """A generation segment reached mlx-audio's ``max_tokens`` ceiling: the
+    audio was silently cut off mid-utterance. Raised from the drain so the
+    response FAILS instead of completing with missing audio."""
 
 
 class _Qwen3Stream:
@@ -300,13 +309,14 @@ class _Qwen3Stream:
         # SEGMENT — the Base path splits on the default split_pattern='\n'
         # into independent generations, each with its own ``for step in
         # range(max_tokens)`` loop (CustomVoice is always one segment) — so
-        # sum each SEGMENT's ``token_count`` keyed on ``segment_idx`` and log
-        # an ERROR when any segment reaches the cap. A cross-segment sum
-        # would false-alarm on multi-segment Base commits that each finished
-        # naturally on EOS. Without the tripwire, a capped run drains to a
-        # clean ``completed`` and the cut-off audio reads as a client-side
-        # playback bug. Pass-through wrapper; the bridge contract (yields
-        # GenerationResult with ``.audio``) is untouched.
+        # sum each SEGMENT's ``token_count`` keyed on ``segment_idx`` and
+        # RAISE when any segment reaches the cap (the worker surfaces the
+        # exception through the bridge and the server fails the response). A
+        # cross-segment sum would false-alarm on multi-segment Base commits
+        # that each finished naturally on EOS. Without the tripwire, a capped
+        # run drains to a clean ``completed`` and the cut-off audio reads as
+        # a client-side playback bug. Pass-through wrapper; the bridge
+        # contract (yields GenerationResult with ``.audio``) is untouched.
         segment_idx: Any = None
         segment_total = 0
         for result in gen:
@@ -321,13 +331,12 @@ class _Qwen3Stream:
 
     def _check_truncation(self, segment_total: int) -> None:
         if segment_total >= _MAX_TOKENS_CEILING:
-            logger.error(
-                "qwen3_tts: a segment hit the %d-token single-generation "
-                "ceiling (%d tokens, %d chars in) — audio was silently "
-                "TRUNCATED mid-utterance; commit shorter text",
-                _MAX_TOKENS_CEILING,
-                segment_total,
-                len(self._text),
+            raise Qwen3TruncationError(
+                f"qwen3_tts: a segment hit the {_MAX_TOKENS_CEILING}-token "
+                f"single-generation ceiling ({segment_total} tokens, "
+                f"{len(self._text)} chars in) — audio was silently truncated "
+                "mid-utterance; failing the response instead of reporting a "
+                "clean completion (commit shorter text)"
             )
 
     async def events(self) -> AsyncGenerator[AudioEvent, None]:

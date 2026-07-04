@@ -24,7 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_tokens=4096` truncates silently; degenerate text paces at ~0.19 s
   audio/char). The tripwire counts tokens **per segment** (`segment_idx`) —
   the cap is per generation, and the Base path splits a commit on `\n` into
-  independent generations.
+  independent generations — and a ceiling-hit **fails the response**
+  (`response.failed`/`BACKEND_ERROR` via `Qwen3TruncationError`) instead of
+  logging and completing with silently missing audio.
 
 ### Changed
 

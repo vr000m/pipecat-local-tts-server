@@ -549,6 +549,12 @@ two-layer tests → full wiring (registry/CLI/extra/justfile/smoke/renderer/CI/d
   `max_tokens` loop; CustomVoice is single-segment) — the old cross-segment sum would
   false-alarm TRUNCATED on multi-segment Base commits that each finished on EOS. Now
   accumulates per `segment_idx`; regression test `test_truncation_tripwire_is_per_segment`.
+  A follow-up Codex adversarial review (2026-07-04) escalated the tripwire from log-only to
+  a client-visible failure: `_check_truncation` raises `Qwen3TruncationError`, which
+  propagates through the bridge so the server emits `response.failed` (BACKEND_ERROR)
+  instead of a clean `completed` with missing audio; regression test
+  `test_truncated_segment_fails_response_not_silent_success` drives the full `events()`
+  drain and asserts no `completed` event.
 - **Bool coercion gap**: `temperature`/`top_p` accepted JSON `true`/`false` (float-coercible)
   while `top_k` rejected them — `{"temperature": true}` silently synthesized at 1.0. All
   coercers now reject bools; test `test_validate_extras_rejects_booleans`.
