@@ -606,3 +606,11 @@ branches, extras allowlist, and DoS bounds verified against mlx-audio source). 4
 - Base-bf16 voice-cloning support if the WS protocol ever grows reference-audio transport.
 - Extract a shared base stream class in `_stream_util` (5 verbatim copies, gen-factory hook).
 - Consolidate the backend-name enumeration (`BACKEND_NAMES`/`default_model` export).
+- Grapheme-elongation ("GOOOOAL") behavior probed across all five backends
+  2026-07-04 — `scripts/goal_elongation_probe.py` (creation + voiced-duration
+  analysis). Findings in the script docstring: kokoro is the only deterministic,
+  monotonic elongator (assertable in tests; 60 O's also stress-tests the sinegen
+  patch); qwen3 is sampled and non-monotonic; pocket compresses; dia goes full
+  drama at RTF≈2; voxtral effectively refuses. Open question: whether any
+  backend should normalize elongated graphemes before synthesis, or whether
+  this stays a documented client-side concern.
