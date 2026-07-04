@@ -1,6 +1,7 @@
 # Task: tts-server — `dia` dialogue backend (formerly v1 Phase 5c)
 
-**Status**: In progress — **Phase 0 model-verification gate PASSED 2026-06-30** (5/6; segment-independence
+**Status**: Complete — shipped in v0.3.0 (PR #11, merged 2026-07-02).
+Earlier history: **Phase 0 model-verification gate PASSED 2026-06-30** (5/6; segment-independence
 falsified → decision #3 redesigned, one-commit-coherence-unit / incremental-commits-supported; see
 *Resolved design decisions* #3 + `## Findings`). Reshaped into conduct phases. **`/review-plan`
 refresh completed 2026-06-30** on the post-gate contract (5 lenses; 1 Critical + 7 Important + 5 Minor,

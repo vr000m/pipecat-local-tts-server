@@ -88,7 +88,9 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | `just tts-stop <backend>` | Send SIGTERM (`launchctl kill`; KeepAlive restarts it). |
 | `just tts-logs <backend>` | Tail the agent's stdout+stderr logs. |
 | `just smoke-tone` / `smoke-kokoro` / `smoke-multilingual` | Live end-to-end smoke (starts a real server on an isolated socket). |
+| `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` | Per-backend live smoke (WAV round-trip + TTFB/cadence). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
+| `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` | Per-backend multi-connection fairness smoke. |
 
 Smoke scripts start their own server on a `mktemp` socket and tear it down — they
 **never** touch the canonical operator socket.

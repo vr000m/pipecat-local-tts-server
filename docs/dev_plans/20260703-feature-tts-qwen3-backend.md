@@ -371,7 +371,8 @@ Context lifecycle:
 - Profiling: `rtf_benchmark.py` standard phrase set (TTFB/RTF only).
 
 ### Test Results
-- (fill during implementation)
+- Full suite: 321 passed / 3 skipped (drift tests green). `just smoke-qwen3_tts` PASS,
+  `just smoke-multiconn-qwen3_tts` PASS, ruff clean. Details in `## Final Results → Outcomes`.
 
 ### Edge Cases Tested
 - `voice=None` (per Q4, lean spy test), unknown voice name (server-side rejection),
@@ -512,7 +513,15 @@ findings folded into the contract above:
 
 ## Issues & Solutions
 
-- (none yet)
+- **mlx CompilerCache segfault on worker-thread exit**: qwen3 is the only model in the stable
+  using `mx.compile`; mlx 0.31.2's thread-local CompilerCache is destroyed without the GIL when
+  the generation worker thread exits → hard segfault. Solved with `mx.disable_compile()` in
+  `start()` (accepted cost noise). Candidate upstream report.
+- **Silent truncation at the max_tokens=4096 ceiling**: CustomVoice renders a whole commit as one
+  generation (no `\n` split), so long/repetitive text hit the ceiling and completed with missing
+  audio. Solved twofold: `_MAX_TEXT_CHARS = 800` input cap (multiconn keepalive root cause,
+  2000→800) + a per-segment token-ceiling tripwire that raises `Qwen3TruncationError` so the
+  server emits `response.failed` (BACKEND_ERROR) instead of a clean `completed`.
 
 ## Final Results
 
@@ -561,7 +570,8 @@ two-layer tests → full wiring (registry/CLI/extra/justfile/smoke/renderer/CI/d
 - **Extras machinery deduplicated**: the byte-identical coercers + `validate_extras` walk
   (4th copy across qwen3/voxtral/dia/pocket) extracted to shared stdlib-only
   `tts_server/backends/_extras_util.py`; each backend keeps only its `_EXTRA_COERCERS`
-  allowlist (aliases preserve the historical private names tests reference).
+  allowlist (an alias block initially preserved the historical private names; removed in the
+  subsequent deep-review pass — see below).
 - **Default voice resolved once in `start()`** (`self._default_voice`) instead of per
   voiceless commit — the missing-default fallback warning now fires once, not per utterance.
 - **`test_qwen3_lean._assert_lean`** now delegates to the shared
