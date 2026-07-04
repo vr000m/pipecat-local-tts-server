@@ -1948,7 +1948,7 @@ wheels = [
 
 [[package]]
 name = "pipecat-local-tts-server"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "websockets" },
@@ -1975,6 +1975,10 @@ pocket-tts = [
     { name = "mlx-audio" },
     { name = "websockets" },
 ]
+qwen3-tts = [
+    { name = "mlx-audio" },
+    { name = "websockets" },
+]
 voxtral-tts = [
     { name = "mistral-common", extra = ["audio"] },
     { name = "mlx-audio" },
@@ -1997,6 +2001,7 @@ requires-dist = [
     { name = "mlx-audio", marker = "extra == 'dia'", specifier = "==0.4.4" },
     { name = "mlx-audio", marker = "extra == 'kokoro'", specifier = "==0.4.4" },
     { name = "mlx-audio", marker = "extra == 'pocket-tts'", specifier = "==0.4.4" },
+    { name = "mlx-audio", marker = "extra == 'qwen3-tts'", specifier = "==0.4.4" },
     { name = "mlx-audio", marker = "extra == 'voxtral-tts'", specifier = "==0.4.4" },
     { name = "pipecat-ai", marker = "extra == 'examples'", specifier = "==1.4.0" },
     { name = "websockets", specifier = ">=13.0" },
@@ -2005,9 +2010,10 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'examples'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'kokoro'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'pocket-tts'", specifier = ">=13.0" },
+    { name = "websockets", marker = "extra == 'qwen3-tts'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'voxtral-tts'", specifier = ">=13.0" },
 ]
-provides-extras = ["client", "kokoro", "voxtral-tts", "pocket-tts", "dia", "examples"]
+provides-extras = ["client", "kokoro", "voxtral-tts", "pocket-tts", "dia", "qwen3-tts", "examples"]
 
 [package.metadata.requires-dev]
 dev = [

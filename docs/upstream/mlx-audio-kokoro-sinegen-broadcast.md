@@ -5,6 +5,19 @@
 **Affected version:** `0.4.4` (latest PyPI) and `main` as of 2026-06-24
 **File:** `mlx_audio/tts/models/kokoro/istftnet.py`
 **Severity:** High — Kokoro TTS synthesis raises for the majority of inputs.
+**Resolution:** FIXED UPSTREAM, AWAITING RELEASE. Issue #803 closed 2026-07-01 by
+[PR #785](https://github.com/Blaizzy/mlx-audio/pull/785) (Lucas Newman, merge commit
+`2fd4ca9`) — the fix is on `main` only; the latest PyPI release is still 0.4.4
+(2026-06-06), which predates it. Our `_patch_sinegen` workaround in
+`tts_server/backends/kokoro.py` therefore STAYS until a post-0.4.4 release ships and
+we bump the `mlx-audio==0.4.4` pin (a pin bump re-validates all backends). The
+workaround is a no-op once upstream preserves length, so it is safe to keep.
+Related: [PR #814](https://github.com/Blaizzy/mlx-audio/pull/814) (open as of
+2026-07-03) duplicates the SineGen fix (also covering `kitten_tts`) and adds a
+log-magnitude clamp for a NaN-audio bug ([#815](https://github.com/Blaizzy/mlx-audio/issues/815))
+we have never reproduced despite an identical environment — tracking, no action.
+On pin bump: delete `_patch_sinegen` + its call site, KEEP the regression test in
+`tests/test_kokoro_backend.py` (it then guards upstream), and update this file.
 
 ## Summary
 

@@ -9,9 +9,10 @@ protocol directly (no server, no UDS) so it never collides with a running
   RTF < ~1  : faster than realtime (viable for live/streaming use)
   RTF > 1   : slower than realtime — for live commentary this is unusable
 
-Reusable across backends: ``--backend tone|kokoro`` today, and the Phase 5
-streaming backends (``voxtral_tts``/``pocket_tts``) once they land — run the
-same command with ``--backend voxtral_tts`` to compare response times.
+Reusable across all backends:
+``--backend tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts`` — run the same
+command per backend to compare response times (cross-backend results live in
+this directory's README).
 
 GPU note (Apple-Silicon MLX backends): all MLX processes share ONE Metal device
 and our process-wide synthesis lock does NOT span processes. For a clean reading

@@ -49,13 +49,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" ]]; then
-  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, or dia (got '$BACKEND')" >&2; exit 2
+if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" && "$BACKEND" != "qwen3_tts" ]]; then
+  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, dia, or qwen3_tts (got '$BACKEND')" >&2; exit 2
 fi
 # mlx-backed backends need a longer first-call timeout (model load/JIT/first-run
 # download); tone is fast.
 IS_MLX=0
-[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" ]] && IS_MLX=1
+[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" ]] && IS_MLX=1
 [[ -z "$TIMEOUT" ]] && { [[ "$IS_MLX" -eq 1 ]] && TIMEOUT=180 || TIMEOUT=30; }
 
 # --- locate repo + run dir --------------------------------------------------
@@ -173,6 +173,13 @@ elif [[ "$BACKEND" == "pocket_tts" ]]; then
   # pocket_tts is streaming:true (and fast, RTF<<1). WAV round-trip + cadence.
   # Default voice (omitted) exercises the voice=None path.
   verify "pocket_tts/default" "$RUN_DIR/pocket.wav" \
+    --text "The quick brown fox jumps over the lazy dog."
+  latency_check --ttfb-bound 3.0
+elif [[ "$BACKEND" == "qwen3_tts" ]]; then
+  # qwen3_tts is streaming:true — verify a WAV round-trip AND the streaming
+  # cadence. Default voice (omitted) exercises the voice=None path (the backend
+  # injects DEFAULT_QWEN3_VOICE="ryan" — CustomVoice requires a voice).
+  verify "qwen3_tts/default" "$RUN_DIR/qwen3.wav" \
     --text "The quick brown fox jumps over the lazy dog."
   latency_check --ttfb-bound 3.0
 elif [[ "$BACKEND" == "dia" ]]; then

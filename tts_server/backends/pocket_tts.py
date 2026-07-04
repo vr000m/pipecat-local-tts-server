@@ -33,11 +33,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 from typing import Any, AsyncGenerator
 
 from ..backend import AudioEvent, TTSStream
+from ._extras_util import (
+    TEMPERATURE_MAX,
+    TEMPERATURE_MIN,
+    coerce_temperature,
+    validate_extras,
+)
 from ._stream_util import stream_generate
 
 logger = logging.getLogger("tts_server.backends.pocket_tts")
@@ -50,7 +55,6 @@ DEFAULT_POCKET_MODEL = "mlx-community/pocket-tts"
 # ``temperature`` is the only sampling tunable Pocket's generate() accepts
 # (no top_k/top_p). ``ref_audio`` and ``frames_after_eos`` are real params but
 # are INTENTIONALLY NOT advertised and never forwarded (see below).
-_POCKET_EXTRAS = ["temperature"]
 
 # Params Pocket's generate() accepts that this backend MUST NEVER forward:
 # ``ref_audio`` is the voice-cloning channel (decision #2 — no cloning in v1);
@@ -81,11 +85,12 @@ _BRIDGE_MAXSIZE = 32
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 2000
 
-# temperature bounds. Forwarded under the process-wide Metal lock, so unbounded
-# values are a DoS / correctness vector: finite values are CLAMPED, non-finite
-# (NaN/inf) or non-numeric are rejected outright.
-_TEMPERATURE_MIN = 0.0
-_TEMPERATURE_MAX = 2.0
+# Sampling-extra coercion is shared across backends — see ``_extras_util``
+# for the bounds and the clamp/reject rationale. Aliased under the historical
+# private names so tests and in-module references keep working.
+_TEMPERATURE_MIN = TEMPERATURE_MIN
+_TEMPERATURE_MAX = TEMPERATURE_MAX
+_coerce_temperature = coerce_temperature
 
 # Static fallback facts (the model ships 8 predefined voices; English-primary —
 # only ``en`` is verified on-host, so that is all that is advertised).
@@ -93,24 +98,15 @@ _STATIC_VOICES = ["alba", "azelma", "cosette", "eponine", "fantine", "javert", "
 _STATIC_LANGUAGES = ["en"]
 
 
-def _coerce_temperature(raw: Any) -> float:
-    """Validate + clamp a client-supplied ``temperature`` before generate()."""
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"temperature must be a number, got {raw!r}") from None
-    if not math.isfinite(value):
-        raise ValueError(f"temperature must be a finite number, got {raw!r}")
-    if value < _TEMPERATURE_MIN:
-        return _TEMPERATURE_MIN
-    if value > _TEMPERATURE_MAX:
-        return _TEMPERATURE_MAX
-    return value
-
-
 # Coercion dispatch for the advertised extras (one entry — kept as a dict so the
-# filter/validate code is identical in shape to Voxtral's).
+# filter/validate code is identical in shape to Voxtral's). Entry ORDER is
+# load-bearing once more entries exist — the advertised extras list is derived
+# from this dict and its order is asserted by the lean tests.
 _EXTRA_COERCERS = {"temperature": _coerce_temperature}
+
+# Derived, not restated — the advertised list cannot drift from the coercer
+# allowlist.
+_POCKET_EXTRAS = list(_EXTRA_COERCERS)
 
 
 class _PocketStream:
@@ -291,15 +287,7 @@ class PocketBackend:
         """Reject a malformed advertised extra at the trust boundary so the
         client gets a clean ``INVALID_CONFIG`` instead of a mid-synthesis
         ``BACKEND_ERROR``. Only advertised keys are checked."""
-        for key, coerce in _EXTRA_COERCERS.items():
-            raw = extras.get(key)
-            if raw is None:
-                continue
-            try:
-                coerce(raw)
-            except ValueError as exc:
-                return str(exc)
-        return None
+        return validate_extras(_EXTRA_COERCERS, extras)
 
     async def open_stream(
         self,

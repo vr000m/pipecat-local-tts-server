@@ -20,6 +20,7 @@ Reports `audio_s / ttfb_s / wall_s / RTF` per phrase. **RTF = wall/audio**:
 
 ```sh
 uv run --extra kokoro python scripts/profiling/rtf_benchmark.py --backend kokoro --voice af_heart
+uv run --extra qwen3_tts python scripts/profiling/rtf_benchmark.py --backend qwen3_tts
 uv run python scripts/profiling/rtf_benchmark.py --backend tone
 ```
 
@@ -223,6 +224,76 @@ dia's ~55 s TTFB and 30 s-per-segment ceiling make it unsuitable there.
 Reproduce: siblings via `rtf_benchmark.py --backend <name>`. dia needs `[S1]`-tagged input (the
 committed `PHRASES` are untagged), so both dia tables used a one-off wrapper feeding tagged text
 through the same `_synth_once` harness.
+
+## qwen3_tts per-phrase profile (M4 Max 16-core, 2026-07-03)
+
+Added when `qwen3_tts` landed. Standard `rtf_benchmark.py` phrase set against
+`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (24 kHz, default voice `ryan`,
+`streaming:true` at the backend's `streaming_interval=0.4`). Pristine run, `--warm 2`
+(warm1st + 3 warm repeats); values were flat across all warm runs.
+Cold load + warmup (`start()`): **3.4 s**.
+
+| Phrase | audio_s | TTFB | wall_s | RTF |
+|---|---|---|---|---|
+| 1-sentence (~50 chars) | 5.04 | 0.12 s | 1.39–1.40 s | 0.28 |
+| 2-sentence, 1 seg (~90 chars) | 7.52 | 0.12 s | 2.06–2.07 s | 0.27–0.28 |
+| 3-seg, newlines (~140 chars) | 8.08 | 0.12 s | 2.22 s | 0.27 |
+
+Reading the table:
+- **RTF ≈ 0.27 (~3.7× realtime), TTFB 0.12 s, both flat with input length** — comfortably
+  live-viable. Slots between pocket (0.05) and voxtral (>1) on throughput; TTFB sits at the
+  streaming-interval floor, well below `wall_s` (genuinely incremental).
+- **Whole commit = one generation on CustomVoice.** `generate_custom_voice()` has no
+  `split_pattern`, so `\n` does **not** split segments — visible above: the 3-seg phrase
+  behaves exactly like the single-segment rows (same TTFB, same RTF), unlike dia's
+  per-`\n`-segment budget.
+- **Peak memory is gate-sourced, not profiler-sourced.** The bridge strips mlx-audio's
+  `GenerationResult`, so `rtf_benchmark.py` cannot see peak memory. From the Phase-0 gate
+  (`tests/smoke/qwen3_phase0_gate.py`, 2026-07-03): **3.08–3.10 GB** at
+  `streaming_interval=0.4` (the backend's operating point); 4.08–4.32 GB at interval 2.0
+  (larger decode chunks cost more).
+- **Concurrency caveat:** `supports_tts_batch(stream=True) == False` — mlx-audio's batching
+  path does not apply when streaming, so multi-connection behavior is serialized
+  per-generation like the other streaming backends; do not extrapolate from upstream batch
+  throughput claims.
+- **Upstream discrepancy:** the upstream README claims RTF 1.67x, TTFB ~85 ms, ~3.9 GB. Our
+  end-to-end numbers are RTF **0.27** and TTFB **0.12 s** at the 0.4 s streaming interval —
+  the upstream TTFB is tokens-level (first token, not first audio) and its RTF/memory were
+  measured under different conditions; compare against this table, not the model card.
+
+Reproduce: `uv run --extra qwen3_tts python scripts/profiling/rtf_benchmark.py --backend qwen3_tts`.
+
+### Same-day cross-backend re-run (2026-07-03, identical phrase set)
+
+To make the qwen3 comparison strictly like-for-like (the sections above cite 2026-06-27
+numbers), all five backends were re-benchmarked back-to-back on 2026-07-03 with the unchanged
+`PHRASES` set (`rtf_benchmark.py` untouched since 2026-06-26, commit `1999c2a`). Warm-run
+values (`warm1`; ranges span warm1–warm3):
+
+| backend | load+warmup | TTFB warm (1-sent) | RTF 1-sent | RTF 2-sent | RTF 3-seg |
+|---|---|---|---|---|---|
+| kokoro | 2.3 s | 0.08 s | 0.02 | 0.02 | 0.03 |
+| voxtral_tts | 5.4 s | 0.37–0.38 s | 1.09 | 1.08–1.13 | 1.16–1.17 |
+| pocket_tts | 1.6 s | 0.02 s | 0.05 | 0.05 | 0.05 |
+| dia | — | (segment-level; see dia plan) | — | — | 2.16–2.40 |
+| **qwen3_tts** | 2.5 s | **0.12 s** | **0.27** | **0.28** | **0.28** |
+
+Every historical number reproduced within noise (kokoro 0.02–0.03 vs 0.03; voxtral 1.08–1.17
+vs 1.09–1.29; pocket 0.05 vs 0.05; dia RTF ~2.2–2.4 vs ~2.0 — dia renders the untagged 3-seg
+phrase as a 65 s dialogue, its known behavior on untagged text, so its row is not
+phrase-comparable and lives in the dia plan's Findings). The 2026-06-27 sections above remain
+valid as-is. Standings unchanged: kokoro fastest raw throughput, pocket fastest TTFB,
+**qwen3_tts is the fastest *quality-voice* streamer** (RTF 0.27 ≈ 3.7× realtime, TTFB 0.12 s)
+and the only streaming backend with voxtral-class voices at sub-realtime RTF.
+
+Raw output: session scratchpad `rtf-cross-backend-20260703.txt` (regenerate with the loop
+below):
+
+```sh
+for b in kokoro voxtral_tts pocket_tts dia qwen3_tts; do
+  uv run --extra "$b" python scripts/profiling/rtf_benchmark.py --backend "$b"
+done
+```
 
 ## Phase 5 wire-level smoke + concurrency (M4 Max 16-core, 2026-06-27)
 

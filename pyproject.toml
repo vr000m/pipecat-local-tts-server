@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-local-tts-server"
-version = "0.3.0"
+version = "0.4.0"
 description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -101,6 +101,25 @@ pocket_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # only runtime; weights download on first ``serve``. See README → "Backends &
 # licenses".
 dia = ["websockets>=13.0", "mlx-audio==0.4.4"]
+# Full server install with the Qwen3-TTS mlx-audio backend (its own plan) — a
+# Voxtral-derived ``streaming:true`` sub-segment streamer (native
+# ``stream``/``streaming_interval``; token-quantized cadence). The default model
+# is the CustomVoice variant (9 named speakers); the Base variant stays
+# reachable via ``--model`` as a ``voice_count: 0`` unconditioned model. No
+# voice cloning (``ref_audio``/``ref_text`` actively guarded out, decision #2).
+#
+# mlx-audio is pinned to 0.4.4 (R8), which already ships the ``qwen3_tts``
+# model family — no pin bump. Like Pocket and dia, qwen3 needs NO bespoke
+# tokenizer dep: its tokenizers (AutoTokenizer + speech tokenizer via
+# transformers) are transitive hard deps of mlx-audio, so this extra is just
+# mlx-audio (unlike kokoro's misaki / voxtral_tts's mistral-common).
+#
+# LICENSE NOTE: the Qwen3-TTS weights
+# (``mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16``) carry the HF card
+# tag ``license: apache-2.0``; the HF repo ships **no LICENSE file** (verified
+# in the Phase-0 gate, Q6). The package ships only runtime; weights download on
+# first ``serve``. See README → "Backends & licenses".
+qwen3_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

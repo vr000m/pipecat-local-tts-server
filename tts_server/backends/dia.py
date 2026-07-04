@@ -42,11 +42,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 from typing import Any, AsyncGenerator
 
 from ..backend import AudioEvent, TTSStream
+from ._extras_util import (
+    TEMPERATURE_MAX,
+    TEMPERATURE_MIN,
+    TOP_P_MAX,
+    TOP_P_MIN,
+    coerce_temperature,
+    coerce_top_p,
+    validate_extras,
+)
 from ._stream_util import stream_generate
 
 logger = logging.getLogger("tts_server.backends.dia")
@@ -58,7 +66,6 @@ DEFAULT_DIA_MODEL = "mlx-community/Dia-1.6B-fp16"
 # ``temperature`` and ``top_p`` are dia's two sampling tunables. ORDERED list —
 # ``docs/protocol.md`` + ``tests/test_capabilities_extras.py`` assert this exact
 # order.
-_DIA_EXTRAS = ["temperature", "top_p"]
 
 # Params dia's generate() accepts that this backend MUST NEVER forward:
 # ``ref_audio``/``ref_text`` are the voice-cloning channel (decision #2 — no
@@ -68,13 +75,15 @@ _DIA_EXTRAS = ["temperature", "top_p"]
 # kwarg not advertised (these two included) can never reach ``generate()``.
 _FORBIDDEN_GENERATE_KWARGS = ("ref_audio", "ref_text")
 
-# Accepted ranges for the sampling extras. Forwarded under the process-wide Metal
-# lock, so unbounded values are a DoS / correctness vector: finite values are
-# CLAMPED, non-finite (NaN/inf) or non-numeric are rejected outright.
-_TEMPERATURE_MIN = 0.0
-_TEMPERATURE_MAX = 2.0
-_TOP_P_MIN = 0.0  # exclusive lower bound — a non-positive top_p is rejected, not clamped
-_TOP_P_MAX = 1.0
+# Sampling-extra coercion is shared across backends — see ``_extras_util``
+# for the bounds and the clamp/reject rationale. Aliased under the historical
+# private names so tests and in-module references keep working.
+_TEMPERATURE_MIN = TEMPERATURE_MIN
+_TEMPERATURE_MAX = TEMPERATURE_MAX
+_TOP_P_MIN = TOP_P_MIN
+_TOP_P_MAX = TOP_P_MAX
+_coerce_temperature = coerce_temperature
+_coerce_top_p = coerce_top_p
 
 # Chunk-size hints (R7). Chosen defaults, not model facts (mirrors Kokoro/Pocket).
 _IDEAL_WORDS = 40
@@ -90,42 +99,15 @@ _BRIDGE_MAXSIZE = 8
 _STATIC_LANGUAGES = ["en"]
 
 
-def _coerce_temperature(raw: Any) -> float:
-    """Validate + clamp a client-supplied ``temperature`` before generate()."""
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"temperature must be a number, got {raw!r}") from None
-    if not math.isfinite(value):
-        raise ValueError(f"temperature must be a finite number, got {raw!r}")
-    if value < _TEMPERATURE_MIN:
-        return _TEMPERATURE_MIN
-    if value > _TEMPERATURE_MAX:
-        return _TEMPERATURE_MAX
-    return value
-
-
-def _coerce_top_p(raw: Any) -> float:
-    """Validate + clamp a client-supplied ``top_p`` before generate()."""
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"top_p must be a number, got {raw!r}") from None
-    if not math.isfinite(value):
-        raise ValueError(f"top_p must be a finite number, got {raw!r}")
-    if value <= _TOP_P_MIN:
-        # A non-positive top_p selects no tokens — reject rather than clamp to a
-        # surprising tiny value (mirrors voxtral), so the client learns its
-        # request was invalid instead of getting degenerate sampling.
-        raise ValueError(f"top_p must be > 0 and <= 1, got {raw!r}")
-    if value > _TOP_P_MAX:
-        return _TOP_P_MAX
-    return value
-
-
 # Coercion dispatch for the advertised extras. Kept as a dict so the
-# filter/validate code is identical in shape to Pocket/Voxtral.
+# filter/validate code is identical in shape to Pocket/Voxtral. Entry ORDER is
+# load-bearing — the advertised extras list is derived from this dict and its
+# order is asserted by the lean tests / documented in docs/protocol.md.
 _EXTRA_COERCERS = {"temperature": _coerce_temperature, "top_p": _coerce_top_p}
+
+# Derived, not restated — the advertised list cannot drift from the coercer
+# allowlist.
+_DIA_EXTRAS = list(_EXTRA_COERCERS)
 
 
 class _DiaStream:
@@ -346,15 +328,7 @@ class DiaBackend:
         the trust boundary (commit/update) so the client gets a clean
         ``INVALID_CONFIG`` instead of a mid-synthesis ``BACKEND_ERROR`` raised
         under the Metal lock. Only advertised keys are checked."""
-        for key, coerce in _EXTRA_COERCERS.items():
-            raw = extras.get(key)
-            if raw is None:
-                continue
-            try:
-                coerce(raw)
-            except ValueError as exc:
-                return str(exc)
-        return None
+        return validate_extras(_EXTRA_COERCERS, extras)
 
     async def open_stream(
         self,

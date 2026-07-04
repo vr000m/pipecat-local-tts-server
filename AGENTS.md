@@ -24,6 +24,7 @@ uv sync --extra kokoro      # Kokoro backend (Apple Silicon; mlx-audio==0.4.4 + 
 uv sync --extra voxtral_tts # Voxtral TTS — streaming:true (mlx-audio==0.4.4 + mistral-common[audio]); CC-BY-NC weights
 uv sync --extra pocket_tts  # Pocket TTS — streaming:true (mlx-audio==0.4.4); CC-BY-4.0 weights
 uv sync --extra dia         # dia DIALOGUE — streaming:false, voice_count:0 (mlx-audio==0.4.4); Apache-2.0 weights
+uv sync --extra qwen3_tts   # Qwen3-TTS — streaming:true, 9 speakers (mlx-audio==0.4.4); apache-2.0 card tag
 uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 ```
 
@@ -33,7 +34,7 @@ Endpoint precedence everywhere: **URI > socket > host+port**.
 
 | Subcommand | Flags | Notes |
 |---|---|---|
-| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). No `--uri` (the listener is built from socket-path/host+port). |
+| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). No `--uri` (the listener is built from socket-path/host+port). |
 | `status` | `--socket-path`, `--host`, `--port`, `--uri <ws://…>`, `--auth-token-file`, `--timeout <s>` (default `3.0`), `--json` | Preflight health probe: handshake + `server.status`, prints backend/model/rate/caps/queue-depth/voices/uptime/pid. Exits non-zero if unreachable. `--json` emits raw `hello`+`status`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
@@ -64,7 +65,7 @@ CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
 explicit allow-list of lean test files — extend it when adding a lean test), an
 **examples** job (pinned pipecat-ai), and a **macOS smoke** job (`--all-extras`;
 verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
-/ pocket_tts / dia — does not run synthesis). See
+/ pocket_tts / dia / qwen3_tts — does not run synthesis). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a
@@ -87,7 +88,9 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | `just tts-stop <backend>` | Send SIGTERM (`launchctl kill`; KeepAlive restarts it). |
 | `just tts-logs <backend>` | Tail the agent's stdout+stderr logs. |
 | `just smoke-tone` / `smoke-kokoro` / `smoke-multilingual` | Live end-to-end smoke (starts a real server on an isolated socket). |
+| `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` | Per-backend live smoke (WAV round-trip + TTFB/cadence). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
+| `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` | Per-backend multi-connection fairness smoke. |
 
 Smoke scripts start their own server on a `mktemp` socket and tear it down — they
 **never** touch the canonical operator socket.
@@ -110,6 +113,11 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 - Backends implement the `TTSBackend`/`TTSStream` protocols in `tts_server/backend.py`;
   register them in `tts_server/backends/__init__.py` (`make_backend`). The server
   depends only on the abstract protocol types.
+- `language` values are BACKEND-SPECIFIC, not a normalized ISO namespace: each
+  backend advertises its model's native vocabulary (`kokoro`/`voxtral_tts` use
+  ISO 639-1 codes like `"en"`; `qwen3_tts` uses full words like `"english"`
+  plus `"auto"`). Clients must consult `capabilities.languages` before sending
+  a `language`; new backends follow their model's own lang vocabulary.
 - `ruff format` **and** `ruff check` must be clean before pushing.
 
 ## Layout

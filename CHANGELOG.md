@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-04
+
+### Added
+
+- **`qwen3_tts` backend** — Qwen3-TTS streaming backend (mlx-audio 0.4.4, no pin
+  bump; default model `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16`,
+  9 named speakers, default voice `ryan`; the `Base` variant is supported via
+  `--model` as a no-voice model). `--backend qwen3_tts` CLI choice, `qwen3_tts`
+  extra, canonical launchd port **9165**, `just smoke-qwen3_tts` /
+  `smoke-multiconn-qwen3_tts` recipes, two-layer test suites, and a profiling
+  entry (TTFB 0.12 s, RTF 0.27 — fastest quality-voice streamer in the stable).
+  Weights: HF card tag `apache-2.0` (no LICENSE file in the repos).
+- Known-upstream workarounds baked into the backend: `mx.disable_compile()` in
+  `start()` (mlx 0.31.2's thread-local CompilerCache segfaults on worker-thread
+  exit; qwen3 is the only model family using `mx.compile`) and
+  `_MAX_TEXT_CHARS = 800` + a token-ceiling tripwire (mlx-audio's
+  `max_tokens=4096` truncates silently; degenerate text paces at ~0.19 s
+  audio/char). The tripwire counts tokens **per segment** (`segment_idx`) —
+  the cap is per generation, and the Base path splits a commit on `\n` into
+  independent generations — and a ceiling-hit **fails the response**
+  (`response.failed`/`BACKEND_ERROR` via `Qwen3TruncationError`) instead of
+  logging and completing with silently missing audio.
+
+### Changed
+
+- Sampling-extras coercion (`temperature`/`top_k`/`top_p` bounds + validation)
+  extracted to a shared stdlib-only `tts_server/backends/_extras_util.py`;
+  qwen3/voxtral/dia/pocket now import it (each keeps its own allowlist).
+  Behavior change: JSON booleans are rejected with `INVALID_CONFIG` for **all**
+  numeric extras (previously `{"temperature": true}` silently coerced to 1.0;
+  only `top_k` rejected bools).
+
 ## [0.3.0] - 2026-07-01
 
 ### Added
@@ -269,7 +301,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vr000m/pipecat-local-tts-server/releases/tag/v0.1.0
