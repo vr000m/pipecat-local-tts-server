@@ -540,7 +540,38 @@ two-layer tests → full wiring (registry/CLI/extra/justfile/smoke/renderer/CI/d
 - Gate-before-code paid off twice (dia precedent holds): speaker-list falsification re-planned
   the default model BEFORE any backend code; the gate's peak-memory/licence records fed docs.
 
+### Post-ship /code-review pass 2026-07-04
+
+8 finder angles → 8 deduped candidates → 1-vote verify (7 CONFIRMED, 1 REFUTED). Fixed:
+
+- **Truncation tripwire was cross-segment** (`_count_tokens`): the 4096-token cap is PER
+  SEGMENT (Base splits on `\n` into independent generations, each with its own
+  `max_tokens` loop; CustomVoice is single-segment) — the old cross-segment sum would
+  false-alarm TRUNCATED on multi-segment Base commits that each finished on EOS. Now
+  accumulates per `segment_idx`; regression test `test_truncation_tripwire_is_per_segment`.
+- **Bool coercion gap**: `temperature`/`top_p` accepted JSON `true`/`false` (float-coercible)
+  while `top_k` rejected them — `{"temperature": true}` silently synthesized at 1.0. All
+  coercers now reject bools; test `test_validate_extras_rejects_booleans`.
+- **Extras machinery deduplicated**: the byte-identical coercers + `validate_extras` walk
+  (4th copy across qwen3/voxtral/dia/pocket) extracted to shared stdlib-only
+  `tts_server/backends/_extras_util.py`; each backend keeps only its `_EXTRA_COERCERS`
+  allowlist (aliases preserve the historical private names tests reference).
+- **Default voice resolved once in `start()`** (`self._default_voice`) instead of per
+  voiceless commit — the missing-default fallback warning now fires once, not per utterance.
+- **`test_qwen3_lean._assert_lean`** now delegates to the shared
+  `tests/_helpers.lean_import_offenders` probe (slightly stricter: numpy always checked).
+
+Skipped (verified real, deferred as dedicated refactors — out of this branch's scope):
+- Shared base stream class (`_Qwen3Stream` is the 5th verbatim copy of the
+  feed/end/cancel/wait_closed/events skeleton; only `_gen_factory` differs).
+- Backend-name registry consolidation (~9 hand-edited enumeration sites; a lazy
+  `BACKEND_NAMES` + `default_model(name)` export would fix the 3 Python-side ones).
+- REFUTED: "validate_extras/open_stream double-coerce" — intentional trust-boundary vs
+  per-utterance design; they operate on different dicts at different times.
+
 ### Follow-up Work
 - Consider filing the mlx CompilerCache thread-exit segfault upstream (like #803).
 - Optional: expose `instruct` (emotion/style) as a capability-gated extra in a v2.
 - Base-bf16 voice-cloning support if the WS protocol ever grows reference-audio transport.
+- Extract a shared base stream class in `_stream_util` (5 verbatim copies, gen-factory hook).
+- Consolidate the backend-name enumeration (`BACKEND_NAMES`/`default_model` export).

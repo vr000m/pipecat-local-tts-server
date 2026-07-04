@@ -22,7 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exit; qwen3 is the only model family using `mx.compile`) and
   `_MAX_TEXT_CHARS = 800` + a token-ceiling tripwire (mlx-audio's
   `max_tokens=4096` truncates silently; degenerate text paces at ~0.19 s
-  audio/char).
+  audio/char). The tripwire counts tokens **per segment** (`segment_idx`) —
+  the cap is per generation, and the Base path splits a commit on `\n` into
+  independent generations.
+
+### Changed
+
+- Sampling-extras coercion (`temperature`/`top_k`/`top_p` bounds + validation)
+  extracted to a shared stdlib-only `tts_server/backends/_extras_util.py`;
+  qwen3/voxtral/dia/pocket now import it (each keeps its own allowlist).
+  Behavior change: JSON booleans are rejected with `INVALID_CONFIG` for **all**
+  numeric extras (previously `{"temperature": true}` silently coerced to 1.0;
+  only `top_k` rejected bools).
 
 ## [0.3.0] - 2026-07-01
 

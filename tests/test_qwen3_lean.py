@@ -30,14 +30,11 @@ The mlx-gated synthesis assertions live in ``tests/test_qwen3_backend.py``.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-from pathlib import Path
-
+import logging
 
 from tts_server.backends import qwen3_tts as Q
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+from ._helpers import lean_import_offenders
 
 # Gate-verified facts (## Findings → Phase 0 gate results, CustomVoice run):
 # 9 speakers, exact-case all-lowercase; languages incl. "auto" and "english".
@@ -183,6 +180,7 @@ def _spy_backend(*, speakers=None, languages=None):
     backend._loaded_model = spy
     backend._voice_names = backend._discover_voices()
     backend._languages = backend._discover_languages()
+    backend._default_voice = backend._resolve_default_voice()
     return backend, spy
 
 
@@ -331,32 +329,59 @@ def test_validate_extras_reports_bad_value():
     assert backend.validate_extras({"ref_audio": "x"}) is None
 
 
+def test_validate_extras_rejects_booleans():
+    """A JSON ``true``/``false`` is a client config mistake, not a number:
+    every coercer must reject it (``bool`` is float-coercible — without the
+    explicit check, ``{"temperature": true}`` silently synthesizes at 1.0)."""
+    backend = Q.Qwen3Backend()
+    for key in ("temperature", "top_k", "top_p"):
+        for bad in (True, False):
+            msg = backend.validate_extras({key: bad})
+            assert msg and key in msg, f"{key}={bad!r} was not rejected"
+
+
+class _SegRes:
+    """Minimal GenerationResult stand-in for the truncation tripwire."""
+
+    def __init__(self, segment_idx: int, token_count: int):
+        self.segment_idx = segment_idx
+        self.token_count = token_count
+
+
+def test_truncation_tripwire_is_per_segment(caplog):
+    """The 4096-token ceiling is PER SEGMENT: the Base path splits the commit
+    on ``\\n`` into independent generations, each with its own ``max_tokens``
+    loop. Two naturally-completed 2500-token segments must NOT false-alarm
+    (their sum exceeds the cap), while any single segment reaching the cap
+    must fire — including one in the middle of the stream."""
+    stream = object.__new__(Q._Qwen3Stream)
+    stream._text = "x" * 100
+
+    with caplog.at_level(logging.ERROR, logger="tts_server.backends.qwen3_tts"):
+        list(stream._count_tokens(iter([_SegRes(0, 2500), _SegRes(1, 2500)])))
+    assert not caplog.records, "false alarm: cross-segment sum tripped the per-segment cap"
+
+    with caplog.at_level(logging.ERROR, logger="tts_server.backends.qwen3_tts"):
+        list(stream._count_tokens(iter([_SegRes(0, 100), _SegRes(1, 4200), _SegRes(2, 50)])))
+    assert sum("TRUNCATED" in r.message for r in caplog.records) == 1
+
+
 # --- lazy-import / dual-wire (make_backend + argparse choices) --------------------
 
 
-def _assert_lean(body: str, *, forbidden: tuple[str, ...] = ("mlx_audio",)) -> None:
-    """Run ``body`` in a FRESH interpreter; fail if it pulled in any of the
-    ``forbidden`` modules (mirrors test_voxtral_lean — a clean module table makes
-    the 'absent' assertion independent of test order, since mlx IS installed in
-    the full env)."""
-    checks = " or ".join(f"n == '{m}' or n.startswith('{m}.')" for m in forbidden)
-    prog = (
-        "import sys\n" + body + f"\nbad = sorted(n for n in sys.modules if {checks})\n"
-        "sys.exit(1) if bad else None\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", prog], cwd=_REPO_ROOT, capture_output=True, text=True
-    )
-    assert result.returncode == 0, f"forbidden module leaked or import failed:\n{result.stderr}"
+def _assert_lean(body: str) -> None:
+    """Run ``body`` in a FRESH interpreter via the shared probe; fail if it
+    pulled any ``LEAN_FORBIDDEN_ROOTS`` module (``mlx_audio``/``numpy``) into
+    ``sys.modules``. The child interpreter keeps the assertion independent of
+    test order, since mlx IS installed in the full env."""
+    offenders = lean_import_offenders(body)
+    assert not offenders, f"forbidden modules leaked: {offenders}"
 
 
 def test_import_qwen3_module_does_not_pull_mlx_or_numpy():
     """The lean-base invariant: importing the module pulls neither ``mlx_audio``
     nor ``numpy`` — the heavy deps enter the process only in ``start()``."""
-    _assert_lean(
-        "import importlib; importlib.import_module('tts_server.backends.qwen3_tts')",
-        forbidden=("mlx_audio", "numpy"),
-    )
+    _assert_lean("import importlib; importlib.import_module('tts_server.backends.qwen3_tts')")
 
 
 def test_default_model_constant_importable_lean():

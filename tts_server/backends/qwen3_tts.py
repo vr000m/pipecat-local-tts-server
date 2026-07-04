@@ -59,11 +59,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 from typing import Any, AsyncGenerator
 
 from ..backend import AudioEvent, TTSStream
+from ._extras_util import (
+    TEMPERATURE_MAX,
+    TEMPERATURE_MIN,
+    TOP_K_MAX,
+    TOP_K_MIN,
+    TOP_P_MAX,
+    TOP_P_MIN,
+    coerce_temperature,
+    coerce_top_k,
+    coerce_top_p,
+    validate_extras,
+)
 from ._stream_util import stream_generate
 
 logger = logging.getLogger("tts_server.backends.qwen3_tts")
@@ -138,17 +149,18 @@ _BRIDGE_MAXSIZE = 32
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 800
 
-# Sampling-extra bounds. ``generate()`` forwards these under the process-wide
-# Metal lock, so unbounded values are a denial-of-service / correctness
-# vector: a degenerate ``top_p``/``temperature`` can drive runaway or broken
-# sampling that stalls every other connection's commit. Finite values are
-# CLAMPED; non-finite (NaN/inf) or non-numeric values are rejected outright.
-_TEMPERATURE_MIN = 0.0
-_TEMPERATURE_MAX = 2.0
-_TOP_K_MIN = 1
-_TOP_K_MAX = 500
-_TOP_P_MIN = 0.0  # exclusive lower bound enforced in _coerce_top_p
-_TOP_P_MAX = 1.0
+# Sampling-extra coercion is shared across backends — see ``_extras_util``
+# for the bounds and the clamp/reject rationale. Aliased under the historical
+# private names so tests and in-module references keep working.
+_TEMPERATURE_MIN = TEMPERATURE_MIN
+_TEMPERATURE_MAX = TEMPERATURE_MAX
+_TOP_K_MIN = TOP_K_MIN
+_TOP_K_MAX = TOP_K_MAX
+_TOP_P_MIN = TOP_P_MIN
+_TOP_P_MAX = TOP_P_MAX
+_coerce_temperature = coerce_temperature
+_coerce_top_k = coerce_top_k
+_coerce_top_p = coerce_top_p
 
 # Gate-verified language list (Phase 0 Q3), used ONLY as the static fallback
 # if ``get_supported_languages()`` is absent on a future mlx-audio. The live
@@ -166,58 +178,6 @@ _STATIC_LANGUAGES = [
     "french",
     "russian",
 ]
-
-
-def _coerce_temperature(raw: Any) -> float:
-    """Validate + clamp a client-supplied ``temperature`` before generate()."""
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"temperature must be a number, got {raw!r}") from None
-    if not math.isfinite(value):
-        raise ValueError(f"temperature must be a finite number, got {raw!r}")
-    if value < _TEMPERATURE_MIN:
-        return _TEMPERATURE_MIN
-    if value > _TEMPERATURE_MAX:
-        return _TEMPERATURE_MAX
-    return value
-
-
-def _coerce_top_k(raw: Any) -> int:
-    """Validate + clamp a client-supplied ``top_k`` (a positive integer)."""
-    if isinstance(raw, bool):  # bool is an int subclass; reject it explicitly.
-        raise ValueError(f"top_k must be an integer, got {raw!r}")
-    # Reject a non-integral float (e.g. 2.9) rather than silently truncating to 2
-    # — the client should learn its value was not an integer, not get a quietly
-    # different one. Integral floats (50.0) and int-valued strings ("40") are ok.
-    if isinstance(raw, float) and not raw.is_integer():
-        raise ValueError(f"top_k must be an integer, got {raw!r}")
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"top_k must be an integer, got {raw!r}") from None
-    if value < _TOP_K_MIN:
-        return _TOP_K_MIN
-    if value > _TOP_K_MAX:
-        return _TOP_K_MAX
-    return value
-
-
-def _coerce_top_p(raw: Any) -> float:
-    """Validate + clamp a client-supplied ``top_p`` into ``(0, 1]``."""
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(f"top_p must be a number, got {raw!r}") from None
-    if not math.isfinite(value):
-        raise ValueError(f"top_p must be a finite number, got {raw!r}")
-    if value <= _TOP_P_MIN:
-        # A non-positive top_p selects no tokens — reject rather than clamp to a
-        # surprising tiny value, so the client learns its request was invalid.
-        raise ValueError(f"top_p must be > 0 and <= 1, got {raw!r}")
-    if value > _TOP_P_MAX:
-        return _TOP_P_MAX
-    return value
 
 
 # Coercion dispatch for the advertised extras. Keyed by extra name so
@@ -336,23 +296,37 @@ class _Qwen3Stream:
         return self._count_tokens(gen)
 
     def _count_tokens(self, gen):
-        # Truncation tripwire (see ``_MAX_TOKENS_CEILING``): sum each chunk's
-        # ``token_count`` and log an ERROR when the generation reaches the
-        # cap — without this, a capped run drains to a clean ``completed``
-        # and the cut-off audio reads as a client-side playback bug. Pass-
-        # through wrapper; the bridge contract (yields GenerationResult with
-        # ``.audio``) is untouched.
-        total = 0
+        # Truncation tripwire (see ``_MAX_TOKENS_CEILING``): the cap is PER
+        # SEGMENT — the Base path splits on the default split_pattern='\n'
+        # into independent generations, each with its own ``for step in
+        # range(max_tokens)`` loop (CustomVoice is always one segment) — so
+        # sum each SEGMENT's ``token_count`` keyed on ``segment_idx`` and log
+        # an ERROR when any segment reaches the cap. A cross-segment sum
+        # would false-alarm on multi-segment Base commits that each finished
+        # naturally on EOS. Without the tripwire, a capped run drains to a
+        # clean ``completed`` and the cut-off audio reads as a client-side
+        # playback bug. Pass-through wrapper; the bridge contract (yields
+        # GenerationResult with ``.audio``) is untouched.
+        segment_idx: Any = None
+        segment_total = 0
         for result in gen:
-            total += int(getattr(result, "token_count", 0) or 0)
+            idx = getattr(result, "segment_idx", None)
+            if idx != segment_idx:
+                self._check_truncation(segment_total)
+                segment_idx = idx
+                segment_total = 0
+            segment_total += int(getattr(result, "token_count", 0) or 0)
             yield result
-        if total >= _MAX_TOKENS_CEILING:
+        self._check_truncation(segment_total)
+
+    def _check_truncation(self, segment_total: int) -> None:
+        if segment_total >= _MAX_TOKENS_CEILING:
             logger.error(
-                "qwen3_tts: generation hit the %d-token single-generation "
+                "qwen3_tts: a segment hit the %d-token single-generation "
                 "ceiling (%d tokens, %d chars in) — audio was silently "
                 "TRUNCATED mid-utterance; commit shorter text",
                 _MAX_TOKENS_CEILING,
-                total,
+                segment_total,
                 len(self._text),
             )
 
@@ -401,6 +375,9 @@ class Qwen3Backend:
         # Voice/language facts derived from the model in ``start()``.
         self._voice_names: list[str] = []
         self._languages: list[str] = []
+        # Resolved once in ``start()`` (``_voice_names`` never changes after
+        # discovery); ``None`` on Base — the voice kwarg is then omitted.
+        self._default_voice: str | None = None
 
     async def start(self) -> None:
         # Lazy import — the ONLY place ``mlx_audio`` enters the process. Fails
@@ -477,6 +454,10 @@ class Qwen3Backend:
         # no I/O — so no run_in_executor.
         self._voice_names = self._discover_voices()
         self._languages = self._discover_languages()
+        # Resolve the injected default ONCE — the discovered list is fixed for
+        # the backend's lifetime, and resolving per commit would re-emit the
+        # missing-default warning on every voiceless utterance.
+        self._default_voice = self._resolve_default_voice()
         logger.info(
             "qwen3_tts: serving %d voices, languages %s",
             len(self._voice_names),
@@ -566,9 +547,8 @@ class Qwen3Backend:
         on CustomVoice — or the unconditioned path when voices are empty."""
         try:
             kwargs: dict[str, Any] = {}
-            voice = self._resolve_default_voice()
-            if voice is not None:
-                kwargs["voice"] = voice
+            if self._default_voice is not None:
+                kwargs["voice"] = self._default_voice
             with self._metal_lock:
                 for _ in self._loaded_model.generate(
                     "Hello there.",
@@ -612,15 +592,7 @@ class Qwen3Backend:
         after the commit has already consumed a scheduler slot. Only the
         advertised keys are checked; unknown keys are dropped (not this method's
         job — the server filters keys against ``capabilities()["extras"]``)."""
-        for key, coerce in _EXTRA_COERCERS.items():
-            raw = extras.get(key)
-            if raw is None:
-                continue
-            try:
-                coerce(raw)
-            except ValueError as exc:
-                return str(exc)
-        return None
+        return validate_extras(_EXTRA_COERCERS, extras)
 
     async def open_stream(
         self,
@@ -657,7 +629,7 @@ class Qwen3Backend:
         if not self._voice_names:
             resolved_voice = None
         else:
-            resolved_voice = voice if voice is not None else self._resolve_default_voice()
+            resolved_voice = voice if voice is not None else self._default_voice
         # Language → ``lang_code`` (a real generate() knob here, unlike
         # Voxtral). The server has already validated it against the advertised
         # languages; None defaults to "auto" (the model's own default).
