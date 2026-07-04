@@ -134,7 +134,10 @@ def test_coerce_temperature_clamps_and_rejects():
     assert PK._coerce_temperature("1.0") == 1.0
     assert PK._coerce_temperature(-1) == PK._TEMPERATURE_MIN
     assert PK._coerce_temperature(99) == PK._TEMPERATURE_MAX
-    for bad in (float("nan"), float("inf"), "hot"):
+    # Bools included: the shared coercers (``_extras_util``) reject JSON
+    # true/false as a client config mistake rather than coercing to 1.0/0.0 —
+    # pins the behavior upgrade pocket inherited from the shared module.
+    for bad in (float("nan"), float("inf"), "hot", True, False):
         with pytest.raises(ValueError):
             PK._coerce_temperature(bad)
 

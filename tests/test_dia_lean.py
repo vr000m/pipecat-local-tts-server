@@ -251,6 +251,19 @@ def test_validate_extras_rejects_non_finite_top_p():
     assert msg and "top_p" in msg
 
 
+def test_validate_extras_rejects_booleans():
+    """A JSON ``true``/``false`` is a client config mistake, not a number: the
+    shared coercers (``_extras_util``) reject bools for every numeric extra —
+    without the explicit guard, ``{"temperature": true}`` would silently
+    synthesize at 1.0. This pins the behavior upgrade dia inherited when its
+    coercers moved to the shared module."""
+    backend = D.DiaBackend()
+    for key in ("temperature", "top_p"):
+        for bad in (True, False):
+            msg = backend.validate_extras({key: bad})
+            assert msg and key in msg, f"{key}={bad!r} was not rejected"
+
+
 # --- tagged-text -> deltas through ToneBackend (server/bridge path, no mlx) ----
 
 
