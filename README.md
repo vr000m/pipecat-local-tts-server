@@ -372,8 +372,9 @@ mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 (mlx-audio 0.4.4):
 > (≈328 s of audio) truncates SILENTLY when hit. Degenerate/repetitive text can
 > pace as badly as ~0.19 s of audio per character, so the 800-char cap keeps the
 > worst case at ~2x margin under the ceiling; the backend also counts codec
-> tokens per generation and logs an ERROR if the ceiling is ever reached. Commit
-> shorter chunks for long content.
+> tokens per generation segment and, if the ceiling is ever reached, FAILS the
+> response (`response.failed` with `BACKEND_ERROR`) rather than completing with
+> silently missing audio. Commit shorter chunks for long content.
 
 ### Kokoro capabilities (as shipped)
 

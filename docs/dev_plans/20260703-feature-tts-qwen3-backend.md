@@ -575,6 +575,21 @@ Skipped (verified real, deferred as dedicated refactors — out of this branch's
 - REFUTED: "validate_extras/open_stream double-coerce" — intentional trust-boundary vs
   per-utterance design; they operate on different dicts at different times.
 
+### Deep-review pass 2026-07-04
+
+4 lenses (logic/security: opus, architecture: sonnet, documentation: haiku; spec skipped — no
+external specs in Review Focus). Logic and security lenses CLEAN (tripwire semantics, voice/None
+branches, extras allowlist, and DoS bounds verified against mlx-audio source). 4 findings fixed:
+
+- README still described the truncation ceiling as log-only — updated to the
+  fails-the-response behavior.
+- dia/pocket silently inherited bool rejection from the shared coercers with no test —
+  bool cases added to both lean suites.
+- `_EXTRA_COERCERS` dict order is load-bearing (advertised extras order is
+  protocol-asserted) — noted in comments across all four backends.
+- qwen3's private-name alias block was new coupling, not backward-compat — removed;
+  qwen3 and its tests reference `_extras_util` symbols directly.
+
 ### Follow-up Work
 - Consider filing the mlx CompilerCache thread-exit segfault upstream (like #803).
 - Optional: expose `instruct` (emotion/style) as a capability-gated extra in a v2.
