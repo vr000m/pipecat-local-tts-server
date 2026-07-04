@@ -115,7 +115,11 @@ def _write_wav(path: Path, audio_np, rate: int) -> None:
     """Write a float32 [-1, 1] mono buffer as pcm16 WAV (clipped, not normalised)."""
     import numpy as np
 
-    pcm = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+    # Asymmetric x32768/x32767 map — the wire mapping (tts_server/_audio.py);
+    # the naive symmetric x32767 never reaches -32768 and clips the negative
+    # rail one LSB early. Inlined (numpy) to keep this script standalone.
+    clipped = np.clip(audio_np, -1.0, 1.0)
+    pcm = np.where(clipped < 0, clipped * 32768.0, clipped * 32767.0).astype(np.int16)
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)

@@ -84,13 +84,14 @@ DEFAULT_QWEN3_MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
 # voice with a logged warning — never to a name the model does not know.
 DEFAULT_QWEN3_VOICE = "ryan"
 
-# Qwen3's advertised effective extras — the same sampling trio as Voxtral.
+# Qwen3's advertised effective extras (``_QWEN3_EXTRAS``) are DERIVED from
+# ``_EXTRA_COERCERS`` below — single source of truth, so the advertised list
+# can never drift from what ``open_stream``'s coercer loop actually honours.
 # Everything else the live ``generate()`` accepts (cloning/style/control
 # kwargs) is actively filtered out, not merely undocumented (see module
 # docstring). ``streaming_interval`` is BACKEND CONFIG (a module constant
 # below), never a client extra — advertising it would let a client inflate
 # TTFB.
-_QWEN3_EXTRAS = ["temperature", "top_k", "top_p"]
 
 # Per-backend streaming cadence — a MODULE CONSTANT baked into the generate()
 # call, NOT a constructor param / CLI flag / client extra. Qwen3 quantizes the
@@ -231,6 +232,20 @@ _EXTRA_COERCERS = {
     "top_p": _coerce_top_p,
 }
 
+# Derived, not restated — see the comment above ``_STREAMING_INTERVAL``.
+_QWEN3_EXTRAS = list(_EXTRA_COERCERS)
+
+# mlx-audio's single-generation cap (its ``generate()`` default). Hitting it
+# truncates SILENTLY: the token loop is ``for step in range(max_tokens)`` with
+# EOS breaking BEFORE the append, so natural completion always sums fewer
+# codec tokens than the cap — a run that sums exactly the cap was cut off
+# mid-utterance and the client still sees a clean ``completed``.
+# ``_MAX_TEXT_CHARS`` keeps normal inputs far below this, but pacing is
+# input-dependent (measured up to ~0.19 s audio/char on degenerate text), so
+# the drain ALSO counts tokens and logs an ERROR when the cap is reached —
+# the invariant check, not just the proxy cap.
+_MAX_TOKENS_CEILING = 4096
+
 
 class _Qwen3Stream:
     """Adapts one Qwen3-TTS utterance to the ``TTSStream`` protocol.
@@ -308,13 +323,35 @@ class _Qwen3Stream:
         if self._voice is not None:
             kwargs["voice"] = self._voice
         kwargs.update(self._extras)
-        return self._model.generate(
+        gen = self._model.generate(
             self._text,
             lang_code=self._lang_code,
             stream=True,
             streaming_interval=_STREAMING_INTERVAL,
             **kwargs,
         )
+        return self._count_tokens(gen)
+
+    def _count_tokens(self, gen):
+        # Truncation tripwire (see ``_MAX_TOKENS_CEILING``): sum each chunk's
+        # ``token_count`` and log an ERROR when the generation reaches the
+        # cap — without this, a capped run drains to a clean ``completed``
+        # and the cut-off audio reads as a client-side playback bug. Pass-
+        # through wrapper; the bridge contract (yields GenerationResult with
+        # ``.audio``) is untouched.
+        total = 0
+        for result in gen:
+            total += int(getattr(result, "token_count", 0) or 0)
+            yield result
+        if total >= _MAX_TOKENS_CEILING:
+            logger.error(
+                "qwen3_tts: generation hit the %d-token single-generation "
+                "ceiling (%d tokens, %d chars in) — audio was silently "
+                "TRUNCATED mid-utterance; commit shorter text",
+                _MAX_TOKENS_CEILING,
+                total,
+                len(self._text),
+            )
 
     async def events(self) -> AsyncGenerator[AudioEvent, None]:
         if self._external_cancel:
@@ -417,6 +454,21 @@ class Qwen3Backend:
             )
         self.sample_rate = int(rate)
 
+        # Fail fast on unsupported model variants (same pattern as the rate
+        # guard above). 'base' and 'custom_voice' both work through
+        # ``generate()``; 'voice_design' REQUIRES the ``instruct`` kwarg, which
+        # this backend deliberately never passes (out of scope) — without this
+        # guard a VoiceDesign checkpoint boots "healthy" (the warmup failure is
+        # swallowed) and then fails EVERY synthesis with BACKEND_ERROR.
+        model_type = getattr(getattr(self._loaded_model, "config", None), "tts_model_type", "base")
+        if model_type not in ("base", "custom_voice"):
+            raise RuntimeError(
+                f"qwen3_tts: model {self._model_id!r} has tts_model_type="
+                f"{model_type!r}, which this backend does not support (it "
+                "requires kwargs like 'instruct' that are deliberately out of "
+                "scope). Use a 'base' or 'custom_voice' variant."
+            )
+
         # Discover voices + languages from the model API (NET-NEW vs Voxtral's
         # embedding-file walk). Pure in-memory reads over the loaded config —
         # no I/O — so no run_in_executor.
@@ -450,12 +502,19 @@ class Qwen3Backend:
         try:
             speakers = self._loaded_model.get_supported_speakers()
             return list(speakers) if speakers else []
-        except Exception as exc:  # noqa: BLE001 - voice discovery is best-effort
-            logger.warning(
-                "qwen3_tts: could not enumerate speakers (%s); serving voice_count 0",
-                exc,
-            )
-            return []
+        except Exception as exc:
+            # FAIL FAST, do not fall back to []. An empty list is only valid
+            # when the model REPORTS no speakers (Base). Masquerading a
+            # discovery FAILURE as "voice_count 0" would fail-open the server's
+            # voice validation (``_validate_voice`` accepts any voice at count
+            # 0) and, on CustomVoice, break every voiceless commit mid-synthesis
+            # ("CustomVoice model requires 'voice'") while start() reports
+            # healthy. Kokoro's analogous fallback stays fail-closed for the
+            # same reason.
+            raise RuntimeError(
+                "qwen3_tts: could not enumerate speakers from the loaded model "
+                f"({exc}); refusing to serve with an unknown voice set"
+            ) from exc
 
     def _discover_languages(self) -> list[str]:
         """Return the model's supported ``lang_code`` values.
@@ -586,9 +645,16 @@ class Qwen3Backend:
         # Voice resolution (gate-decided): a client voice (pre-validated by the
         # server against exact-case ``voices()``) passes through; None →
         # inject the default when speakers exist (CustomVoice raises without a
-        # voice); None with NO speakers (Base) stays None and the stream OMITS
-        # the kwarg (unconditioned path).
-        resolved_voice = voice if voice is not None else self._resolve_default_voice()
+        # voice). With NO speakers (Base), ANY client voice is DISCARDED, not
+        # forwarded: the server's voice_count:0 accept-branch exists precisely
+        # because such backends ignore voice (dia precedent), and forwarding
+        # would ride on mlx-audio's silent-ignore behavior — the docstring's
+        # "Base OMITS the voice kwarg entirely" must hold for supplied voices
+        # too, not just None.
+        if not self._voice_names:
+            resolved_voice = None
+        else:
+            resolved_voice = voice if voice is not None else self._resolve_default_voice()
         # Language → ``lang_code`` (a real generate() knob here, unlike
         # Voxtral). The server has already validated it against the advertised
         # languages; None defaults to "auto" (the model's own default).

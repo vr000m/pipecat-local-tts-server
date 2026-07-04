@@ -88,15 +88,20 @@ def test_streaming_interval_locked_value():
     """The cadence default is LOCKED to the single gate-measured value
     (## Findings → Phase 0 Q2: TTFB 0.10 s @0.4). Equality to that one value,
     never a range — if a re-measurement moves it, this test moves with the
-    Findings, not a band."""
+    Findings, not a band. (Cadence is token-quantized: ``max(1,
+    int(0.4 * 12.5))`` = 5 codec tokens ≈ 0.4 s of audio per chunk, unlike
+    Voxtral's seconds semantics.)"""
     assert Q._STREAMING_INTERVAL == 0.4
 
 
-def test_streaming_interval_token_quantum():
-    """qwen3's chunk quantum is ``max(1, int(streaming_interval * 12.5))`` codec
-    tokens (12.5 tok/s) — 0.4 s → 5 tokens ≈ 0.4 s of audio per chunk. TTFB math
-    is token-quantized, unlike Voxtral's seconds semantics."""
-    assert max(1, int(Q._STREAMING_INTERVAL * 12.5)) == 5
+def test_max_text_chars_locked_value():
+    """``_MAX_TEXT_CHARS`` is LOCKED to the measured safety value: 800 caps
+    worst-case degenerate pacing (~0.19 s audio/char) at ~160 s of audio, 2x
+    margin under mlx-audio's silent 4096-token single-generation ceiling
+    (~328 s). A revert toward 2000 re-opens the multiconn keepalive cascade
+    this value closed — see the constant's comment and the plan Findings."""
+    assert Q._MAX_TEXT_CHARS == 800
+    assert Q._MAX_TOKENS_CEILING == 4096
 
 
 def test_default_model_constant():
@@ -117,7 +122,9 @@ def test_default_voice_constant():
 def test_streaming_interval_not_in_advertised_extras():
     """``streaming_interval`` is per-backend CONFIG, never a client knob — it
     MUST NOT appear in ``capabilities()["extras"]``. The advertised set is
-    exactly the effective sampling tunables (mirrors Voxtral)."""
+    exactly the effective sampling tunables (mirrors Voxtral); the exact-
+    equality assertion is also guard #1 of the two-layer negative guard (no
+    forbidden knob can be advertised — guard #2 is the open_stream spy)."""
     extras = Q.Qwen3Backend().capabilities()["extras"]
     assert "streaming_interval" not in extras
     assert extras == ["temperature", "top_k", "top_p"]
@@ -126,14 +133,6 @@ def test_streaming_interval_not_in_advertised_extras():
 def test_capabilities_streaming_true():
     """qwen3 is a genuine sub-segment streamer (native stream/streaming_interval)."""
     assert Q.Qwen3Backend().capabilities()["streaming"] is True
-
-
-def test_capabilities_excludes_forbidden_knobs():
-    """None of the out-of-scope generate() kwargs may be ADVERTISED either —
-    guard #1 of the two-layer negative guard (guard #2 is the open_stream spy)."""
-    extras = Q.Qwen3Backend().capabilities()["extras"]
-    for key in _FORBIDDEN_KWARGS:
-        assert key not in extras, key
 
 
 def test_capabilities_shape_lean():
@@ -251,6 +250,16 @@ async def test_voice_kwarg_omitted_when_voices_empty():
     ``voice`` kwarg is OMITTED from generate() entirely — no injected default
     (injecting "ryan" into a model with ``spk_id: {}`` would be a lie)."""
     call = await _gen_kwargs(voice=None, language=None, extras=None, speakers=[])
+    assert "voice" not in call
+
+
+async def test_client_voice_discarded_when_voices_empty():
+    """A client-SUPPLIED voice is also DISCARDED on the no-speakers path, not
+    forwarded: the server's voice_count:0 accept-branch exists precisely
+    because such backends ignore voice (dia precedent) — forwarding would ride
+    on mlx-audio's silent-ignore of unknown speakers and break the docstring's
+    'Base OMITS the voice kwarg entirely' contract."""
+    call = await _gen_kwargs(voice="ryan", language=None, extras=None, speakers=[])
     assert "voice" not in call
 
 

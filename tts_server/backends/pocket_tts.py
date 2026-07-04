@@ -50,7 +50,6 @@ DEFAULT_POCKET_MODEL = "mlx-community/pocket-tts"
 # ``temperature`` is the only sampling tunable Pocket's generate() accepts
 # (no top_k/top_p). ``ref_audio`` and ``frames_after_eos`` are real params but
 # are INTENTIONALLY NOT advertised and never forwarded (see below).
-_POCKET_EXTRAS = ["temperature"]
 
 # Params Pocket's generate() accepts that this backend MUST NEVER forward:
 # ``ref_audio`` is the voice-cloning channel (decision #2 — no cloning in v1);
@@ -111,6 +110,10 @@ def _coerce_temperature(raw: Any) -> float:
 # Coercion dispatch for the advertised extras (one entry — kept as a dict so the
 # filter/validate code is identical in shape to Voxtral's).
 _EXTRA_COERCERS = {"temperature": _coerce_temperature}
+
+# Derived, not restated — the advertised list cannot drift from the coercer
+# allowlist.
+_POCKET_EXTRAS = list(_EXTRA_COERCERS)
 
 
 class _PocketStream:

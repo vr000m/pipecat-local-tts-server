@@ -58,7 +58,6 @@ DEFAULT_DIA_MODEL = "mlx-community/Dia-1.6B-fp16"
 # ``temperature`` and ``top_p`` are dia's two sampling tunables. ORDERED list —
 # ``docs/protocol.md`` + ``tests/test_capabilities_extras.py`` assert this exact
 # order.
-_DIA_EXTRAS = ["temperature", "top_p"]
 
 # Params dia's generate() accepts that this backend MUST NEVER forward:
 # ``ref_audio``/``ref_text`` are the voice-cloning channel (decision #2 — no
@@ -126,6 +125,10 @@ def _coerce_top_p(raw: Any) -> float:
 # Coercion dispatch for the advertised extras. Kept as a dict so the
 # filter/validate code is identical in shape to Pocket/Voxtral.
 _EXTRA_COERCERS = {"temperature": _coerce_temperature, "top_p": _coerce_top_p}
+
+# Derived, not restated — the advertised list cannot drift from the coercer
+# allowlist.
+_DIA_EXTRAS = list(_EXTRA_COERCERS)
 
 
 class _DiaStream:

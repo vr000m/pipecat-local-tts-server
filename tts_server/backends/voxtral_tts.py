@@ -74,7 +74,6 @@ DEFAULT_VOXTRAL_MODEL = "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
 # the sampling tunables; everything else (``max_tokens``/``verbose``) is not a
 # client knob. ``streaming_interval`` is BACKEND CONFIG (a module constant
 # below), never a client extra — advertising it would let a client inflate TTFB.
-_VOXTRAL_EXTRAS = ["temperature", "top_k", "top_p"]
 
 # Per-backend streaming cadence — a MODULE CONSTANT baked into the generate()
 # call (exactly how kokoro.py hardcodes lang_code/speed), NOT a constructor
@@ -182,6 +181,10 @@ _EXTRA_COERCERS = {
     "top_k": _coerce_top_k,
     "top_p": _coerce_top_p,
 }
+
+# Derived, not restated — the advertised list cannot drift from the coercer
+# allowlist.
+_VOXTRAL_EXTRAS = list(_EXTRA_COERCERS)
 
 # Voice-name prefix -> ISO language. Voxtral encodes language in the voice preset
 # (there is no ``lang_code`` kwarg): a ``<iso>_<gender>`` voice maps to that ISO

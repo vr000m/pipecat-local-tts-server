@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qwen3_tts` backend** — Qwen3-TTS streaming backend (mlx-audio 0.4.4, no pin
+  bump; default model `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16`,
+  9 named speakers, default voice `ryan`; the `Base` variant is supported via
+  `--model` as a no-voice model). `--backend qwen3_tts` CLI choice, `qwen3_tts`
+  extra, canonical launchd port **9165**, `just smoke-qwen3_tts` /
+  `smoke-multiconn-qwen3_tts` recipes, two-layer test suites, and a profiling
+  entry (TTFB 0.12 s, RTF 0.27 — fastest quality-voice streamer in the stable).
+  Weights: HF card tag `apache-2.0` (no LICENSE file in the repos).
+- Known-upstream workarounds baked into the backend: `mx.disable_compile()` in
+  `start()` (mlx 0.31.2's thread-local CompilerCache segfaults on worker-thread
+  exit; qwen3 is the only model family using `mx.compile`) and
+  `_MAX_TEXT_CHARS = 800` + a token-ceiling tripwire (mlx-audio's
+  `max_tokens=4096` truncates silently; degenerate text paces at ~0.19 s
+  audio/char).
+
 ## [0.3.0] - 2026-07-01
 
 ### Added
