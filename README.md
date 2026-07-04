@@ -344,6 +344,37 @@ commits also shorten the first-segment generate that dominates TTFB. The
 server's hard guarantee is "no more audio after `response.cancelled`". (See the
 dev plan's *Phase 3 live smoke run* for the measured RTF / per-segment latency.)
 
+### Qwen3-TTS capabilities (as shipped)
+
+A genuine sub-segment streamer (native `stream=True`, ~0.4 s of audio per chunk).
+The default model is the **CustomVoice** variant, which REQUIRES a speaker: when
+the client sends no `voice`, the backend injects **`ryan`**. The `Base` variant
+(`--model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`) has no speakers
+(`voice_count: 0`); any supplied `voice` is accepted by the server and discarded
+by the backend (speaker-unconditioned output, dia-style). No voice cloning or
+`instruct` styling (never wired). Verified against
+mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 (mlx-audio 0.4.4):
+
+| Field | Value | Note |
+|---|---|---|
+| rate | **24000** | from `server.hello.audio.rate`, read from `model.sample_rate` |
+| `streaming` | `true` | native sub-segment streaming (~5 codec tokens ≈ 0.4 s per chunk; TTFB ~0.13 s) |
+| `binary_audio` | `false` | base64-in-JSON for v1 |
+| `text_formats` | `["plain"]` | |
+| `languages` | dynamic | model-native FULL-WORD codes (`"english"`, `"chinese"`, …, plus `"auto"`) — NOT ISO 639-1; consult `capabilities.languages` before sending `language` |
+| `voice_count` | `9` | CustomVoice speakers, all-lowercase (`ryan`, `aiden`, `serena`, …); `0` on Base |
+| `extras` | `["temperature","top_k","top_p"]` | cloning/style/control kwargs are actively filtered, never advertised |
+| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
+| `max_text_chars` | **`800`** | hard server cap — LOWER than the siblings' 2000 (see below) |
+
+> **A whole commit renders as ONE generation** — `generate_custom_voice()` has no
+> `\n` splitting, and mlx-audio's `max_tokens=4096` single-generation ceiling
+> (≈328 s of audio) truncates SILENTLY when hit. Degenerate/repetitive text can
+> pace as badly as ~0.19 s of audio per character, so the 800-char cap keeps the
+> worst case at ~2x margin under the ceiling; the backend also counts codec
+> tokens per generation and logs an ERROR if the ceiling is ever reached. Commit
+> shorter chunks for long content.
+
 ### Kokoro capabilities (as shipped)
 
 Built per-backend (`server.hello.capabilities`). Verified against

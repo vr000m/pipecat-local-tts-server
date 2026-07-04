@@ -330,6 +330,9 @@ class _Qwen3Stream:
             streaming_interval=_STREAMING_INTERVAL,
             **kwargs,
         )
+        # Pass-through wrapper (yields each GenerationResult unchanged) — the
+        # one structural deviation from the sibling template, which returns the
+        # model generator directly. See _count_tokens for why.
         return self._count_tokens(gen)
 
     def _count_tokens(self, gen):

@@ -111,6 +111,11 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 - Backends implement the `TTSBackend`/`TTSStream` protocols in `tts_server/backend.py`;
   register them in `tts_server/backends/__init__.py` (`make_backend`). The server
   depends only on the abstract protocol types.
+- `language` values are BACKEND-SPECIFIC, not a normalized ISO namespace: each
+  backend advertises its model's native vocabulary (`kokoro`/`voxtral_tts` use
+  ISO 639-1 codes like `"en"`; `qwen3_tts` uses full words like `"english"`
+  plus `"auto"`). Clients must consult `capabilities.languages` before sending
+  a `language`; new backends follow their model's own lang vocabulary.
 - `ruff format` **and** `ruff check` must be clean before pushing.
 
 ## Layout

@@ -193,7 +193,7 @@ tts-status target=(cache_dir / "tts.sock"):
       exec uv run python -m tts_server status --socket-path "$target" --timeout "$timeout"
     fi
     case "$target" in
-      tone|kokoro|voxtral_tts|pocket_tts|dia)
+      tone|kokoro|voxtral_tts|pocket_tts|dia|qwen3_tts)
         resolved=$(just _resolve "$target") || exit 1
         # One field per line; three reads keep this bash-3.2-compatible.
         { read -r label; read -r host; read -r port; } <<<"$resolved"
