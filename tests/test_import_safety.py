@@ -40,6 +40,13 @@ _TTS_MODULES = [
     # qwen3_tts.py must likewise import with only the lean base — ``mlx_audio``
     # stays lazy inside ``start()`` (same invariant as dia above).
     "tts_server.backends.qwen3_tts",
+    # fish_tts.py must likewise import with only the lean base — ``mlx_audio``
+    # stays lazy inside ``start()`` (same invariant as dia/qwen3_tts above).
+    "tts_server.backends.fish_tts",
+    # Net-new shared helper introduced alongside fish_tts.py (Phase 1): stays
+    # stdlib-only (``inspect``-based), so it must import cleanly on the lean
+    # base too, from the commit that introduces it.
+    "tts_server.backends._introspect_util",
 ]
 
 # Top-level package names that must NEVER appear in ``sys.modules`` as a side

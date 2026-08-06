@@ -56,6 +56,7 @@ jobs:
             tests/test_pocket_lean.py \
             tests/test_dia_lean.py \
             tests/test_qwen3_lean.py \
+            tests/test_fish_lean.py \
             tests/test_status.py \
             tests/test_auth.py \
             tests/test_resource_limits.py \

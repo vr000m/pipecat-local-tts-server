@@ -866,7 +866,7 @@ matching the Phase 1 correction at lines 441-449 that the latter suite does not 
 ## Progress
 
 - [x] Phase 0: Model verification gate
-- [ ] Phase 1: Backend module + unit tests (mlx-gated + lean, incl. shared introspect helper + import-safety/CI wiring)
+- [x] Phase 1: Backend module + unit tests (mlx-gated + lean, incl. shared introspect helper + import-safety/CI wiring)
 - [ ] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, protocol, docs
 - [ ] Phase 3: Profiling + comparison table
 
@@ -1131,6 +1131,82 @@ recorded above):
   numbers read the identical global counter. The 14.27GB/18.28GB figures
   above are real and still the right numbers to cite, just from one source
   printed twice, not two independent measurements.
+
+### Phase 1 — implementation + mid-phase review (2026-08-06)
+
+`FishBackend`, `coerce_instruct`, `_introspect_util.py`, and the two test
+files landed via parallel implementer/test-writer subagents; all 51 tests
+pass (48 passed + 3 expected `xfail` for Phase-2-dependent registry/CLI
+wiring), `ruff check`/`ruff format --check` clean, `tests/test_dia_lean.py`
+regression suite unaffected by the `dia.py` refactor (19 passed, 2 skipped),
+diff-scope invariant holds (no `tts_server/server.py`/`protocol.py` touched).
+
+A mid-phase opus review (triggered by the 1331-line/8-file diff) verified
+the truncation tripwire's correctness against the installed mlx-audio
+source end-to-end (confirmed `GenerationResult.prompt["tokens"]` really is
+the per-batch input-text token count, confirmed `FishTruncationError`
+propagates through `_stream_util.py`'s bridge to `response.failed`/
+`BACKEND_ERROR` correctly, confirmed the `coerce_instruct` `None`-skip,
+structural voice/`ref_audio`/`ref_text` discard, `_introspect_util`
+extraction, and `mx.disable_compile()` placement are all correct) and
+surfaced four findings, two of which were fixed directly before this
+phase's boundary commit (both cheap, correctness-affecting, and re-verified
+by a full re-run of the test suite after the fix — not looped back through
+another subagent per the skill's "reviewer is advisory, never loop"
+contract):
+
+- **[FIXED] `_MAX_TEXT_CHARS` lowered from 650 to 500.** The reviewer
+  showed 650 carried far less margin than the original comment claimed:
+  Phase 0's calibration (max_tokens=64 → 2.97s audio, ~0.0464s/token)
+  implies the real per-batch ceiling is reached around ~700 chars of
+  ordinary prose (the 954-char Q5 probe measured the FAILURE point, past
+  onset, not the onset itself) — so 650 sat within ~10% of the ceiling,
+  meaning valid in-spec text could routinely trip `response.failed` for
+  users. Lowered to 500 and the comment rewritten to state the estimated
+  onset rather than the measured failure point.
+  Follow-up: the ~700-char onset estimate is still a linear extrapolation
+  from one calibration point, not a bisected measurement — a future pass
+  re-running the gate script with a proper bisection would tighten this
+  further.
+- **[FIXED] Truncation-tripwire ceiling fallback now fails safe, not
+  closed.** `_check_truncation`'s per-batch ceiling formula
+  `min(_DEFAULT_MAX_TOKENS, max(32, input_text_token_count * 12))` used
+  `int(prompt.get("tokens", 0) or 0)` for the missing/zero case, which
+  collapsed the ceiling to `max(32, 0) == 32` — any real batch produces
+  far more than 32 audio tokens, so a future mlx-audio version that stops
+  populating `prompt["tokens"]` (or renames the key) would make EVERY
+  synthesis raise `FishTruncationError`, wedging the backend entirely. Now
+  falls back to the flat `_DEFAULT_MAX_TOKENS` ceiling (matching
+  `_introspect_util.verify_generate_signature`'s own "warn on drift, don't
+  hard-fail" philosophy) with a one-time-per-batch warning log. Confirmed
+  latent-not-live under the pinned mlx-audio==0.4.4 (the reviewer verified
+  `prompt["tokens"]` is always populated at `fish_speech.py:1027-1032`).
+- **[NOT FIXED, recorded as known gap] Two of the four `_introspect_util`
+  lean tests are vacuous.** `test_verify_generate_signature_matching_params_no_warning`'s
+  spy `generate` declares `**kwargs`, so it exercises the VAR_KEYWORD
+  short-circuit rather than the actual `name in params` match branch — no
+  test currently covers the real positive-match path. Separately,
+  `test_verify_generate_signature_uninspectable_callable_does_not_raise`'s
+  `generate = len` is actually introspectable on this interpreter
+  (`inspect.signature(len)` succeeds), so it exercises the missing-param
+  warn path, not the uninspectable-callable except branch it's named for
+  (which carries its own `# pragma: no cover`). Not fixed this phase —
+  low severity, doesn't affect the shipped behavior, but the coverage
+  claim for this net-new helper is weaker than the plan intended. Worth a
+  follow-up fix: a spy with named params and no `**kwargs` for the first
+  case; an object whose `generate` attribute genuinely rejects
+  `inspect.signature()` for the second.
+- **[NOT FIXED, recorded as known gap] `_DEFAULT_MAX_TOKENS = 1024` has no
+  drift guard against mlx-audio's actual live default.** The backend
+  deliberately never forwards `max_tokens`, so the tripwire's flat arm
+  silently depends on upstream's `generate()` default staying 1024
+  (`verify_generate_signature` checks parameter NAMES only, not defaults).
+  A future pin bump that changes the default would cause spurious
+  `response.failed` at the old 1024 boundary with no signal anywhere.
+  Low severity — the wheel is pinned `==0.4.4`, a bump is a deliberate,
+  reviewable act — not fixed this phase; a cheap follow-up would read
+  `inspect.signature(model.generate).parameters["max_tokens"].default` in
+  `start()`'s existing introspection pass and warn on drift.
 
 ## Issues & Solutions
 

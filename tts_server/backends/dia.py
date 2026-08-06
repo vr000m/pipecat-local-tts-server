@@ -56,7 +56,10 @@ from ._extras_util import (
     coerce_top_p,
     validate_extras,
 )
-from ._stream_util import stream_generate
+from ._introspect_util import verify_generate_signature
+from ._stream_util import (
+    stream_generate,
+)
 
 logger = logging.getLogger("tts_server.backends.dia")
 
@@ -238,8 +241,9 @@ class DiaBackend:
         # ``mlx-audio==0.4.4``; a future bump that drops ``temperature``/``top_p``
         # or makes ``voice`` positionally required would silently break the
         # contract. Warn (do not hard-fail) so an upstream signature reshape is
-        # actionable rather than fatal at serve time.
-        self._verify_generate_signature()
+        # actionable rather than fatal at serve time. Shared helper (fish_tts is
+        # the second backend that needs this guard — see its own docstring).
+        verify_generate_signature(self._loaded_model, _DIA_EXTRAS, "dia", logger=logger)
 
         # Rate is a config property available IMMEDIATELY after load — no
         # warmup-generate needed to learn it (R1/R3). Phase 0: dia = 44100.
@@ -258,39 +262,6 @@ class DiaBackend:
         )
 
         await loop.run_in_executor(None, self._warmup)
-
-    def _verify_generate_signature(self) -> None:
-        """Re-verify dia's ``generate()`` accepts the params this backend relies
-        on. Best-effort: a mismatch is logged (actionable) rather than raised, so
-        an upstream reshape surfaces in the operator log instead of wedging serve.
-        Phase 0 (mlx-audio 0.4.4): ``generate(text, voice=None, temperature=1.3,
-        top_p=0.95, split_pattern='\\n', max_tokens=None, verbose=False,
-        ref_audio=None, ref_text=None, **kwargs)``.
-
-        Why ONLY dia does this (the siblings — Kokoro/Pocket/Voxtral — pin the
-        same wheel but do NOT re-introspect): dia's ``generate()`` is the only one
-        whose signature carries the live voice-cloning channel (``ref_audio``/
-        ``ref_text`` as real kwargs) alongside a positional-defaulted ``voice``, so
-        an upstream reshape here is both more likely and more consequential. If
-        this guard is ever needed by a second backend, lift it into a shared
-        helper rather than copying it."""
-        import inspect
-
-        try:
-            sig = inspect.signature(self._loaded_model.generate)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - upstream shape
-            logger.warning("dia: could not introspect generate() signature: %s", exc)
-            return
-        params = sig.parameters
-        has_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        for name in _DIA_EXTRAS:
-            if name not in params and not has_kwargs:
-                logger.warning(
-                    "dia: generate() does not accept advertised extra %r "
-                    "(signature reshape under the pinned wheel?) — it will be "
-                    "swallowed/error at synthesis",
-                    name,
-                )
 
     def _warmup(self) -> None:
         """Drain a tiny dialogue generate under the Metal lock to JIT-compile
