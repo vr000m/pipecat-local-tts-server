@@ -349,3 +349,86 @@ Reading the table:
 
 Reproduce: `tests/smoke/run_smoke.sh --backend <name> --play`, then
 `tests/smoke/run_multiconn.sh --backend <name> --connections N --turns M`.
+
+## fish_tts per-phrase profile (M4 Max 16-core, 2026-08-06)
+
+Added when `fish_tts` landed. Standard `rtf_benchmark.py` phrase set against
+`mlx-community/fish-audio-s2-pro` (44.1 kHz, `streaming:false` — segment-level,
+`dia`'s direct structural comparator: both non-streaming, one `GenerationResult`
+per commit, TTFB == wall-time). **Contended-but-idle run** (a nemotron
+`stt_server` and a `pocket_tts` `tts_server` were resident, matching the caveat
+on dia's cross-backend table above) — treat as directional, not pristine.
+Cold load + warmup (`start()`): **3.3 s**.
+
+| Phrase | audio_s | TTFB (=wall_s) | RTF |
+|---|---|---|---|
+| 1-sentence (~50 chars) | 3.39 | 6.88–7.54 s | 2.03–2.23 |
+| 2-sentence, 1 seg (~90 chars) | 5.99 | 12.42–12.55 s | 2.07–2.10 |
+| 3-seg, newlines (~140 chars) | 6.46 | 12.88–13.56 s | 2.00–2.10 |
+
+(warm1st excluded as a compile/cache outlier per convention; warm1–warm3 shown,
+flat within noise.)
+
+Reading the table:
+- **`streaming:false`, TTFB == wall_s** — same non-streaming signature as dia:
+  no audio until the whole segment finishes.
+- **RTF ≈ 2.0–2.2 (slower than realtime)** — in the same family as dia's
+  RTF≈2.0, both well above 1, both `streaming:false` non-streaming latency
+  outliers relative to the sub-1 streaming backends (kokoro/pocket/qwen3) and
+  even relative to voxtral (~1.1–1.3).
+- **`\n`-segmentation does not obviously multiply cost the way dia's does**:
+  the 3-seg phrase's wall_s (~13 s) tracks its audio_s (6.46 s) at the same
+  RTF as the 1- and 2-sentence rows, unlike dia where each `\n` segment resets
+  a ~30 s output-ceiling budget. This profiler run used the committed,
+  untagged `PHRASES` set (no `<|speaker:N|>` tags), so it never exercises
+  fish's multi-batch/cross-batch-coupling path (Phase-0 gate Q1) — this table
+  is single-batch-per-phrase throughout.
+- **Peak memory is gate-sourced, not profiler-sourced** (bridge strips
+  mlx-audio's `GenerationResult`, same qwen3/dia precedent). From the Phase-0
+  gate (`tests/smoke/fish_phase0_gate.py`, 2026-08-06): **14.27 GB** (short
+  utterance, 1 batch) / **18.28 GB** (~15s-equivalent long utterance, 1
+  batch) — notably higher than qwen3's 3.08–4.32 GB, worth calling out in
+  README capacity/hardware guidance.
+- **Concurrency caveat**: `streaming:false`, one `GenerationResult` per
+  commit — no sub-segment streaming, so multi-connection behavior serializes
+  per-generation like dia, not like the `streaming:true` backends.
+
+**Discrepancy vs. the Phase-0 gate (Q2) — flagged, not resolved:**
+Gate: short utterance TTFB=5.35 s/RTF=1.62 (3.30 s audio, 1 batch); long
+utterance TTFB=29.49 s/RTF=1.72 (17.14 s audio, 1 batch). Profiler: RTF
+2.0–2.2 across all three phrases — noticeably higher (worse) than the gate's
+1.6–1.7, on much shorter audio (3.4–6.5 s vs. the gate's 3.3/17.1 s), so this
+is not simply "expected variance from different phrase sets": the direction
+(profiler slower) and magnitude (~25–35% higher RTF) line up with a
+documented, load-bearing asymmetry between the two harnesses rather than
+noise. Two candidate causes, not distinguished by this run:
+1. **Compile-mode divergence (the more likely primary cause)**: the Phase-0
+   gate calls `generate()` directly with `mx.compile` active by default;
+   production `FishBackend.start()` (which the profiler drives, since it
+   exercises the real backend) calls `mx.disable_compile()` per Phase 1's
+   proactive `CompilerCache`-segfault mitigation. This eager-vs-compiled
+   asymmetry is exactly the divergence flagged in the plan's Context
+   ("Gate/production measurement divergence" bullet) as untested — this is
+   the first measurement that surfaces a concrete, consistent delta
+   attributable to it, though it was not isolated (no gate-with-
+   `mx.disable_compile()` A/B run exists yet to confirm the attribution).
+2. **GPU contention**: this profiler run had a resident idle `stt_server` +
+   `pocket_tts` `tts_server` (see caveat above); the gate run's process state
+   at measurement time is not recorded in the plan's Findings, so a
+   contention-based explanation cannot be ruled out either.
+
+Both numbers agree fish is well outside the live-viable RTF<1 band regardless
+of which is closer to fish's true floor — this does not change the
+backend's non-streaming, batch-synthesis usage profile.
+
+**Upstream model-card comparison: not available.** Phase 0 Q6 (the plan's
+sole designated source for upstream `fishaudio/s2-pro` performance/scale
+claims) fetched and recorded license text and the 38-language list from both
+`mlx-community/fish-audio-s2-pro` and `fishaudio/s2-pro`, but captured no
+training-hours, RTF, or latency figures from the model card — the plan's
+Findings explicitly note "No training-hours figure was visible in the first
+40 lines fetched." There is nothing to compare the measured numbers above
+against upstream on performance, unlike qwen3 (which had an upstream RTF/TTFB
+claim to contrast against).
+
+Reproduce: `uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts`.

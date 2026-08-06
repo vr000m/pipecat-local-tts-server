@@ -868,7 +868,7 @@ matching the Phase 1 correction at lines 441-449 that the latter suite does not 
 - [x] Phase 0: Model verification gate
 - [x] Phase 1: Backend module + unit tests (mlx-gated + lean, incl. shared introspect helper + import-safety/CI wiring)
 - [x] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, protocol, docs
-- [ ] Phase 3: Profiling + comparison table
+- [x] Phase 3: Profiling + comparison table
 
 ## Findings
 
@@ -1315,13 +1315,79 @@ subagent loop, re-verified with lint + full test re-run):
   scope to fix the drift test itself here — named so it isn't mistaken for
   covered.
 
+### Phase 3 — profiling (2026-08-06)
+
+`rtf_benchmark.py --backend fish_tts` run for real (M4 Max 16-core,
+contended-but-idle: a resident `stt_server` + `pocket_tts` `tts_server`).
+Cold load+warmup 3.3s. Per-phrase: 1-sentence audio=3.39s TTFB/wall=6.88-7.54s
+RTF=2.03-2.23; 2-sentence audio=5.99s TTFB/wall=12.42-12.55s RTF=2.07-2.10;
+3-seg-newlines audio=6.46s TTFB/wall=12.88-13.56s RTF=2.00-2.10. Row added to
+`scripts/profiling/README.md`'s cross-backend comparison table, dia cited as
+the direct structural comparator (both `streaming:false`, TTFB==wall),
+gate-measured peak memory (14.27GB short/18.28GB long) cited as gate-sourced
+per qwen3/dia precedent, and noted as notably higher than qwen3's
+3.08-4.32GB — worth README capacity-guidance attention.
+
+**Real discrepancy found, flagged not resolved: profiler RTF (2.0-2.2) is
+~25-35% higher (worse) than Phase 0 Q2's gate RTF (1.62 short/1.72 long) —
+consistent direction and magnitude, not phrase-set noise.** Two candidate
+causes, not distinguished by this run:
+1. **Compile-mode divergence (more likely primary cause)** — this is
+   exactly the "Gate/production measurement divergence" risk the plan's
+   Context section named as untested before Phase 0 even ran (Phase 0's
+   gate calls `generate()` with `mx.compile` active by default; production
+   `FishBackend.start()`, which the profiler exercises, calls
+   `mx.disable_compile()` per Phase 1's proactive `CompilerCache`-crash
+   mitigation). This is the first concrete data point suggesting the
+   divergence has a real latency cost, but no isolating A/B run (gate
+   re-run WITH `mx.disable_compile()` forced, matching production) exists
+   yet to confirm attribution over the second candidate cause.
+2. **GPU contention** — the profiler run had resident idle sibling MLX
+   processes; the gate run's process state at measurement time was never
+   recorded, so contention can't be ruled out as an alternative or
+   contributing explanation.
+
+Both numbers agree fish is well outside the live-viable RTF<1 band
+regardless of which cause dominates — this doesn't change the backend's
+non-streaming, batch-synthesis usage profile, only the precision of the
+"how much slower than real-time" claim. Tracked as a Follow-up item below
+rather than re-run in this phase (isolating the cause needs a dedicated
+gate re-run outside this plan's remaining scope).
+
+**Upstream model-card performance comparison: not available.** Phase 0 Q6
+(the plan's sole designated source for `fishaudio/s2-pro` upstream
+performance/scale claims) captured only license text and the 38-language
+list — no training-hours, RTF, or latency figures were present in the
+fetched model-card content. Unlike qwen3 (which had an upstream RTF/TTFB
+claim to contrast against), there is nothing to compare fish's measured
+numbers to on the performance axis.
+
 ## Issues & Solutions
 
 _To be filled during implementation._
 
 ## Final Results
 
-_To be filled on completion._
+All four phases complete. `fish_tts` backend shipped: dia-derived
+non-streaming segment-level backend, `instruct` as the repo's first
+string-typed advertised extra, a truncation tripwire with a corrected
+per-batch-ceiling predicate (caught and fixed via mid-phase review before
+merge), a fail-safe fallback for that predicate (also caught via review),
+`_MAX_TEXT_CHARS=500` (revised down from an initial 650 via review — real
+margin against the measured truncation onset), full registry/CLI/justfile/
+docs wiring (port 9265), and a working `just smoke-fish_tts`/
+`smoke-multiconn-fish_tts` pair validated live against a running server.
+License: Fish Audio Research License (non-commercial free, commercial
+requires a separate agreement — `business@fish.audio`), the repo's second
+restrictive-license backend (voxtral_tts is CC-BY-NC) and first
+research-only one. RTF≈2.0-2.2 (non-streaming, slower than dia's ≈2.0 by
+gate numbers, though see the Phase-0-vs-profiler discrepancy above), peak
+memory 14.27-18.28GB. Every mid-phase review (3 total, Phases 0/1/2) found
+real, non-trivial issues that were fixed before their phase's boundary
+commit — none were rubber-stamp passes. One genuine test flakiness (Phase 2)
+was independently caught by the conductor's own re-verification after an
+implementer sub-agent's report incorrectly claimed no fish-related test
+failures existed.
 
 ### Follow-up Work
 
@@ -1348,3 +1414,18 @@ _To be filled on completion._
   `[tag]`-marked utterance is actually accepted-without-erroring in the Phase 0 gate and re-checked
   in Phase 2's `just smoke-fish_tts`, neither of which test how it interacts with `instruct`), but
   useful ahead of documenting any guidance to `fish_tts` callers on combining the two.
+- **Compile-mode divergence attribution — untested, worth a follow-up A/B run** (Phase 3 finding,
+  2026-08-06): Phase 3's profiler run measured RTF≈2.0-2.2, ~25-35% higher than Phase 0 Q2's gate
+  RTF≈1.6-1.7, a consistent-direction gap plausibly attributable to Phase 0's gate calling
+  `generate()` with `mx.compile` active while production `FishBackend.start()` calls
+  `mx.disable_compile()` — but this was never isolated against the alternative explanation (GPU
+  contention from resident sibling processes during the profiler run). A follow-up gate re-run with
+  `mx.disable_compile()` forced (matching production exactly) would confirm or rule out compile-mode
+  as the cause; not required for this plan's Acceptance Criteria (which only require the profiling
+  row to exist with measured numbers, not a resolved discrepancy), but worth doing before citing
+  fish's RTF number as authoritative in any external-facing comparison.
+- **`training-hours`/upstream performance figures for `fishaudio/s2-pro` — never captured** (Phase 0
+  Q6 gap, confirmed again in Phase 3): the model card's first 40 fetched lines had no
+  training-hours/RTF/latency claims. A follow-up could fetch the full README (not just the first 40
+  lines) to check for such figures further down, if a future comparison against upstream's own
+  performance claims becomes useful.
