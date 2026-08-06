@@ -41,6 +41,20 @@ tests/smoke/run_smoke.sh --backend pocket_tts
 # serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan);
 # default voice `ryan` injected when the client omits one.
 tests/smoke/run_smoke.sh --backend qwen3_tts
+
+# fish_tts backend — streaming:false, segment-level (dia template). WAV
+# round-trip + an explicit hello.audio.rate == 44100 assertion (gate-verified
+# rate). Auto-runs `uv sync --extra fish_tts` if needed. License (gate Q6,
+# verified 2026-08-06, quoted from the fetched "FISH AUDIO RESEARCH LICENSE
+# AGREEMENT", fishaudio/s2-pro LICENSE.md, Last Updated: March 7, 2026): free
+# for Research and Non-Commercial purposes (royalty-free, worldwide,
+# non-exclusive, non-transferable, non-sublicensable, revocable license); "No
+# commercial rights are granted under this Agreement" — any Commercial
+# Purpose requires a separate written license agreement from Fish Audio
+# ("To obtain a commercial license, please contact Fish Audio at: Email:
+# business@fish.audio"). Default model: mlx-community/fish-audio-s2-pro,
+# no voice concept (voice_count: 0).
+tests/smoke/run_smoke.sh --backend fish_tts
 ```
 
 > **Multi-connection driver + fast streaming backends.** `run_multiconn.sh`'s
@@ -68,10 +82,12 @@ just smoke-multilingual
 just smoke-voxtral_tts
 just smoke-pocket_tts
 just smoke-qwen3_tts
+just smoke-fish_tts
 just smoke-multiconn
 just smoke-multiconn-voxtral_tts          # concurrency against voxtral
 just smoke-multiconn-pocket_tts --turns 3 # concurrency against pocket (fast backend)
 just smoke-multiconn-qwen3_tts --turns 3  # concurrency against qwen3 (fast backend, RTF≈0.25×)
+just smoke-multiconn-fish_tts --turns 3   # concurrency against fish_tts (non-streaming, RTF≈1.6-1.7×)
 ```
 
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)

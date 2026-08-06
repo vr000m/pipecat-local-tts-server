@@ -66,6 +66,13 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
         from .qwen3_tts import DEFAULT_QWEN3_MODEL, Qwen3Backend
 
         return Qwen3Backend(model=model or DEFAULT_QWEN3_MODEL)
+    if name == "fish_tts":
+        # Lazy import (same invariant): ``fish_tts.py`` imports ``mlx_audio``
+        # only inside ``start()``, so this branch does NOT pull ``mlx_audio`` —
+        # the missing-extra failure surfaces in ``start()``.
+        from .fish_tts import DEFAULT_FISH_MODEL, FishBackend
+
+        return FishBackend(model=model or DEFAULT_FISH_MODEL)
     # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
     # callable outside the CLI, so it must not terminate the process. The CLI
     # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.

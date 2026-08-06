@@ -536,7 +536,6 @@ def test_default_model_constant_importable_lean():
     )
 
 
-@pytest.mark.xfail(strict=False, reason="registry/CLI wiring lands in Phase 2")
 def test_make_backend_resolves_fish_tts_without_mlx():
     _assert_lean(
         "from tts_server.backends import make_backend\n"
@@ -546,7 +545,6 @@ def test_make_backend_resolves_fish_tts_without_mlx():
     )
 
 
-@pytest.mark.xfail(strict=False, reason="registry/CLI wiring lands in Phase 2")
 def test_fish_tts_is_accepted_backend_choice():
     """The argparse ``--backend`` choices tuple half of the dual-wire: a
     passing ``make_backend`` is not enough — argparse must also accept the
@@ -558,7 +556,6 @@ def test_fish_tts_is_accepted_backend_choice():
     assert args.backend == "fish_tts"
 
 
-@pytest.mark.xfail(strict=False, reason="registry/CLI wiring lands in Phase 2")
 def test_default_fish_model_resolves_identically_through_both_paths():
     """``DEFAULT_FISH_MODEL`` must resolve identically through BOTH
     independent paths (Codex adversarial review, 2026-08-05): importability

@@ -49,13 +49,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" && "$BACKEND" != "qwen3_tts" ]]; then
-  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, dia, or qwen3_tts (got '$BACKEND')" >&2; exit 2
+if [[ "$BACKEND" != "tone" && "$BACKEND" != "kokoro" && "$BACKEND" != "voxtral_tts" && "$BACKEND" != "pocket_tts" && "$BACKEND" != "dia" && "$BACKEND" != "qwen3_tts" && "$BACKEND" != "fish_tts" ]]; then
+  echo "--backend must be tone, kokoro, voxtral_tts, pocket_tts, dia, qwen3_tts, or fish_tts (got '$BACKEND')" >&2; exit 2
 fi
 # mlx-backed backends need a longer first-call timeout (model load/JIT/first-run
 # download); tone is fast.
 IS_MLX=0
-[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" ]] && IS_MLX=1
+[[ "$BACKEND" == "kokoro" || "$BACKEND" == "voxtral_tts" || "$BACKEND" == "pocket_tts" || "$BACKEND" == "dia" || "$BACKEND" == "qwen3_tts" || "$BACKEND" == "fish_tts" ]] && IS_MLX=1
 [[ -z "$TIMEOUT" ]] && { [[ "$IS_MLX" -eq 1 ]] && TIMEOUT=180 || TIMEOUT=30; }
 
 # --- locate repo + run dir --------------------------------------------------
@@ -160,6 +160,22 @@ latency_check() {
   fi
 }
 
+# rate_check: assert hello.audio.rate equals an expected sample rate, via the
+# JSON status probe (not the lean suite — the lean suite must not assert a
+# concrete rate value, mlx-gated/on-host only per the fish_tts dev plan).
+rate_check() {
+  local expected="$1"
+  echo "-- hello.audio.rate == $expected Hz --"
+  local rate
+  rate="$("${UV_RUN[@]}" python -m tts_server status --socket-path "$SOCK" --json \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["hello"]["audio"]["rate"])' 2>/dev/null)"
+  if [[ "$rate" == "$expected" ]]; then
+    echo "   PASS (rate=$rate)"; PASS=$((PASS+1))
+  else
+    echo "   FAIL (rate=$rate, expected $expected)"; FAIL=$((FAIL+1))
+  fi
+}
+
 echo "== synthesis =="
 if [[ "$BACKEND" == "tone" ]]; then
   verify "tone" "$RUN_DIR/tone.wav" --text "The quick brown fox jumps over the lazy dog."
@@ -193,6 +209,19 @@ elif [[ "$BACKEND" == "dia" ]]; then
   # dia_dialogue_smoke.py instead (see dev plan Phase 3 live smoke run).
   verify "dia/dialogue" "$RUN_DIR/dia.wav" \
     --text "[S1] The quick brown fox jumps over the lazy dog. [S2] Indeed it does."
+elif [[ "$BACKEND" == "fish_tts" ]]; then
+  # fish_tts is a streaming:false backend (voice_count:0, voice/language both
+  # structurally discarded). Structural WAV round-trip + an explicit assertion
+  # that hello advertises the Phase-0-gate-verified 44100 Hz rate (this is the
+  # named test owner for that acceptance criterion; the lean suite must not
+  # assert the concrete value). No latency_check: like dia, fish_tts's gate
+  # measured RTF≈1.6-1.7 (Phase 0 Q2) — slower than real-time with a single
+  # non-streaming GenerationResult per call (TTFB==wall-time by construction),
+  # so no fixed --ttfb-bound is meaningful; RTF is tracked in
+  # scripts/profiling/README.md instead.
+  rate_check 44100
+  verify "fish_tts/default" "$RUN_DIR/fish.wav" \
+    --text "The quick brown fox jumps over the lazy dog."
 elif [[ "$MULTILINGUAL" -eq 0 ]]; then
   verify "en/af_heart" "$RUN_DIR/en.wav" \
     --voice af_heart --speed 1.1 --text "The quick brown fox jumps over the lazy dog."

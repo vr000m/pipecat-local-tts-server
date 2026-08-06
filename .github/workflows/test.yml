@@ -138,7 +138,8 @@ jobs:
           import tts_server.backends.pocket_tts as p   # 5b: extra resolves + module imports
           import tts_server.backends.dia as d          # 5c: extra resolves + module imports
           import tts_server.backends.qwen3_tts as q    # qwen3: extra resolves + module imports
-          print("OK: mlx_audio imports; kokoro + voxtral_tts + pocket_tts + dia + qwen3_tts modules load;",
+          import tts_server.backends.fish_tts as f     # fish: extra resolves + module imports
+          print("OK: mlx_audio imports; kokoro + voxtral_tts + pocket_tts + dia + qwen3_tts + fish_tts modules load;",
                 k.DEFAULT_KOKORO_MODEL, v.DEFAULT_VOXTRAL_MODEL, p.DEFAULT_POCKET_MODEL,
-                d.DEFAULT_DIA_MODEL, q.DEFAULT_QWEN3_MODEL)
+                d.DEFAULT_DIA_MODEL, q.DEFAULT_QWEN3_MODEL, f.DEFAULT_FISH_MODEL)
           PY

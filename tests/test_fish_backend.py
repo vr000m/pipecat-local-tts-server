@@ -55,6 +55,26 @@ pytestmark = pytest.mark.asyncio
 # loads the real model and every test here pays real wall-clock synthesis time.
 _SHORT_SENTENCE = "The quick brown fox jumps over the lazy dog."
 
+# A ~24-word sentence, deliberately longer than _SHORT_SENTENCE, for the
+# instruct smoke case specifically. Found by an independent conductor-run
+# repro (2026-08-06): _SHORT_SENTENCE (10 input tokens -> a
+# max(32, 10*12)=120-token per-batch ceiling, per fish_tts.py's
+# _check_truncation) combined with `instruct` and the model's DEFAULT
+# (non-greedy) sampling occasionally needs slightly more than 120 decode
+# steps to reach EOS -- Phase 0's Q4 gate only tested this combination
+# under temperature=0.0 (greedy), which is far more token-efficient and
+# never hit this. This is real, intermittent mlx-audio 0.4.4 behavior for
+# very-short-input + instruct under stochastic sampling, not a bug in the
+# tripwire (which correctly detects when mlx-audio's own internal budget
+# is exhausted) -- see the plan's Findings for the full analysis. A longer
+# sentence gives the same 12x-multiplier formula a proportionally larger
+# absolute ceiling, giving real headroom against ordinary sampling
+# variance without weakening the tripwire itself.
+_INSTRUCT_SMOKE_SENTENCE = (
+    "The quick brown fox jumps over the lazy dog near the old wooden fence "
+    "by the river, then trots away happily into the evening light."
+)
+
 
 @pytest.fixture(scope="module")
 async def started_backend():
@@ -124,13 +144,15 @@ async def test_segment_level_generation_produces_nonempty_pcm(started_backend):
 async def test_instruct_present_smoke_case(started_backend):
     """A short ``instruct`` string generates cleanly end-to-end through
     ``open_stream``'s extras path (Phase 0 Q4: instruct strings up to 1320
-    chars generate without error on this model)."""
+    chars generate without error on this model). Uses
+    ``_INSTRUCT_SMOKE_SENTENCE`` (longer than ``_SHORT_SENTENCE``) — see
+    that constant's docstring for why."""
     stream = await started_backend.open_stream(
         voice=None,
         language=None,
         extras={"instruct": "speak in a cheerful, upbeat tone"},
     )
-    await stream.feed(_SHORT_SENTENCE)
+    await stream.feed(_INSTRUCT_SMOKE_SENTENCE)
     await stream.end()
     total_bytes = 0
     async for ev in stream.events():

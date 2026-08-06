@@ -867,7 +867,7 @@ matching the Phase 1 correction at lines 441-449 that the latter suite does not 
 
 - [x] Phase 0: Model verification gate
 - [x] Phase 1: Backend module + unit tests (mlx-gated + lean, incl. shared introspect helper + import-safety/CI wiring)
-- [ ] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, protocol, docs
+- [x] Phase 2: Wiring — registry, CLI, extra, justfile, smoke scripts, renderer, protocol, docs
 - [ ] Phase 3: Profiling + comparison table
 
 ## Findings
@@ -1207,6 +1207,113 @@ contract):
   reviewable act — not fixed this phase; a cheap follow-up would read
   `inspect.signature(model.generate).parameters["max_tokens"].default` in
   `start()`'s existing introspection pass and warn on drift.
+
+### Phase 2 — wiring, validation, and mid-phase review (2026-08-06)
+
+`fish_tts` wired end-to-end via parallel implementer/test-writer subagents:
+registry, CLI, `pyproject.toml` extra (`websockets>=13.0`, `mlx-audio==0.4.4`,
+no bespoke transitive dep needed), justfile recipes + `_resolve`/`tts-status`
+entries (port 9265), `render_tts_plist.py`, smoke-script allowlists +
+net-new `fish_tts` verify branch (rate assertion, no `latency_check` per
+RTF≈1.6-1.7 non-streaming), macOS smoke-job import heredoc, `docs/protocol.md`
+extras row + reworded scope sentence + generalized tag-dialect section,
+README (port table, license row, full `### fish_tts capabilities` section),
+AGENTS.md, `tests/smoke/README.md`. Drift invariant green
+(`tests/test_justfile_recipes.py`, 10 passed incl. the new port-9265
+assertion). `just smoke-fish_tts` validation command PASSED live
+(`PASS=2 FAIL=0 SKIP=0`, including a real `hello.audio.rate == 44100`
+assertion against a running server). "No server CODE changes" invariant
+holds (`git diff` touches neither `server.py` nor `protocol.py`).
+
+**Real finding caught during independent verification (not by either
+subagent): `tests/test_fish_backend.py::test_instruct_present_smoke_case`
+intermittently failed with `FishTruncationError`.** The conductor's own
+re-run of the phase's literal Test command surfaced a failure the
+implementer's report had claimed didn't exist ("no fish/justfile-related
+tests appear among the failures" — incorrect; this one did). Root cause:
+the test's original sentence ("The quick brown fox jumps over the lazy
+dog.", 10 input tokens → a `max(32, 10*12)=120`-token per-batch ceiling)
+combined with `instruct` and the model's DEFAULT non-greedy sampling
+occasionally needed slightly more than 120 decode steps to reach EOS —
+Phase 0's Q4 gate only exercised this exact combination under
+`temperature=0.0` (greedy), which is far more token-efficient and never
+hit this. Confirmed via 3 repeat runs (1/3 failed) that this is genuine
+sampling-variance flakiness, not a deterministic bug — then confirmed 5/5
+passing after lengthening the test's sentence to ~24 words (proportionally
+raising the ceiling via the same 12x-multiplier formula). **This is real,
+documented mlx-audio 0.4.4 behavior** (very-short-input + `instruct` +
+non-greedy sampling can occasionally hit the model's own internal
+per-batch budget) — not a bug in the truncation tripwire itself, which
+correctly detected mlx-audio's own internal budget exhaustion. Fixed at
+the test level (longer smoke-case sentence), not the production code,
+since the tripwire's behavior is correct; production callers sending very
+short text with `instruct` retain a small residual risk of an occasional
+`response.failed`, which is accurate — not a false positive — given
+mlx-audio's real internal constraint. Not itself a Phase 3 blocker but
+worth a README/protocol.md caveat if this proves user-visible in practice.
+
+A mid-phase opus review (triggered by the 683-line/16-file diff) found no
+runtime-breaking issues — registry/CLI wiring, `pyproject.toml`/`uv.lock`,
+the `tts-status` case-arm (the plan's named easy-to-miss site), the drift
+invariant, `docs/protocol.md`'s extras row/prose inventory, and the
+README capabilities section (500-char limit, port 9265, verbatim license
+text, tag-list content) were all verified correct against the actual
+shipped code and Phase 0/1's measured Findings. Findings were all
+doc-level; fixed the medium one and four cheap low ones directly (no
+subagent loop, re-verified with lint + full test re-run):
+
+- **[FIXED, medium] README's two install-extra enumerations (`uv add` /
+  `uv sync` blocks) were missing a `fish_tts` entry** even though
+  AGENTS.md's equivalent list had one — the most user-visible gap in the
+  diff, since this is the primary discovery path for a new user. Added
+  both blocks, mirroring the qwen3_tts/dia entries with the Fish Audio
+  Research License noted.
+- **[FIXED, low] README's `max_text_chars` row inaccurately claimed 500 is
+  "LOWER than the permissive-license siblings' 2000"** — qwen3_tts is
+  permissive and is 800, not 2000, so the framing implied a uniform 2000
+  across permissive backends that doesn't hold. Reworded to name qwen3_tts's
+  actual 800 and to state the cap is derived from Phase 0's token-ceiling
+  calibration, not from license class (a coincidental correlation the
+  original wording implied was causal).
+- **[FIXED, low] README's `[tag]` vocabulary section said "copied
+  verbatim" from upstream** — the reviewer confirmed the 34 tags are
+  set-identical to the bundled mlx-audio README with no truncation or
+  corruption, but the order was regrouped thematically (matching the
+  plan's own Phase 2 checklist spec, which the implementation followed
+  faithfully) rather than kept in upstream's original order. Reworded to
+  "the same 34 example tags" instead of "copied verbatim".
+- **[FIXED, low] `scripts/render_tts_plist.py`'s comment above
+  `_BACKEND_RE` still said "The six shipped backends"** after the regex
+  grew to seven — a stale countable claim sitting directly on the
+  drift-invariant site. Updated to seven.
+- **[FIXED, low] `scripts/install_tts_agent.sh`'s `PIPECAT_TTS_BACKEND`
+  usage comment listed six backends, omitting `fish_tts`** — no runtime
+  break (the installer delegates validation to `render_tts_plist._BACKEND_RE`,
+  which was already correct), but README.md explicitly names this script
+  as one of the sites that "resolve each backend to this canonical map,"
+  so an operator reading the installer's own usage block would have
+  concluded fish_tts was unsupported. Added `fish_tts` to the list.
+- **[FIXED, low] `docs/protocol.md`'s `languages` capability row's
+  ISO-vs-full-word backend taxonomy didn't mention `fish_tts`**, reading
+  as exhaustive while being incomplete. Added a clause noting fish_tts's
+  special case: it advertises 38 ISO-639-1-style codes, but `generate()`
+  has no `language` parameter at all (Phase 0 Q3), so the list is
+  informational only — `open_stream(language=…)` is accepted and
+  unconditionally discarded.
+- **[NOT FIXED, recorded as a deliberate deferral] `CHANGELOG.md`'s
+  `## [Unreleased]` section has no fish_tts entry**, unlike the detailed
+  qwen3_tts precedent in the 0.4.0 section. Not in this phase's Impl-files
+  list; the reviewer's own reasoning (Phase 3 will add the profiling
+  numbers a complete entry would want anyway) is sound — deferred to
+  post-Phase-3, tracked here so it isn't silently forgotten.
+- **[NOT FIXED, recorded as a known gap] The `just tts-status` case-arm
+  and `scripts/install_tts_agent.sh`'s usage comment are now BOTH
+  hardcoded backend lists outside `tests/test_justfile_recipes.py`'s
+  drift-invariant coverage** (the plan named only the first explicitly).
+  The second was caught and fixed this phase, but neither site is tested,
+  so the next backend addition can still silently omit either. Out of
+  scope to fix the drift test itself here — named so it isn't mistaken for
+  covered.
 
 ## Issues & Solutions
 
