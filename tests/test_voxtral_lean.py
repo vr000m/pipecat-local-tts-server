@@ -203,7 +203,11 @@ def _assert_lean(body: str) -> None:
         "_s.exit(1) if bad else None\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", prog], cwd=_REPO_ROOT, capture_output=True, text=True
+        [sys.executable, "-c", prog],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,  # returncode is asserted explicitly below
     )
     assert result.returncode == 0, f"mlx_audio leaked or import failed:\n{result.stderr}"
 

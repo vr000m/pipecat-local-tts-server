@@ -34,7 +34,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Any, AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Any
 
 from .._audio import float_to_pcm16
 
@@ -44,7 +45,7 @@ logger = logging.getLogger("tts_server.backends._stream_util")
 _EOF = object()
 
 
-def _put_eof(queue: "asyncio.Queue") -> None:
+def _put_eof(queue: asyncio.Queue) -> None:
     """Enqueue the EOF sentinel from inside a loop callback without backpressure.
 
     Runs on the event loop via ``call_soon_threadsafe``. A plain
@@ -114,7 +115,7 @@ async def stream_generate(
     metal_lock: threading.Lock,
     cancel: threading.Event,
     maxsize: int,
-    worker_done: "threading.Event | None" = None,
+    worker_done: threading.Event | None = None,
 ) -> AsyncIterator[bytes]:
     """Drive a blocking ``model.generate()`` generator on a daemon thread and
     yield int16-LE PCM chunks with producer-side backpressure.
@@ -209,7 +210,7 @@ async def stream_generate(
                         continue
                     if not _put_blocking(pcm):
                         break
-        except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer
+        except BaseException as exc:
             error_box["error"] = exc
             logger.exception("tts_server: synthesis worker failed")
         finally:
@@ -241,7 +242,7 @@ async def stream_generate(
                         # Loop already closed (consumer fully torn down) — there
                         # is nothing left to signal.
                         pass
-            except Exception:  # noqa: BLE001 - teardown must never raise out of the worker
+            except Exception:
                 logger.exception("tts_server: EOF enqueue failed during worker teardown")
             finally:
                 # The worker's last act: signal full exit. The Metal lock is

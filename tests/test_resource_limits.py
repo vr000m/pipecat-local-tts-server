@@ -160,31 +160,28 @@ async def test_under_high_water_does_not_close():
 
 async def test_max_text_chars_rejects_oversized_single_commit():
     backend = ToneBackend(max_text_chars=50)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, hello):
-            assert hello["capabilities"]["max_text_chars"] == 50
-            await client.append("x" * 60)  # one append already over the cap
-            err = await next_event(client, P.EVT_ERROR)
-            assert err["error"]["code"] == P.ErrorCode.PAYLOAD_TOO_LARGE.value
+    async with running_server(backend) as srv, connected_client(srv) as (client, hello):
+        assert hello["capabilities"]["max_text_chars"] == 50
+        await client.append("x" * 60)  # one append already over the cap
+        err = await next_event(client, P.EVT_ERROR)
+        assert err["error"]["code"] == P.ErrorCode.PAYLOAD_TOO_LARGE.value
 
 
 async def test_max_text_chars_rejects_when_appends_accumulate_over_cap():
     backend = ToneBackend(max_text_chars=50)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, _hello):
-            # Each append is under the cap, but together they exceed it: the
-            # second append must be rejected (buffer + new > cap).
-            await client.append("y" * 40)
-            await client.append("z" * 40)
-            err = await next_event(client, P.EVT_ERROR)
-            assert err["error"]["code"] == P.ErrorCode.PAYLOAD_TOO_LARGE.value
+    async with running_server(backend) as srv, connected_client(srv) as (client, _hello):
+        # Each append is under the cap, but together they exceed it: the
+        # second append must be rejected (buffer + new > cap).
+        await client.append("y" * 40)
+        await client.append("z" * 40)
+        err = await next_event(client, P.EVT_ERROR)
+        assert err["error"]["code"] == P.ErrorCode.PAYLOAD_TOO_LARGE.value
 
 
 async def test_under_cap_text_commits_normally():
     backend = ToneBackend(max_text_chars=2000, segment_count=1, segment_delay_ms=0)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("a short utterance")
-            await client.commit()
-            done = await next_event(client, P.EVT_RESPONSE_AUDIO_DONE)
-            assert done["type"] == P.EVT_RESPONSE_AUDIO_DONE
+    async with running_server(backend) as srv, connected_client(srv) as (client, _hello):
+        await client.append("a short utterance")
+        await client.commit()
+        done = await next_event(client, P.EVT_RESPONSE_AUDIO_DONE)
+        assert done["type"] == P.EVT_RESPONSE_AUDIO_DONE

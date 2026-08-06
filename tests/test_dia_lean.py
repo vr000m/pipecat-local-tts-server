@@ -276,17 +276,16 @@ async def test_tagged_buffer_streams_at_least_one_delta_unchanged():
     back unchanged — CI coverage of the tagged-text -> delta path. Real dia-audio
     production from tagged text stays mlx-gated (Phase 3 smoke)."""
     backend = ToneBackend(segment_count=2, segment_delay_ms=0)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append(_DIALOGUE)
-            await client.commit()
-            resp = await collect_response(client)
-            assert resp.error is None and resp.failed is None
-            assert resp.done is not None
-            # >=1 audio delta streamed; the tagged text framed/bridged fine.
-            assert len(resp.deltas) >= 1
-            # the buffer flowed through to synthesis intact (non-empty PCM).
-            assert len(resp.pcm) > 0
+    async with running_server(backend) as srv, connected_client(srv) as (client, _hello):
+        await client.append(_DIALOGUE)
+        await client.commit()
+        resp = await collect_response(client)
+        assert resp.error is None and resp.failed is None
+        assert resp.done is not None
+        # >=1 audio delta streamed; the tagged text framed/bridged fine.
+        assert len(resp.deltas) >= 1
+        # the buffer flowed through to synthesis intact (non-empty PCM).
+        assert len(resp.pcm) > 0
 
 
 # --- mlx-gated / local-only (NOT lean CI) -------------------------------------
@@ -330,7 +329,11 @@ def _assert_lean(body: str) -> None:
         "sys.exit(1) if bad else None\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", prog], cwd=_REPO_ROOT, capture_output=True, text=True
+        [sys.executable, "-c", prog],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,  # returncode is asserted explicitly below
     )
     assert result.returncode == 0, f"mlx_audio leaked or import failed:\n{result.stderr}"
 

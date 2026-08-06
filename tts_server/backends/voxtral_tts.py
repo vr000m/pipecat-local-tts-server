@@ -56,7 +56,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from ..backend import AudioEvent, TTSStream
 from ._extras_util import (

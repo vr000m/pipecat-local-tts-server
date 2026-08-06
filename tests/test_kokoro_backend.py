@@ -32,8 +32,8 @@ import pytest
 # (On lean CI this file is simply not on the allow-list, so it is never invoked.)
 pytest.importorskip("mlx_audio")
 
-from tts_server.backend import AudioEvent  # noqa: E402
-from tts_server.backends.kokoro import (  # noqa: E402
+from tts_server.backend import AudioEvent
+from tts_server.backends.kokoro import (
     _ISO_TO_LANG_CODE,
     KokoroBackend,
 )

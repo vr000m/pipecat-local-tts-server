@@ -24,7 +24,8 @@ shared.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 TEMPERATURE_MIN = 0.0
 TEMPERATURE_MAX = 2.0
@@ -37,7 +38,9 @@ TOP_P_MAX = 1.0
 def coerce_temperature(raw: Any) -> float:
     """Validate + clamp a client-supplied ``temperature`` before generate()."""
     if isinstance(raw, bool):  # bool is coercible to float; reject it explicitly.
-        raise ValueError(f"temperature must be a number, got {raw!r}")
+        # ValueError (not TypeError) is deliberate: validate_extras() catches
+        # ValueError uniformly across every coercion failure in this module.
+        raise ValueError(f"temperature must be a number, got {raw!r}")  # noqa: TRY004
     try:
         value = float(raw)
     except (TypeError, ValueError):
@@ -54,7 +57,9 @@ def coerce_temperature(raw: Any) -> float:
 def coerce_top_k(raw: Any) -> int:
     """Validate + clamp a client-supplied ``top_k`` (a positive integer)."""
     if isinstance(raw, bool):  # bool is an int subclass; reject it explicitly.
-        raise ValueError(f"top_k must be an integer, got {raw!r}")
+        # ValueError (not TypeError) is deliberate: validate_extras() catches
+        # ValueError uniformly across every coercion failure in this module.
+        raise ValueError(f"top_k must be an integer, got {raw!r}")  # noqa: TRY004
     # Reject a non-integral float (e.g. 2.9) rather than silently truncating to 2
     # — the client should learn its value was not an integer, not get a quietly
     # different one. Integral floats (50.0) and int-valued strings ("40") are ok.
@@ -74,7 +79,9 @@ def coerce_top_k(raw: Any) -> int:
 def coerce_top_p(raw: Any) -> float:
     """Validate + clamp a client-supplied ``top_p`` into ``(0, 1]``."""
     if isinstance(raw, bool):  # bool is coercible to float; reject it explicitly.
-        raise ValueError(f"top_p must be a number, got {raw!r}")
+        # ValueError (not TypeError) is deliberate: validate_extras() catches
+        # ValueError uniformly across every coercion failure in this module.
+        raise ValueError(f"top_p must be a number, got {raw!r}")  # noqa: TRY004
     try:
         value = float(raw)
     except (TypeError, ValueError):

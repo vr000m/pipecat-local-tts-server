@@ -279,11 +279,15 @@ async def _probe_status(args: argparse.Namespace) -> dict:
     finally:
         try:
             await client.close_session()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Best-effort teardown after the probe: any close failure here is
+            # moot, we still proceed to close the socket below.
             pass
         try:
             await client.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Best-effort: nothing left to do with the underlying socket
+            # once we've already reported the probe's outcome.
             pass
 
 
@@ -294,13 +298,16 @@ def _cmd_status(args: argparse.Namespace) -> None:
     except (FileNotFoundError, ConnectionRefusedError) as exc:
         print(f"tts_server: not reachable ({exc})", file=sys.stderr)
         raise SystemExit(1)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print(f"tts_server: timed out after {args.timeout}s", file=sys.stderr)
         raise SystemExit(1)
     except OSError as exc:
         print(f"tts_server: socket error ({exc})", file=sys.stderr)
         raise SystemExit(1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Deliberate top-level catch-all: this is a CLI entry point, and any
+        # exception the specific cases above don't cover must still surface
+        # as a clean CLI failure, not a raw traceback.
         print(f"tts_server: probe failed ({exc})", file=sys.stderr)
         raise SystemExit(1)
 

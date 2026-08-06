@@ -687,13 +687,15 @@ The single shared daemon-thread→`asyncio.Queue` bridge every streaming-capable
 The interface (Phase 1 deliverable; Phase 0 ships a stdlib-only stub):
 ```python
 async def stream_generate(
-    gen_factory: Callable[[], Iterator[GenerationResult]],  # builds the blocking generate() generator
+    gen_factory: Callable[
+        [], Iterator[GenerationResult]
+    ],  # builds the blocking generate() generator
     *,
     loop: asyncio.AbstractEventLoop,
-    metal_lock: threading.Lock,   # process-wide; held for the WHOLE generator-drain (see R3)
-    cancel: threading.Event,      # set by TTSStream.cancel(); breaks the generator out
-    maxsize: int,                 # bounded async queue; producer blocks/cooperates when full
-) -> AsyncIterator[bytes]: ...    # yields int16-LE PCM per chunk; EOF sentinel ends iteration
+    metal_lock: threading.Lock,  # process-wide; held for the WHOLE generator-drain (see R3)
+    cancel: threading.Event,  # set by TTSStream.cancel(); breaks the generator out
+    maxsize: int,  # bounded async queue; producer blocks/cooperates when full
+) -> AsyncIterator[bytes]: ...  # yields int16-LE PCM per chunk; EOF sentinel ends iteration
 ```
 A daemon thread acquires `metal_lock` **cancellation-awarely** (bounded-poll `acquire(timeout=…)`
 re-checking `cancel` between slices, with a second `cancel` check right after acquiring — so a

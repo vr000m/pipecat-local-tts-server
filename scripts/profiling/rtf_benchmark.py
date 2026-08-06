@@ -54,9 +54,11 @@ def _other_gpu_procs() -> list[str]:
     """Best-effort: list other tts/stt/mlx processes that would contend for the GPU."""
     try:
         out = subprocess.run(
-            ["ps", "axo", "pid,command"], capture_output=True, text=True, timeout=5
+            ["ps", "axo", "pid,command"], capture_output=True, text=True, timeout=5, check=True
         ).stdout
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # Best-effort diagnostic (missing `ps`, non-zero exit, timeout, etc.);
+        # never let profiling instrumentation crash the benchmark run.
         return []
     hits = []
     for line in out.splitlines():

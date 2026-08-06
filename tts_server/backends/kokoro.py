@@ -41,7 +41,8 @@ import asyncio
 import logging
 import math
 import threading
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from ..backend import AudioEvent, TTSStream
 from ..env import env_str_set
@@ -472,7 +473,7 @@ class KokoroBackend:
             self._voice_names = sorted(stems)
             # Pick a stable English voice (prefix ``a``/``b``) for warmup.
             en_voices = sorted(s for s in stems if s[:1] in ("a", "b"))
-            self._default_voice = en_voices[0] if en_voices else sorted(stems)[0]
+            self._default_voice = en_voices[0] if en_voices else min(stems)
             isos: list[str] = []
             for stem in stems:
                 iso = _PREFIX_TO_ISO.get(stem[:1])

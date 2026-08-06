@@ -52,6 +52,7 @@ def _assert_lean(body: str) -> None:
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,  # returncode is asserted explicitly below
     )
     assert result.returncode == 0, (
         f"lean-import check failed (rc={result.returncode}):\n{result.stderr}"

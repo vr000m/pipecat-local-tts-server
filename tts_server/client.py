@@ -14,12 +14,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any, Self
 
 import websockets
 from websockets.asyncio.client import (
     ClientConnection,
+)
+from websockets.asyncio.client import (
     connect as ws_connect,
+)
+from websockets.asyncio.client import (
     unix_connect as ws_unix_connect,
 )
 
@@ -132,7 +137,9 @@ class TTSClient:
         assert self._ws is not None
         raw = await self._ws.recv()
         if isinstance(raw, (bytes, bytearray)):
-            raise RuntimeError("unexpected binary frame")
+            # RuntimeError, not TypeError: consistent with the protocol-violation
+            # RuntimeError raised just above for an unexpected message type.
+            raise RuntimeError("unexpected binary frame")  # noqa: TRY004
         return json.loads(raw)
 
     # --- control events ---
@@ -224,7 +231,9 @@ class TTSClient:
         if self._ws is not None:
             try:
                 await self._ws.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
+                # Best-effort: the connection may already be broken; we're
+                # discarding it either way.
                 pass
 
     # --- events iterator ---
@@ -244,7 +253,7 @@ class TTSClient:
             return
 
     # --- async context manager ---
-    async def __aenter__(self) -> "TTSClient":
+    async def __aenter__(self) -> Self:
         await self.connect()
         return self
 

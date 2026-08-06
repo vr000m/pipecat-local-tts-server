@@ -71,7 +71,7 @@ def test_clear_stale_unix_socket_refuses_regular_file(sock_path):
 
 
 def test_clear_stale_unix_socket_unlinks_dangling_symlink(sock_path):
-    sock_path.symlink_to("/tmp/does-not-exist-%s" % uuid.uuid4().hex[:8])
+    sock_path.symlink_to(f"/tmp/does-not-exist-{uuid.uuid4().hex[:8]}")
     assert sock_path.is_symlink() and not sock_path.exists()
     _clear_stale_unix_socket(sock_path)
     assert not sock_path.is_symlink(), "a dangling symlink must be cleared before bind"

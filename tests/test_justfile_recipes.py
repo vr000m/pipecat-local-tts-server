@@ -79,6 +79,7 @@ def _resolve(backend: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,  # returncode is asserted by callers
     )
 
 
@@ -188,6 +189,7 @@ def _plist_endpoint(plist: Path) -> tuple[str, str, str, str]:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,  # returncode is asserted below
     )
     assert r.returncode == 0, f"_plist_endpoint failed: {r.stderr!r}"
     lines = r.stdout.splitlines()

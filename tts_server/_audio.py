@@ -23,7 +23,7 @@ from __future__ import annotations
 import array
 import math
 import sys
-from typing import Iterable
+from collections.abc import Iterable
 
 _INT16_MIN = -32768
 _INT16_MAX = 32767
@@ -44,7 +44,7 @@ def float_to_pcm16(samples: Iterable[float]) -> bytes:
     for x in samples:
         # NaN compares False against everything; treat as silence rather than
         # letting int() raise.
-        if x != x:  # NaN
+        if math.isnan(x):
             out.append(0)
             continue
         if x >= 1.0:
@@ -54,15 +54,13 @@ def float_to_pcm16(samples: Iterable[float]) -> bytes:
         elif x < 0.0:
             # Negative samples scale by 32768. floor() so e.g. a sample just
             # below 0 stays within range and the rail is reachable.
-            v = int(math.floor(x * 32768.0))
-            if v < _INT16_MIN:
-                v = _INT16_MIN
+            v = math.floor(x * 32768.0)
+            v = max(v, _INT16_MIN)
             out.append(v)
         else:
             # Non-negative samples scale by 32767.
             v = int(x * 32767.0 + 0.5)
-            if v > _INT16_MAX:
-                v = _INT16_MAX
+            v = min(v, _INT16_MAX)
             out.append(v)
     # ``array('h')`` is host-endian; force little-endian on the wire.
     if _IS_BIG_ENDIAN:

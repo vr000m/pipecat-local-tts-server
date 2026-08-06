@@ -104,7 +104,9 @@ def _start_server(backend: str, model: str | None, sock: str, log_path: Path) ->
     cmd = [sys.executable, "-m", "tts_server", "serve", "--backend", backend, "--socket-path", sock]
     if model:
         cmd += ["--model", model]
-    log = open(log_path, "w")
+    # Intentionally not a context manager: the fd must stay open for the
+    # subprocess's lifetime, well past this function's return.
+    log = open(log_path, "w")  # noqa: SIM115
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
 
 

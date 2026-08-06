@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import AsyncGenerator, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ._audio import float_to_pcm16
 
@@ -226,7 +227,7 @@ class _ToneStream:
                     )
                     # cancel fired during the wait
                     return
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
             if self._cancelled.is_set():
                 return

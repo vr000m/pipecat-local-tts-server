@@ -30,13 +30,12 @@ async def _send_raw(client, payload: dict) -> None:
 
 
 async def test_session_update_unknown_field_rejected():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await _send_raw(client, {"type": "session.update", "pitch": 2})
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
-            assert "pitch" in ev["error"]["message"]
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await _send_raw(client, {"type": "session.update", "pitch": 2})
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
+        assert "pitch" in ev["error"]["message"]
 
 
 async def test_error_echoes_client_event_id_at_top_level():
@@ -45,55 +44,48 @@ async def test_error_echoes_client_event_id_at_top_level():
     # the nested error.event_id. Otherwise a client cannot tell an error for THIS
     # command apart from a stale error left by an earlier command on a persistent
     # connection (adversarial-review finding).
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await _send_raw(
-                client, {"type": "session.update", "pitch": 2, "event_id": "evt_corr_1"}
-            )
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] == "error"
-            assert ev["previous_event_id"] == "evt_corr_1"
-            assert ev["error"]["event_id"] == "evt_corr_1"  # nested kept for compat
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await _send_raw(client, {"type": "session.update", "pitch": 2, "event_id": "evt_corr_1"})
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] == "error"
+        assert ev["previous_event_id"] == "evt_corr_1"
+        assert ev["error"]["event_id"] == "evt_corr_1"  # nested kept for compat
 
 
 async def test_commit_unknown_field_rejected():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("hi")
-            await _send_raw(client, {"type": "input_text.commit", "bogus": 1})
-            ev = await next_event(client, _ACK_OR_ERR_COMMIT)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
-            assert "bogus" in ev["error"]["message"]
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.append("hi")
+        await _send_raw(client, {"type": "input_text.commit", "bogus": 1})
+        ev = await next_event(client, _ACK_OR_ERR_COMMIT)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
+        assert "bogus" in ev["error"]["message"]
 
 
 async def test_unsupported_language_rejected_on_update():
     # ToneBackend advertises languages == ["en"].
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(language="fr")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
-            assert "fr" in ev["error"]["message"]
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(language="fr")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
+        assert "fr" in ev["error"]["message"]
 
 
 async def test_supported_language_accepted_on_update():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(language="en")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] in ("session.created", "session.updated")
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(language="en")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] in ("session.created", "session.updated")
 
 
 async def test_unsupported_language_rejected_on_commit():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("hi")
-            await client.commit(language="de")
-            ev = await next_event(client, _ACK_OR_ERR_COMMIT)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.append("hi")
+        await client.commit(language="de")
+        ev = await next_event(client, _ACK_OR_ERR_COMMIT)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
 
 
 # --- voice validation (security boundary) -----------------------------------
@@ -105,31 +97,28 @@ async def test_unsupported_language_rejected_on_commit():
 
 
 async def test_unsupported_voice_rejected_on_update():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(voice="/etc/passwd.safetensors")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
-            assert "voice" in ev["error"]["message"]
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(voice="/etc/passwd.safetensors")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
+        assert "voice" in ev["error"]["message"]
 
 
 async def test_supported_voice_accepted_on_update():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(voice="tone")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] in ("session.created", "session.updated")
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(voice="tone")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] in ("session.created", "session.updated")
 
 
 async def test_unsupported_voice_rejected_on_commit():
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("hi")
-            await client.commit(voice="bogus_voice")
-            ev = await next_event(client, _ACK_OR_ERR_COMMIT)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.append("hi")
+        await client.commit(voice="bogus_voice")
+        ev = await next_event(client, _ACK_OR_ERR_COMMIT)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
 
 
 # --- model validation (no silent wrong-model) -------------------------------
@@ -148,30 +137,33 @@ class _ModelToneBackend(ToneBackend):
 
 
 async def test_model_mismatch_rejected_on_update():
-    async with running_server(_ModelToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(model="some-other-model")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
-            assert "some-other-model" in ev["error"]["message"]
+    async with (
+        running_server(_ModelToneBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.update(model="some-other-model")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
+        assert "some-other-model" in ev["error"]["message"]
 
 
 async def test_matching_model_accepted_on_update():
-    async with running_server(_ModelToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(model="tone-v1")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] in ("session.created", "session.updated")
-            assert ev["session"]["model"] == "tone-v1"
+    async with (
+        running_server(_ModelToneBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.update(model="tone-v1")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] in ("session.created", "session.updated")
+        assert ev["session"]["model"] == "tone-v1"
 
 
 async def test_model_rejected_when_backend_has_no_model():
     # ToneBackend.model is None: no selectable model, so any model is rejected.
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(model="anything")
-            ev = await next_event(client, _ACK_OR_ERR_UPDATE)
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == "invalid_config"
-            assert "anything" in ev["error"]["message"]
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(model="anything")
+        ev = await next_event(client, _ACK_OR_ERR_UPDATE)
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == "invalid_config"
+        assert "anything" in ev["error"]["message"]

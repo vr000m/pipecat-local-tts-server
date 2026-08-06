@@ -49,12 +49,12 @@ render_tts_plist = _load_renderer()
 render_plist = render_tts_plist.render_plist
 
 # A baseline set of keyword args every render needs; tests override per-case.
-_BASE = dict(
-    python="/Users/test/repo/.venv/bin/python",
-    repo_root="/Users/test/repo",
-    home="/Users/test",
-    log_dir="/Users/test/Library/Logs/pipecat-tts",
-)
+_BASE = {
+    "python": "/Users/test/repo/.venv/bin/python",
+    "repo_root": "/Users/test/repo",
+    "home": "/Users/test",
+    "log_dir": "/Users/test/Library/Logs/pipecat-tts",
+}
 
 
 def _render(**overrides) -> dict:
@@ -242,6 +242,7 @@ def _run_main(tmp_path: Path, env_extra: dict[str, str]):
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        check=False,  # returncode is asserted by callers
     )
     return proc, plist_dst
 

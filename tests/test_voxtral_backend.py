@@ -23,15 +23,14 @@ Coverage (Phase 5a checklist / R1 / R3 / R7):
 
 from __future__ import annotations
 
-
 import pytest
 
 # Belt-and-suspenders gate: skip the whole module if the heavy extra is absent.
 pytest.importorskip("mlx_audio")
 
-from tts_server.backends.voxtral_tts import VoxtralBackend  # noqa: E402
+from tts_server.backends.voxtral_tts import VoxtralBackend
 
-from ._helpers import connected_client, running_server  # noqa: E402
+from ._helpers import connected_client, running_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,14 +77,13 @@ async def test_hello_advertises_model_rate():
     ``backend.close()`` on shutdown — sharing the module backend here would null
     its ``_loaded_model`` and poison later tests."""
     backend = VoxtralBackend()
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (_client, hello):
-            # The server has started the backend (connect -> load -> hello), so
-            # the rate is readable from the loaded model — compare to that, not a
-            # literal (a wrong constant would satisfy both sides).
-            model_rate = int(backend._loaded_model.sample_rate)
-            assert hello["audio"]["rate"] == model_rate
-            assert hello["capabilities"]["streaming"] is True
+    async with running_server(backend) as srv, connected_client(srv) as (_client, hello):
+        # The server has started the backend (connect -> load -> hello), so
+        # the rate is readable from the loaded model — compare to that, not a
+        # literal (a wrong constant would satisfy both sides).
+        model_rate = int(backend._loaded_model.sample_rate)
+        assert hello["audio"]["rate"] == model_rate
+        assert hello["capabilities"]["streaming"] is True
 
 
 async def test_capabilities_shape_after_start(started_backend):

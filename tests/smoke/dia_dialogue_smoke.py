@@ -351,7 +351,7 @@ def _run_greedy_guard(model, seed: int) -> int:
     byte-identity check. Returns 0 on pass, 1 on fail."""
     import mlx.core as mx  # type: ignore
 
-    print("=== greedy statelessness guard (seed=%d, temperature=0.0) ===" % seed)
+    print(f"=== greedy statelessness guard (seed={seed}, temperature=0.0) ===")
 
     # X_alone: render textX with no prior call.
     x_alone_audio, x_alone_n = _render_seeded(
@@ -395,13 +395,17 @@ def _array_equal(a: object, b: object) -> bool:
 
         if isinstance(a, mx.array) and isinstance(b, mx.array):
             return bool(mx.array_equal(a, b))
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
+        # Fallback probe: mlx may be absent or `a`/`b` may not be mlx arrays;
+        # either way we fall through to the next comparison strategy.
         pass
     try:
         import numpy as np  # type: ignore
 
         return bool(np.array_equal(np.asarray(a), np.asarray(b)))
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
+        # Fallback probe: numpy may be absent or the values may not coerce;
+        # fall through to the plain list comparison below.
         pass
     return list(a) == list(b)  # type: ignore[arg-type]
 
@@ -593,7 +597,7 @@ async def _run_disconnect_guard(args: argparse.Namespace) -> int:
     await client.connect()
     try:
         res = await _synthesize(client, _DISCONNECT_PROBE, args.timeout)
-    except (asyncio.TimeoutError, TimeoutError):
+    except TimeoutError:
         print(
             f"   FAIL: fresh commit after abrupt disconnect TIMED OUT (> {args.timeout}s) "
             "— the shared dia model may be poisoned/stalled (regression of memory "
