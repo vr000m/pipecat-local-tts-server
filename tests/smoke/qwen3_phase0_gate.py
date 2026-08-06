@@ -287,7 +287,7 @@ def q4_voice_none(model, out_dir: Path) -> str:
     print("=== Q4: no-voice kwarg (speaker-unconditioned base path) ===")
     try:
         results = _drain(model.generate(_SHORT_TEXT, stream=False))
-    except Exception as exc:  # deliberate: gate must record, not crash
+    except Exception as exc:  # noqa: BLE001 -- deliberate: gate must record, not crash
         print(f"   Q4 RECORD: generate() without voice raised {type(exc).__name__}: {exc}")
         print("   Q4 RECORD: no-voice path ERRORS — Phase 1 must inject a default speaker.")
         return "RECORD"
@@ -412,7 +412,7 @@ def q6_license(repo_id: str) -> str:
     print(f"=== Q6: license for {repo_id} ===")
     try:
         from huggingface_hub import HfApi, hf_hub_download
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- optional dep; gate must record, not crash
         print(f"   Q6 RECORD: license-unresolved (huggingface_hub unavailable: {exc})")
         return "RECORD"
 
@@ -424,13 +424,15 @@ def q6_license(repo_id: str) -> str:
         tags = [t for t in (getattr(info, "tags", None) or []) if t.startswith("license:")]
         print(f"   RECORD card_data.license = {license_tag!r}; license tags = {tags!r}")
         found = bool(license_tag or tags)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- network call; gate must record, not crash
         print(f"   RECORD model_info failed ({type(exc).__name__}: {exc})")
 
     for filename in ("LICENSE", "LICENSE.txt", "LICENSE.md"):
         try:
             path = hf_hub_download(repo_id, filename)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
+            # Best-effort: try the next candidate filename on any failure
+            # (404, network error, ...).
             continue
         text = Path(path).read_text(encoding="utf-8", errors="replace")
         head = "\n".join(text.splitlines()[:12])

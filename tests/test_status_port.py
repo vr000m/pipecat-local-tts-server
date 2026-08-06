@@ -92,6 +92,7 @@ def test_status_reports_backend_over_host_port():
             text=True,
             timeout=20,
             env=env,
+            check=False,  # returncode is asserted explicitly below
         )
         assert r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}"
         # The port-aware status path resolves the live backend identity.

@@ -14,7 +14,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 from tts_server import protocol as P
 from tts_server.backend import ToneBackend
 
@@ -26,43 +25,41 @@ from ._helpers import connected_client, next_event, running_server
 
 async def test_status_round_trip_carries_backend_model_rate_and_queue_depth():
     backend = ToneBackend(sample_rate=24000)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, hello):
-            # hello carries backend/model/rate (R1: rate is the wire contract).
-            assert hello["backend"]["name"] == "tone"
-            assert hello["backend"]["model"] is None
-            assert hello["audio"]["rate"] == 24000
-            assert hello["audio"]["format"] == P.AUDIO_FORMAT
-            assert hello["audio"]["channels"] == P.AUDIO_CHANNELS
+    async with running_server(backend) as srv, connected_client(srv) as (client, hello):
+        # hello carries backend/model/rate (R1: rate is the wire contract).
+        assert hello["backend"]["name"] == "tone"
+        assert hello["backend"]["model"] is None
+        assert hello["audio"]["rate"] == 24000
+        assert hello["audio"]["format"] == P.AUDIO_FORMAT
+        assert hello["audio"]["channels"] == P.AUDIO_CHANNELS
 
-            await client.status()
-            status = await next_event(client, P.EVT_SERVER_STATUS)
+        await client.status()
+        status = await next_event(client, P.EVT_SERVER_STATUS)
 
-            # backend identity is surfaced on the status reply too.
-            assert status["backend"]["name"] == "tone"
-            assert status["backend"]["model"] is None
-            # rate present and equal to the advertised hello rate (no drift).
-            assert status["audio"]["rate"] == hello["audio"]["rate"] == 24000
-            # queue depth is an idle integer (no synthesis in flight).
-            assert isinstance(status["queue_depth"], int)
-            assert status["queue_depth"] == 0
-            # full voice list lives on status (decided default #4).
-            assert status["voices"] == ["tone"]
-            assert status["voice_count"] == 1
-            assert isinstance(status["pid"], int) and status["pid"] > 0
+        # backend identity is surfaced on the status reply too.
+        assert status["backend"]["name"] == "tone"
+        assert status["backend"]["model"] is None
+        # rate present and equal to the advertised hello rate (no drift).
+        assert status["audio"]["rate"] == hello["audio"]["rate"] == 24000
+        # queue depth is an idle integer (no synthesis in flight).
+        assert isinstance(status["queue_depth"], int)
+        assert status["queue_depth"] == 0
+        # full voice list lives on status (decided default #4).
+        assert status["voices"] == ["tone"]
+        assert status["voice_count"] == 1
+        assert isinstance(status["pid"], int) and status["pid"] > 0
 
 
 async def test_status_queue_depth_is_zero_when_idle_after_a_response():
     # A completed synthesis must leave the global backlog drained back to 0.
     backend = ToneBackend(segment_count=2, segment_delay_ms=0)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("hello")
-            await client.commit()
-            await next_event(client, P.EVT_RESPONSE_AUDIO_DONE)
-            await client.status()
-            status = await next_event(client, P.EVT_SERVER_STATUS)
-            assert status["queue_depth"] == 0
+    async with running_server(backend) as srv, connected_client(srv) as (client, _hello):
+        await client.append("hello")
+        await client.commit()
+        await next_event(client, P.EVT_RESPONSE_AUDIO_DONE)
+        await client.status()
+        status = await next_event(client, P.EVT_SERVER_STATUS)
+        assert status["queue_depth"] == 0
 
 
 def _run_module(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -72,6 +69,7 @@ def _run_module(*args: str, env: dict[str, str] | None = None) -> subprocess.Com
         text=True,
         timeout=20,
         env=env,
+        check=False,  # returncode is asserted by callers
     )
 
 

@@ -40,15 +40,20 @@ import stat
 import time
 import uuid
 from collections import OrderedDict, deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import websockets
 from websockets.asyncio.server import (
     Server,
     ServerConnection,
+)
+from websockets.asyncio.server import (
     serve as ws_serve,
+)
+from websockets.asyncio.server import (
     unix_serve as ws_unix_serve,
 )
 
@@ -213,7 +218,7 @@ class _Response:
     # this invariant. Do not set ``ws`` to anything other than the connection that
     # owns ``state``.
     ws: ServerConnection
-    state: "_SessionState"
+    state: _SessionState
     text: str
     voice: str | None
     language: str | None
@@ -276,7 +281,7 @@ class _SynthScheduler:
         self._per_connection_max = per_connection_max
         # Insertion-ordered per-connection FIFO queues of admitted-but-not-yet-
         # started commits. ``OrderedDict`` gives a stable round-robin order.
-        self._queues: "OrderedDict[int, deque[_Response]]" = OrderedDict()
+        self._queues: OrderedDict[int, deque[_Response]] = OrderedDict()
         # Count of admitted commits NOT yet finished (queued + in-flight). This
         # is the global backlog depth the cap is measured against.
         self._admitted = 0
@@ -302,7 +307,9 @@ class _SynthScheduler:
             self._dispatcher.cancel()
             try:
                 await self._dispatcher
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
+                # Shutting down: whatever the dispatcher raised (or was
+                # cancelled with) is moot once we drop the reference below.
                 pass
             self._dispatcher = None
 
@@ -543,7 +550,7 @@ class TTSServer:
         for s in self.sockets_bound:
             try:
                 return s.getsockname()[1]
-            except Exception:
+            except OSError:
                 continue
         return None
 
@@ -568,7 +575,7 @@ class TTSServer:
                     asyncio.gather(*pending, return_exceptions=True),
                     timeout=self._config.drain_timeout_seconds,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 for t in pending:
                     if not t.done():
                         t.cancel()
@@ -1203,7 +1210,9 @@ class TTSServer:
                 if state.closed and stream is not None and not response.cancelled:
                     try:
                         await stream.cancel()
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
+                        # Best-effort: the session is already closing, and
+                        # backend.cancel() implementations vary in what they raise.
                         pass
                 return
             # Flush the short tail (NO silence padding).
@@ -1229,7 +1238,9 @@ class TTSServer:
             if stream is not None:
                 try:
                     await stream.cancel()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
+                    # We're already propagating the cancellation; a failure
+                    # in best-effort backend cleanup must not mask it.
                     pass
             raise
         except Exception as exc:
@@ -1323,13 +1334,17 @@ class TTSServer:
         if response.stream is not None:
             try:
                 await response.stream.cancel()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
+                # Best-effort: the response is being torn down regardless of
+                # what backend.cancel() raises.
                 pass
         if response.task is not None and not response.task.done():
             response.task.cancel()
             try:
                 await response.task
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
+                # Same rationale: the task is being discarded, so any
+                # exception it raised on cancellation is moot.
                 pass
 
     async def _on_session_cancel(self, ws: ServerConnection, state: _SessionState) -> None:
@@ -1396,7 +1411,7 @@ class TTSServer:
                         await asyncio.wait_for(response.start_event.wait(), timeout=timeout)
                     if not response.done.is_set():
                         await asyncio.wait_for(response.done.wait(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await self._cancel_response(response)
         state.closed = True
         await self._send(
@@ -1453,7 +1468,9 @@ class TTSServer:
             return []
         try:
             result = self._backend.voices()
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # voices() is a backend-supplied optional capability; a buggy
+            # backend implementation must not crash session/status handling.
             return []
         return list(result) if result else []
 
@@ -1484,7 +1501,9 @@ class TTSServer:
         state.closed = True
         try:
             await ws.close(code=1011, reason=reason)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Best-effort: the connection may already be gone (peer dropped,
+            # transport error); state.closed above is what actually matters.
             pass
 
     async def _send(
@@ -1518,7 +1537,7 @@ class TTSServer:
                 )
             except websockets.exceptions.ConnectionClosed:
                 pass
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # The high-water guard above samples pending bytes BEFORE this
                 # send; a send that wedges mid-flight (the reader stops draining
                 # and the socket write buffer fills WHILE we await) never trips it.
@@ -1582,7 +1601,9 @@ def _pending_write_bytes(ws: ServerConnection) -> int | None:
         return None
     try:
         return transport.get_write_buffer_size()
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # Best-effort introspection across transport implementations; a
+        # backpressure heuristic must never crash the send path.
         return None
 
 

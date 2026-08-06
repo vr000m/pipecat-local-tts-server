@@ -25,9 +25,9 @@ import pytest
 
 pytest.importorskip("mlx_audio")
 
-from tts_server.backends.pocket_tts import PocketBackend  # noqa: E402
+from tts_server.backends.pocket_tts import PocketBackend
 
-from ._helpers import connected_client, running_server  # noqa: E402
+from ._helpers import connected_client, running_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,11 +59,10 @@ async def test_sample_rate_from_model_pre_synth(started_backend):
 async def test_hello_advertises_model_rate():
     """Own backend (not the module fixture) — running_server starts+closes it."""
     backend = PocketBackend()
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (_client, hello):
-            model_rate = int(backend._loaded_model.sample_rate)
-            assert hello["audio"]["rate"] == model_rate
-            assert hello["capabilities"]["streaming"] is True
+    async with running_server(backend) as srv, connected_client(srv) as (_client, hello):
+        model_rate = int(backend._loaded_model.sample_rate)
+        assert hello["audio"]["rate"] == model_rate
+        assert hello["capabilities"]["streaming"] is True
 
 
 async def test_capabilities_shape_after_start(started_backend):

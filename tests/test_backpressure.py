@@ -55,17 +55,16 @@ async def _connect(srv: TTSServer) -> tuple[TTSClient, dict]:
 
 async def test_per_connection_inflight_cap_rejects_second_commit():
     assert P.PER_CONNECTION_INFLIGHT_MAX == 1
-    async with running_server(_slow_backend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            # First commit is admitted and starts synthesizing (held by delay).
-            await client.append("first")
-            await client.commit()
-            await next_event(client, P.EVT_RESPONSE_CREATED)
-            # Second commit while the first is in flight → BUSY (K=1).
-            await client.append("second")
-            await client.commit()
-            err = await next_event(client, P.EVT_ERROR)
-            assert err["error"]["code"] == P.ErrorCode.BUSY.value
+    async with running_server(_slow_backend()) as srv, connected_client(srv) as (client, _hello):
+        # First commit is admitted and starts synthesizing (held by delay).
+        await client.append("first")
+        await client.commit()
+        await next_event(client, P.EVT_RESPONSE_CREATED)
+        # Second commit while the first is in flight → BUSY (K=1).
+        await client.append("second")
+        await client.commit()
+        err = await next_event(client, P.EVT_ERROR)
+        assert err["error"]["code"] == P.ErrorCode.BUSY.value
 
 
 async def test_other_connections_still_served_while_one_is_capped():
@@ -142,27 +141,26 @@ async def test_global_queue_full_rejects_with_busy_and_bounded_retry():
 
 
 async def test_cancel_frees_inflight_slot_so_new_commit_is_accepted():
-    async with running_server(_slow_backend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            # Fill to K=1.
-            await client.append("first")
-            await client.commit()
-            await next_event(client, P.EVT_RESPONSE_CREATED)
-            # Confirm we are at the cap (2nd commit is BUSY).
-            await client.append("blocked")
-            await client.commit()
-            busy = await next_event(client, P.EVT_ERROR)
-            assert busy["error"]["code"] == P.ErrorCode.BUSY.value
+    async with running_server(_slow_backend()) as srv, connected_client(srv) as (client, _hello):
+        # Fill to K=1.
+        await client.append("first")
+        await client.commit()
+        await next_event(client, P.EVT_RESPONSE_CREATED)
+        # Confirm we are at the cap (2nd commit is BUSY).
+        await client.append("blocked")
+        await client.commit()
+        busy = await next_event(client, P.EVT_ERROR)
+        assert busy["error"]["code"] == P.ErrorCode.BUSY.value
 
-            # Cancel the in-flight response → frees the slot.
-            await client.cancel()
-            await next_event(client, P.EVT_RESPONSE_CANCELLED)
+        # Cancel the in-flight response → frees the slot.
+        await client.cancel()
+        await next_event(client, P.EVT_RESPONSE_CANCELLED)
 
-            # A NEW commit is now accepted (no permanent self-DoS into BUSY).
-            await client.append("after cancel")
-            await client.commit()
-            created = await next_event(client, {P.EVT_RESPONSE_CREATED})
-            assert created["type"] == P.EVT_RESPONSE_CREATED
+        # A NEW commit is now accepted (no permanent self-DoS into BUSY).
+        await client.append("after cancel")
+        await client.commit()
+        created = await next_event(client, {P.EVT_RESPONSE_CREATED})
+        assert created["type"] == P.EVT_RESPONSE_CREATED
 
 
 # --- bridge backpressure ----------------------------------------------------
@@ -181,30 +179,29 @@ async def test_bridge_producer_blocks_rather_than_dropping_chunks():
     one is a stalled reader; here the reader is merely slow).
     """
     backend = ToneBackend(segment_count=5, segment_ms=40, segment_delay_ms=0, sample_rate=24000)
-    async with running_server(backend) as srv:
-        async with connected_client(srv) as (client, hello):
-            rate = hello["audio"]["rate"]
-            await client.append("bridge")
-            await client.commit()
+    async with running_server(backend) as srv, connected_client(srv) as (client, hello):
+        rate = hello["audio"]["rate"]
+        await client.append("bridge")
+        await client.commit()
 
-            deltas: list[dict] = []
-            done = None
-            async for ev in client.events():
-                t = ev.get("type")
-                if t == P.EVT_RESPONSE_AUDIO_DELTA:
-                    deltas.append(ev)
-                    # Drain slowly: yield control so the server-side producer
-                    # must wait on the bounded bridge between chunks.
-                    await asyncio.sleep(0.01)
-                elif t == P.EVT_RESPONSE_AUDIO_DONE:
-                    done = ev
-                    break
+        deltas: list[dict] = []
+        done = None
+        async for ev in client.events():
+            t = ev.get("type")
+            if t == P.EVT_RESPONSE_AUDIO_DELTA:
+                deltas.append(ev)
+                # Drain slowly: yield control so the server-side producer
+                # must wait on the bounded bridge between chunks.
+                await asyncio.sleep(0.01)
+            elif t == P.EVT_RESPONSE_AUDIO_DONE:
+                done = ev
+                break
 
-            assert done is not None
-            # seq is gapless and monotonic from 0 — no chunk was dropped.
-            seqs = [d["seq"] for d in deltas]
-            assert seqs == list(range(len(seqs)))
-            # Total PCM equals 5 segments x 40 ms at the advertised rate (the
-            # producer blocked and delivered everything, nothing dropped).
-            expected_samples = 5 * int(rate * 40 / 1000)
-            assert done["duration_ms"] == int(expected_samples * 1000 / rate)
+        assert done is not None
+        # seq is gapless and monotonic from 0 — no chunk was dropped.
+        seqs = [d["seq"] for d in deltas]
+        assert seqs == list(range(len(seqs)))
+        # Total PCM equals 5 segments x 40 ms at the advertised rate (the
+        # producer blocked and delivered everything, nothing dropped).
+        expected_samples = 5 * int(rate * 40 / 1000)
+        assert done["duration_ms"] == int(expected_samples * 1000 / rate)

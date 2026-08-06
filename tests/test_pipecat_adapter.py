@@ -19,15 +19,15 @@ import pytest
 
 pytest.importorskip("pipecat", reason="reference adapter requires the examples extra (pipecat-ai)")
 
-from pipecat.frames.frames import (  # noqa: E402
+from pipecat.frames.frames import (
     ErrorFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
 )
 
-from examples.pipecat_tts_service import LocalTTSService  # noqa: E402
-from tts_server import protocol as P  # noqa: E402
+from examples.pipecat_tts_service import LocalTTSService
+from tts_server import protocol as P
 
 pytestmark = pytest.mark.asyncio
 

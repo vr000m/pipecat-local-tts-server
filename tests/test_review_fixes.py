@@ -59,47 +59,51 @@ class _NoVoiceConceptBackend(ToneBackend):
 async def test_unenumerable_voices_rejects_client_voice_on_update():
     """A backend with voices it cannot enumerate must REJECT a client voice
     rather than forward an unvalidated string to the backend (fail closed)."""
-    async with running_server(_UnenumerableVoicesBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(voice="/etc/passwd.safetensors")
-            err = await next_event(client, "error")
-            assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
+    async with (
+        running_server(_UnenumerableVoicesBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.update(voice="/etc/passwd.safetensors")
+        err = await next_event(client, "error")
+        assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
 
 
 async def test_unenumerable_voices_rejects_client_voice_on_commit():
-    async with running_server(_UnenumerableVoicesBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("hello")
-            await client.commit(voice="evil-repo/id")
-            # Rejected at commit validation — no response is ever created.
-            ev = await next_event(client, {"error", P.EVT_RESPONSE_CREATED})
-            assert ev["type"] == "error"
-            assert ev["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
+    async with (
+        running_server(_UnenumerableVoicesBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.append("hello")
+        await client.commit(voice="evil-repo/id")
+        # Rejected at commit validation — no response is ever created.
+        ev = await next_event(client, {"error", P.EVT_RESPONSE_CREATED})
+        assert ev["type"] == "error"
+        assert ev["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
 
 
 async def test_advertised_voice_set_still_enforces_membership():
     """The happy path is unchanged: an unknown voice against a real advertised
     list is rejected; the advertised voice is accepted."""
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(voice="not-a-real-voice")
-            err = await next_event(client, "error")
-            assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
-    async with running_server(ToneBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(voice="tone")  # the only advertised voice
-            ev = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED, "error"})
-            assert ev["type"] != "error"
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(voice="not-a-real-voice")
+        err = await next_event(client, "error")
+        assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
+    async with running_server(ToneBackend()) as srv, connected_client(srv) as (client, _hello):
+        await client.update(voice="tone")  # the only advertised voice
+        ev = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED, "error"})
+        assert ev["type"] != "error"
 
 
 async def test_no_voice_concept_accepts_any_voice():
     """A backend with no voice concept (count 0) skips validation — a voice is
     accepted rather than spuriously rejected."""
-    async with running_server(_NoVoiceConceptBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(voice="anything")
-            ev = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED, "error"})
-            assert ev["type"] != "error"
+    async with (
+        running_server(_NoVoiceConceptBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.update(voice="anything")
+        ev = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED, "error"})
+        assert ev["type"] != "error"
 
 
 # --- #2: bounded wait_closed -----------------------------------------------
@@ -147,29 +151,35 @@ class _SpeedCheckingBackend(ToneBackend):
 async def test_bad_speed_rejected_as_invalid_config_on_commit():
     """A malformed speed is an INVALID_CONFIG at commit — NOT a BACKEND_ERROR
     (response.failed) raised mid-synthesis after a slot was consumed."""
-    async with running_server(_SpeedCheckingBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.append("speak")
-            await client.commit(extras={"speed": "fast"})
-            ev = await next_event(client, {"error", P.EVT_RESPONSE_CREATED, P.EVT_RESPONSE_FAILED})
-            assert ev["type"] == "error", f"expected INVALID_CONFIG error, got {ev['type']}"
-            assert ev["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
+    async with (
+        running_server(_SpeedCheckingBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.append("speak")
+        await client.commit(extras={"speed": "fast"})
+        ev = await next_event(client, {"error", P.EVT_RESPONSE_CREATED, P.EVT_RESPONSE_FAILED})
+        assert ev["type"] == "error", f"expected INVALID_CONFIG error, got {ev['type']}"
+        assert ev["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
 
 
 async def test_bad_speed_rejected_on_session_update():
-    async with running_server(_SpeedCheckingBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(extras={"speed": "fast"})
-            err = await next_event(client, "error")
-            assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
+    async with (
+        running_server(_SpeedCheckingBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.update(extras={"speed": "fast"})
+        err = await next_event(client, "error")
+        assert err["error"]["code"] == P.ErrorCode.INVALID_CONFIG.value
 
 
 async def test_valid_speed_still_accepted():
-    async with running_server(_SpeedCheckingBackend()) as srv:
-        async with connected_client(srv) as (client, _hello):
-            await client.update(extras={"speed": 1.25})
-            ev = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED, "error"})
-            assert ev["type"] != "error"
+    async with (
+        running_server(_SpeedCheckingBackend()) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.update(extras={"speed": 1.25})
+        ev = await next_event(client, {P.EVT_SESSION_CREATED, P.EVT_SESSION_UPDATED, "error"})
+        assert ev["type"] != "error"
 
 
 async def test_kokoro_validate_extras_unit():

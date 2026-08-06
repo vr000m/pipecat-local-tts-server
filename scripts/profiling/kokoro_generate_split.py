@@ -72,7 +72,7 @@ def _install_hooks(split: _Split):
 
     Model = getattr(kokoro, "Model", None)
     Decoder = getattr(istftnet, "Decoder", None)
-    if Model is None or Decoder is None or not hasattr(Decoder, "__call__"):
+    if Model is None or Decoder is None or not callable(Decoder):
         print("WARNING: kokoro.Model / istftnet.Decoder not found — hooks NOT installed.")
         return None
 

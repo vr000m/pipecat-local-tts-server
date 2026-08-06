@@ -133,7 +133,7 @@ async def run_interleaved(conns: list[Any], turns: int, max_chars: int, timeout:
                 print(f"   {label}: CONNECTION REFUSED")
                 fails += 1
                 continue
-            except (asyncio.TimeoutError, websockets.ConnectionClosed) as exc:
+            except (TimeoutError, websockets.ConnectionClosed) as exc:
                 print(f"   {label}: FAIL ({type(exc).__name__})")
                 fails += 1
                 continue
@@ -181,7 +181,7 @@ async def run_busy_probe(ws: Any, max_chars: int, timeout: float) -> int:
                     frames = 0
                 elif t in ("error", "response.failed"):
                     results.append({"ok": False, "error": msg.get("error", {})})
-    except (asyncio.TimeoutError, websockets.ConnectionClosed) as exc:
+    except (TimeoutError, websockets.ConnectionClosed) as exc:
         print(f"   FAIL ({type(exc).__name__}) waiting for BUSY/done")
         return 1
 

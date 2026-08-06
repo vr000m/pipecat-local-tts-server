@@ -45,7 +45,9 @@ fixed point of the `_f02sine` interpolate round-trip succeed.
 
 ```python
 from mlx_audio.tts.utils import load
+
 m = load("mlx-community/Kokoro-82M-bf16", lazy=False, strict=True)
+
 
 def synth(text):
     try:
@@ -54,11 +56,12 @@ def synth(text):
     except Exception as e:
         print("FAIL", repr(text), "->", e)
 
-synth("GOAL!")          # OK   (length happens to align)
-synth("Hello there.")   # FAIL -> [broadcast_shapes] (1,36600,1) and (1,36900,9)
-synth("Warm up")        # FAIL -> (1,33600,1) and (1,33900,9)
-synth("Hello world.")   # FAIL -> (1,37800,1) and (1,38100,9)
-synth("The cat sat.")   # FAIL -> (1,36600,1) and (1,36900,9)
+
+synth("GOAL!")  # OK   (length happens to align)
+synth("Hello there.")  # FAIL -> [broadcast_shapes] (1,36600,1) and (1,36900,9)
+synth("Warm up")  # FAIL -> (1,33600,1) and (1,33900,9)
+synth("Hello world.")  # FAIL -> (1,37800,1) and (1,38100,9)
+synth("The cat sat.")  # FAIL -> (1,36600,1) and (1,36900,9)
 ```
 
 Every failure is off by exactly **300** samples (one `upsample_scale` hop).
@@ -69,11 +72,13 @@ Every failure is off by exactly **300** samples (one `upsample_scale` hop).
 round-trip:
 
 ```python
-rad_values = interpolate(rad_values.transpose(0, 2, 1),
-                         scale_factor=1 / self.upsample_scale, mode="linear").transpose(0, 2, 1)
+rad_values = interpolate(
+    rad_values.transpose(0, 2, 1), scale_factor=1 / self.upsample_scale, mode="linear"
+).transpose(0, 2, 1)
 phase = mx.cumsum(rad_values, axis=1) * 2 * mx.pi
-phase = interpolate(phase.transpose(0, 2, 1) * self.upsample_scale,
-                    scale_factor=self.upsample_scale, mode="linear").transpose(0, 2, 1)
+phase = interpolate(
+    phase.transpose(0, 2, 1) * self.upsample_scale, scale_factor=self.upsample_scale, mode="linear"
+).transpose(0, 2, 1)
 sines = mx.sin(phase)
 ```
 
@@ -95,7 +100,7 @@ def _f02sine(self, f0_values):
     # extra upsample_scale hop; trim back to the input length so the harmonic
     # branch stays aligned with uv/noise_amp in __call__.
     if sines.shape[1] != f0_values.shape[1]:
-        sines = sines[:, :f0_values.shape[1], :]
+        sines = sines[:, : f0_values.shape[1], :]
     return sines
 ```
 

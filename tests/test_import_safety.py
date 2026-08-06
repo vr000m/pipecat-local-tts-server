@@ -20,7 +20,6 @@ import pytest
 
 from ._helpers import lean_import_offenders
 
-
 # Every public module that must import cleanly on the lean base. ``backends`` is
 # the package; ``backends._stream_util`` ships as a stdlib-only stub in Phase 0.
 _TTS_MODULES = [

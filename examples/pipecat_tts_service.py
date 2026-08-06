@@ -62,8 +62,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from pipecat.frames.frames import (
     CancelFrame,
@@ -118,7 +119,7 @@ class LocalTTSService(TTSService):
         auth_token: str | None = None,
         voice: str | None = None,
         language: str | None = None,
-        params: "LocalTTSService.InputParams | None" = None,
+        params: LocalTTSService.InputParams | None = None,
         sample_rate: int | None = None,
         **kwargs: Any,
     ) -> None:
@@ -216,7 +217,10 @@ class LocalTTSService(TTSService):
         if client is not None:
             try:
                 await client.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
+                # Best-effort teardown: the connection may already be broken
+                # in any of several ways (websockets exceptions, OSError); we
+                # are discarding the client either way.
                 pass
 
     def _update_sample_rate(self, rate: int) -> None:
@@ -289,7 +293,9 @@ class LocalTTSService(TTSService):
             # will carry the now-known id. For prompt barge-in, feed
             # sentence-sized text (see the module docstring's cancellation caveat).
             await client.cancel(response_id=self._current_response_id)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Fire-and-forget cancel over a possibly-broken connection; any
+            # failure here just means there is nothing left to cancel.
             pass
 
     async def _drop_buffer(self) -> None:
@@ -314,7 +320,9 @@ class LocalTTSService(TTSService):
             return
         try:
             await client.clear()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Swallows errors intentionally (see docstring): on a broken
+            # connection the session and its buffer are already gone.
             pass
 
     # --- synthesis ---------------------------------------------------------
@@ -365,7 +373,7 @@ class LocalTTSService(TTSService):
                     extras=self._params.to_extras() or None,
                     event_id=commit_event_id,
                 )
-            except Exception as exc:  # send-side failure before any audio
+            except Exception as exc:  # noqa: BLE001 (send-side failure before any audio)
                 # ``append`` may have reached the server before ``commit`` failed,
                 # leaving uncommitted text in the buffer. Best-effort clear so it
                 # cannot leak into the next utterance; on a broken connection this

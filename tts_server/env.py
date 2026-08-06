@@ -15,7 +15,7 @@ import ipaddress
 import logging
 import os
 import urllib.parse
-from typing import Mapping
+from collections.abc import Mapping
 
 logger = logging.getLogger("tts_server.env")
 

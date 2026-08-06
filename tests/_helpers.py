@@ -49,6 +49,7 @@ def lean_import_offenders(setup_code: str, forbidden=LEAN_FORBIDDEN_ROOTS) -> li
         [sys.executable, "-c", probe],
         capture_output=True,
         text=True,
+        check=False,  # returncode is asserted explicitly below
     )
     assert proc.returncode == 0, f"lean-import probe crashed (rc={proc.returncode}):\n{proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])

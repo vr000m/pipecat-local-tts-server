@@ -30,7 +30,6 @@ The mlx-gated synthesis assertions live in ``tests/test_qwen3_backend.py``.
 
 from __future__ import annotations
 
-
 import pytest
 
 from tts_server.backends import qwen3_tts as Q
