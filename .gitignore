@@ -19,3 +19,4 @@ dist/
 
 # deep-review local state (skein:deep-review)
 /.deep-review/
+/.review-plan
