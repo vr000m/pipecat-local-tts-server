@@ -283,23 +283,30 @@ class _FishStream:
         batch). The real ceiling is derived per-result from
         ``result.prompt["tokens"]`` (the batch's own input-text token count,
         already computed and carried by mlx-audio — see the module docstring's
-        Q5 correction), not re-tokenized here."""
+        Q5 correction), not re-tokenized here. A legitimate zero still uses
+        the real formula (its own ``max(32, ...)`` floor covers that case);
+        only a genuinely *missing* key falls back to the flat default."""
         for result in gen:
             token_count = int(getattr(result, "token_count", 0) or 0)
             prompt = getattr(result, "prompt", None) or {}
             input_text_token_count = prompt.get("tokens")
-            if input_text_token_count:
+            if input_text_token_count is not None:
+                # Covers a legitimate zero (empty-input batch) too: the real
+                # formula's own max(32, ...) floor already prevents that from
+                # collapsing to a degenerate ceiling.
                 ceiling = min(_DEFAULT_MAX_TOKENS, max(32, int(input_text_token_count) * 12))
             else:
-                # Fail SAFE, not closed: if a future mlx-audio version stops
-                # populating prompt["tokens"] (or renames the key), fall back
+                # Fail SAFE, not closed: only reached when prompt["tokens"] is
+                # genuinely absent (future mlx-audio version stops populating
+                # it, or renames the key) — a real zero is handled above via
+                # the real formula's max(32, ...) floor, not here. Falls back
                 # to the flat default rather than collapsing to max(32, 0)==32
                 # — the latter would trip the tripwire on every real batch and
                 # wedge the backend entirely (mid-phase review finding,
                 # 2026-08-06). Matches _introspect_util's own "warn, don't
                 # raise, on upstream drift" philosophy.
                 logger.warning(
-                    "fish_tts: GenerationResult.prompt['tokens'] missing/zero; "
+                    "fish_tts: GenerationResult.prompt['tokens'] missing; "
                     "falling back to the flat %d-token ceiling for this batch",
                     _DEFAULT_MAX_TOKENS,
                 )
