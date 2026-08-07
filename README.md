@@ -469,11 +469,14 @@ not interpreted.
 
 **`instruct` is a separate style-control surface**, not an in-text tag — it is
 a plain string request extra (see the `extras` table row above), validated to
-be a non-empty (after stripping), non-oversized `str`; an oversized or
-non-`str` `instruct` is **rejected**, never silently clamped or truncated
-(unlike `temperature`/`top_p`/`top_k`, where any in-range value is still a
-valid sample knob — a truncated instruction would silently change what the
-model is told to do). **The precedence between `instruct` and an in-text
+be a non-oversized `str`; an oversized or non-`str` `instruct` is **rejected**,
+never silently clamped or truncated (unlike `temperature`/`top_p`/`top_k`,
+where any in-range value is still a valid sample knob — a truncated
+instruction would silently change what the model is told to do). An
+empty-or-whitespace-only `instruct` is **valid**, not rejected — it is
+silently coerced to `None` and omitted from the forwarded extras, the same
+"unset extra" convention as leaving `instruct` out entirely. **The precedence
+between `instruct` and an in-text
 `[tag]` when they conflict is undefined and model-determined** — the server
 performs no arbitration and forwards both unmodified apart from
 whitespace-stripping of `instruct`; this is untested, do not assume one
