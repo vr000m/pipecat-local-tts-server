@@ -432,3 +432,98 @@ against upstream on performance, unlike qwen3 (which had an upstream RTF/TTFB
 claim to contrast against).
 
 Reproduce: `uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts`.
+
+## fish_tts style-control comparison: baseline vs inline `[tag]` vs `instruct` (M4 Max, 2026-08-07)
+
+Three back-to-back `rtf_benchmark.py` runs (same session, same GPU contention
+state throughout — comparable to each other, **not** to the section above's
+2.0–2.2 numbers, which ran under different contention) on the standard
+3-phrase set, probing whether fish's two style-control surfaces (inline
+`[tag]` markup vs the `instruct` kwarg — see *fish_tts capabilities* in the
+top-level README) cost anything over plain text:
+
+| Phrase | baseline (no tag) | inline `[excited]` | `instruct` kwarg (`"excited sports commentary"`) |
+|---|---|---|---|
+| 1-sentence | RTF 1.14–1.16 | RTF 1.17–1.22 | **FAILED** — `FishTruncationError` (132-token ceiling on 11 input tokens) |
+| 2-sentence | RTF 1.22–1.23 | RTF 1.55–1.59 | RTF 1.88–1.91 |
+| 3-seg | RTF 1.28–1.32 | RTF 1.66–1.78 | RTF 1.76–1.80 |
+
+Reading the table:
+- **RTF is the cost axis here, not a pass/fail line** — all three variants
+  are non-streaming (RTF > 1 is baseline fish behavior, not a variant
+  effect). What moves is the *relative* cost between variants.
+- **Baseline stays flat (~1.1–1.3) regardless of phrase length**, confirming
+  RTF is a backend property, not a length effect (matches the per-phrase
+  profile above). Inline-tag and `instruct` both climb with phrase length
+  instead of staying flat — the style-control machinery scales cost with
+  text, baseline doesn't.
+- **Inline `[tag]` is a real but modest tax**: +3–35% over baseline, worse on
+  longer phrases. It also visibly changes generated audio length for the
+  "same" base phrase (a real pacing/expressiveness change, not a free
+  annotation).
+- **`instruct` is the most expensive AND the only one that broke.**
+  Consistently the worst RTF where it worked (1.76–1.91), and it tripped the
+  truncation tripwire outright on the 1-sentence phrase — `instruct`-driven
+  generation produces enough extra tokens to exceed the per-batch ceiling
+  (`max(32, input_tokens*12)`), a ceiling that is *tightest* exactly when
+  text is shortest. So `instruct`'s failure risk is inversely correlated with
+  the phrase length you'd most want it for (short reactive lines). This is
+  the truncation-tripwire fix (same session, commit `d0f2ce1`) doing its job
+  — failing loud instead of silently truncating — not a new bug.
+- **Listening check (user-confirmed):** baseline and inline-`[excited]`-tag
+  samples both sounded good on playback. `instruct`-kwarg samples (2-sentence,
+  3-seg only) were generated but not listening-confirmed.
+
+Practical rule of thumb: prefer inline `[tag]` for lightweight tone steering
+on short/live-reactive commits; reserve `instruct` for longer-form commits
+where its extra token budget has headroom, and expect to eat the RTF cost.
+
+Reproduce:
+```sh
+uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --prepend "[excited] "
+uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
+```
+
+## Cross-backend decision table (all six, 2026-08-07 rollup)
+
+Consolidates every backend's numbers above into one picking guide. RTF/TTFB
+are each backend's own best (least-contended) recorded warm 1-sentence run —
+not all measured in the same session/contention state, so treat cross-row
+RTF deltas as directional, not a controlled A/B (each backend's own
+same-session cross-backend re-run, where one exists, is the more precise
+comparison — see the 2026-07-03 table above).
+
+| Backend | RTF (1-sent, warm) | TTFB | Streaming | Voices | License | Notes |
+|---|---|---|---|---|---|---|
+| `kokoro` | 0.02–0.03 | ~0.08 s | `false`\* | 54 | Apache-2.0 (commercial-safe) | Fastest raw throughput (~37×); widest voice set; default commercial-safe pick |
+| `pocket_tts` | 0.05 | 0.02 s | `true` | 8 | CC-BY-4.0 (commercial OK w/ attribution) | Fastest TTFB; best fit for live streaming |
+| `qwen3_tts` | 0.27–0.28 | 0.12 s | `true` | 9 (CustomVoice) | Apache-2.0 | Fastest *quality-voice* streamer; only sub-realtime backend with voxtral-class voices |
+| `voxtral_tts` | 1.08–1.17 | 0.37–0.38 s | `true` | 20 | **CC-BY-NC (non-commercial)** | Model-floor RTF>1 even pristine; still streams, so partial audio arrives early despite RTF |
+| `dia` | ~2.0–2.4 | segment-level (= first `\n` segment) | `false` | 0 (`[S1]`/`[S2]` in-text) | Apache-2.0 (commercial-safe) | Autoregressive across `\n` — genuinely continuous multi-turn dialogue, at a big RTF cost |
+| `fish_tts` | 1.1–2.5 (varies w/ contention & style-control extras) | = wall_s (whole clip) | `false` | 0 (in-text `<\|speaker:N\|>`) | **Fish Audio Research License — non-commercial only** | Slowest/most memory-hungry (14–18 GB peak); only backend with `instruct`/inline `[tag]` style control |
+
+\* `kokoro` reports `streaming:false` in capabilities, but RTF is low enough
+(~0.03) that whole-clip latency is negligible in practice.
+
+How to read it for a decision:
+- **RTF < 1 = live-viable** (kokoro, pocket, qwen3). RTF > 1 means you wait
+  longer than the clip is long — fine for batch/offline generation, unusable
+  for live commentary or a conversational turn.
+- **Streaming vs non-streaming changes what "TTFB" means.** kokoro / pocket /
+  qwen3 / voxtral start delivering audio before the whole utterance is done.
+  dia and fish don't — TTFB *is* wall time, so a 6 s clip is a 6–15 s wait
+  before any sound, regardless of RTF.
+- **License gates commercial use before performance does.** kokoro, pocket,
+  dia are commercial-safe; voxtral and fish are not (fish is the stricter of
+  the two — research-only, not even CC-BY-NC).
+- **Pick by use case:**
+  - Live commentary / conversational turn-taking → `pocket_tts` (TTFB) or
+    `kokoro` (throughput), both commercial-safe.
+  - Best quality voice still sub-realtime → `qwen3_tts`.
+  - Multi-turn dialogue needing cross-turn continuity → `dia`, if the RTF~2
+    wait is acceptable.
+  - Expressive/stylized narration, batch-generated (not live), non-commercial
+    → `fish_tts`; prefer its inline `[tag]` over `instruct` for the RTF/
+    reliability trade (see the style-control comparison above).
+  - Anything CC-BY-NC-tolerant with best raw voice quality regardless of
+    speed → `voxtral_tts`.
