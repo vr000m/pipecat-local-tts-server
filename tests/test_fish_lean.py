@@ -449,6 +449,34 @@ async def test_truncated_segment_fails_response_not_silent_success():
     await stream.wait_closed(timeout=5.0)
 
 
+@pytest.mark.skipif(
+    not hasattr(F, "FishTruncationError"),
+    reason="Q5 gate decided the truncation tripwire IS required (Findings) — "
+    "skip only if fish_tts.py has not yet defined FishTruncationError",
+)
+async def test_truncation_after_earlier_streamed_batch_fails_response():
+    """A generate() call with >=2 GenerationResults (multi-batch
+    ``<|speaker:N|>`` input): batch 1 is under-ceiling and already streamed as
+    a ``delta`` event when batch 2 hits the ceiling. The response must still
+    FAIL (raise) — partial audio already sent to the client is not a license
+    to report a clean completion for the rest."""
+    backend, spy, _stream = await _open_spy_stream()
+    spy.results = (
+        _SegRes(token_count=50, input_tokens=6),  # under short-input ceiling(72) -> streamed
+        _SegRes(token_count=100, input_tokens=6),  # over ceiling(72) -> must raise
+    )
+    stream = await backend.open_stream(voice=None, language=None, extras=None)
+    stream._text = _SHORT_INPUT
+
+    events = []
+    with pytest.raises(F.FishTruncationError, match="ceiling"):
+        async for ev in stream.events():
+            events.append(ev)
+    assert any(ev.kind == "delta" for ev in events)
+    assert all(ev.kind != "completed" for ev in events)
+    await stream.wait_closed(timeout=5.0)
+
+
 # --- _introspect_util.py: model-agnostic unit coverage (net-new shared helper) -
 #
 # No test exercised the private ``_verify_generate_signature`` before this
