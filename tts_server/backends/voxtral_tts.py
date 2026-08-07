@@ -70,6 +70,7 @@ from ._extras_util import (
     coerce_temperature,
     coerce_top_k,
     coerce_top_p,
+    merge_extras,
     validate_extras,
 )
 from ._stream_util import stream_generate
@@ -423,12 +424,7 @@ class VoxtralBackend:
         # accepted for protocol uniformity but Voxtral has no ``lang_code``
         # kwarg (language is encoded in the voice preset), so it is not
         # forwarded to ``generate()``.
-        effective: dict[str, Any] = {}
-        if extras:
-            for key, coerce in _EXTRA_COERCERS.items():
-                raw = extras.get(key)
-                if raw is not None:
-                    effective[key] = coerce(raw)
+        effective = merge_extras(_EXTRA_COERCERS, extras)
         return _VoxtralStream(
             model=self._loaded_model,
             voice=voice,

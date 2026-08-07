@@ -42,6 +42,7 @@ from ._extras_util import (
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
     coerce_temperature,
+    merge_extras,
     validate_extras,
 )
 from ._stream_util import stream_generate
@@ -305,12 +306,7 @@ class PocketBackend:
         # ``frames_after_eos`` can never reach ``generate()`` because only keys in
         # ``_EXTRA_COERCERS`` are copied. ``language`` is accepted for protocol
         # uniformity but Pocket has no ``lang_code`` kwarg, so it is not forwarded.
-        effective: dict[str, Any] = {}
-        if extras:
-            for key, coerce in _EXTRA_COERCERS.items():
-                raw = extras.get(key)
-                if raw is not None:
-                    effective[key] = coerce(raw)
+        effective = merge_extras(_EXTRA_COERCERS, extras)
         return _PocketStream(
             model=self._loaded_model,
             voice=voice,

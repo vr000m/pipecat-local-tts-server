@@ -141,6 +141,40 @@ def coerce_instruct(raw: Any, max_len: int) -> str | None:
     return stripped
 
 
+def merge_extras(
+    coercers: Mapping[str, Callable[[Any], Any]], extras: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Shared ``open_stream`` filter/coerce loop: walk ``extras`` through the
+    backend's own ``coercers`` allowlist (the same dict ``validate_extras``
+    walks) and return only the coerced, forwardable values.
+
+    Two independent ``None``-skip guards, for two different reasons:
+
+    - A ``None`` (or absent) *raw* value means the client did not send that
+      extra — skipped before the coercer ever runs, same as
+      ``validate_extras``.
+    - A coercer that itself *returns* ``None`` (today, only
+      ``coerce_instruct`` — a valid-but-empty-after-strip string) means "this
+      extra ended up unset after validation" — its result is skipped too,
+      rather than forwarding ``effective[key] = None`` into ``generate()``.
+      This guard is a no-op for the purely-numeric coercers elsewhere
+      (``coerce_temperature``/``coerce_top_k``/``coerce_top_p`` never return
+      ``None`` — they always return a forwardable value or raise), so sharing
+      it here costs those backends nothing.
+    """
+    effective: dict[str, Any] = {}
+    if not extras:
+        return effective
+    for key, coerce in coercers.items():
+        raw = extras.get(key)
+        if raw is None:
+            continue
+        coerced = coerce(raw)
+        if coerced is not None:
+            effective[key] = coerced
+    return effective
+
+
 def validate_extras(
     coercers: Mapping[str, Callable[[Any], Any]], extras: Mapping[str, Any]
 ) -> str | None:

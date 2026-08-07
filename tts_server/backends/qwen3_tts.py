@@ -60,17 +60,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from ..backend import AudioEvent, TTSStream
+from ..backend import TTSStream
 from ._extras_util import (
     coerce_temperature,
     coerce_top_k,
     coerce_top_p,
+    merge_extras,
     validate_extras,
 )
-from ._stream_util import stream_generate
+from ._segment_stream import SegmentStream
+from ._truncation_util import check_per_segment_ceiling
 
 logger = logging.getLogger("tts_server.backends.qwen3_tts")
 
@@ -201,7 +202,7 @@ class Qwen3TruncationError(RuntimeError):
     response FAILS instead of completing with missing audio."""
 
 
-class _Qwen3Stream:
+class _Qwen3Stream(SegmentStream):
     """Adapts one Qwen3-TTS utterance to the ``TTSStream`` protocol.
 
     Structurally identical to ``_VoxtralStream`` (the streaming seam is
@@ -209,9 +210,10 @@ class _Qwen3Stream:
     ``events()`` drives the shared bridge and yields a ``delta`` per native
     sub-segment chunk, then a ``completed`` on generator exhaustion;
     ``cancel()`` sets the bridge's cancel event so the generator breaks out and
-    releases the Metal lock. The only difference is ``_gen_factory`` — it
-    builds the streaming ``generate()`` with qwen3's kwargs: the resolved
-    voice (or omitted, Base path) and the ``lang_code`` mapping.
+    releases the Metal lock — all now on the shared ``SegmentStream`` base.
+    The only difference is ``_gen_factory`` — it builds the streaming
+    ``generate()`` with qwen3's kwargs: the resolved voice (or omitted, Base
+    path) and the ``lang_code`` mapping.
     """
 
     def __init__(
@@ -223,6 +225,7 @@ class _Qwen3Stream:
         extras: dict[str, Any],
         metal_lock: threading.Lock,
     ) -> None:
+        super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         # ALREADY RESOLVED by ``open_stream`` (default injected / None for the
         # Base omit-path) — the stream never re-derives voice policy.
@@ -230,36 +233,6 @@ class _Qwen3Stream:
         self._lang_code = lang_code
         # Pre-coerced effective extras (only advertised keys, values validated).
         self._extras = extras
-        self._metal_lock = metal_lock
-        self._text = ""
-        # Bridge break-out signal (see _KokoroStream for the cancel-vs-exhaustion
-        # distinction the two flags encode).
-        self._cancel = threading.Event()
-        self._external_cancel = False
-        self._worker_done = threading.Event()
-        self._worker_started = False
-
-    async def feed(self, text: str) -> None:
-        if self._external_cancel:
-            return
-        self._text += text
-
-    async def end(self) -> None:
-        # Non-blocking end-of-input marker (R4 steady-stream contract).
-        return None
-
-    async def cancel(self) -> None:
-        self._external_cancel = True
-        self._cancel.set()
-
-    async def wait_closed(self, timeout: float | None = None) -> None:
-        """Block (up to ``timeout``) until the worker has exited and released the
-        Metal lock. See ``_KokoroStream.wait_closed`` for the full rationale —
-        the server awaits this before freeing a cancelled commit's slot."""
-        if not self._worker_started:
-            return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole
@@ -302,51 +275,22 @@ class _Qwen3Stream:
         # run drains to a clean ``completed`` and the cut-off audio reads as
         # a client-side playback bug. Pass-through wrapper; the bridge
         # contract (yields GenerationResult with ``.audio``) is untouched.
-        segment_idx: Any = None
-        segment_total = 0
-        for result in gen:
-            idx = getattr(result, "segment_idx", None)
-            if idx != segment_idx:
-                self._check_truncation(segment_total)
-                segment_idx = idx
-                segment_total = 0
-            segment_total += int(getattr(result, "token_count", 0) or 0)
-            yield result
-        self._check_truncation(segment_total)
+        # Delegates to the shared per-segment checker
+        # (``_truncation_util.check_per_segment_ceiling``).
+        return check_per_segment_ceiling(
+            gen,
+            ceiling=_MAX_TOKENS_CEILING,
+            make_error=self._make_truncation_error,
+        )
 
-    def _check_truncation(self, segment_total: int) -> None:
-        if segment_total >= _MAX_TOKENS_CEILING:
-            raise Qwen3TruncationError(
-                f"qwen3_tts: a segment hit the {_MAX_TOKENS_CEILING}-token "
-                f"single-generation ceiling ({segment_total} tokens, "
-                f"{len(self._text)} chars in) — audio was silently truncated "
-                "mid-utterance; failing the response instead of reporting a "
-                "clean completion (commit shorter text)"
-            )
-
-    async def events(self) -> AsyncGenerator[AudioEvent, None]:
-        if self._external_cancel:
-            return
-        loop = asyncio.get_running_loop()
-        self._worker_started = True
-        # Shared bridge owns Metal-lock acquisition for the whole drain, float32
-        # -> int16-LE PCM conversion (R3), bounded backpressure, and EOF on
-        # generator exhaustion (NOT ``.is_final_chunk`` — qwen3 sets it, the
-        # bridge ignores it by design).
-        async for pcm in stream_generate(
-            self._gen_factory,
-            loop=loop,
-            metal_lock=self._metal_lock,
-            cancel=self._cancel,
-            maxsize=_BRIDGE_MAXSIZE,
-            worker_done=self._worker_done,
-        ):
-            if self._external_cancel:
-                return
-            yield AudioEvent(kind="delta", pcm=pcm)
-        if self._external_cancel:
-            return
-        yield AudioEvent(kind="completed", pcm=b"")
+    def _make_truncation_error(self, segment_total: int) -> Qwen3TruncationError:
+        return Qwen3TruncationError(
+            f"qwen3_tts: a segment hit the {_MAX_TOKENS_CEILING}-token "
+            f"single-generation ceiling ({segment_total} tokens, "
+            f"{len(self._text)} chars in) — audio was silently truncated "
+            "mid-utterance; failing the response instead of reporting a "
+            "clean completion (commit shorter text)"
+        )
 
 
 class Qwen3Backend:
@@ -605,12 +549,7 @@ class Qwen3Backend:
         # instruct/speed/split_pattern/max_tokens/streaming_context_size/
         # repetition_penalty) provably unreachable — ref_audio+ref_text would
         # silently activate voice cloning.
-        effective: dict[str, Any] = {}
-        if extras:
-            for key, coerce in _EXTRA_COERCERS.items():
-                raw = extras.get(key)
-                if raw is not None:
-                    effective[key] = coerce(raw)
+        effective = merge_extras(_EXTRA_COERCERS, extras)
         # Voice resolution (gate-decided): a client voice (pre-validated by the
         # server against exact-case ``voices()``) passes through; None →
         # inject the default when speakers exist (CustomVoice raises without a

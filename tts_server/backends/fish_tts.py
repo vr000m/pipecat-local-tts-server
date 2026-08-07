@@ -61,19 +61,20 @@ import asyncio
 import functools
 import logging
 import threading
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from ..backend import AudioEvent, TTSStream
+from ..backend import TTSStream
 from ._extras_util import (
     coerce_instruct,
     coerce_temperature,
     coerce_top_k,
     coerce_top_p,
+    merge_extras,
     validate_extras,
 )
 from ._introspect_util import verify_generate_signature
-from ._stream_util import stream_generate
+from ._segment_stream import SegmentStream
+from ._truncation_util import check_per_result_ceiling
 
 logger = logging.getLogger("tts_server.backends.fish_tts")
 
@@ -85,6 +86,10 @@ DEFAULT_FISH_MODEL = "mlx-community/fish-audio-s2-pro"
 # ``_extras_util.py`` constant (see ``coerce_instruct``'s docstring): the model
 # itself tolerates at least 1320 chars without erroring (Phase 0 Q4), so 500 is
 # a product/DoS-shaped choice with real headroom, not a crash-avoidance number.
+# NOTE: numerically equal to ``_MAX_TEXT_CHARS`` below — COINCIDENTAL, not
+# intentional coupling: this bound is a DoS/product cap on ``instruct`` length,
+# unrelated to ``_MAX_TEXT_CHARS``'s token-ceiling calibration. Do not derive
+# one from the other.
 _INSTRUCT_MAX_LEN = 500
 
 # Params Fish's generate() accepts that this backend MUST NEVER forward:
@@ -105,6 +110,10 @@ _FORBIDDEN_GENERATE_KWARGS = ("ref_audio", "ref_text")
 # so a cap chosen close to 954 would carry little real margin (mid-phase
 # review finding, 2026-08-06). Set well below the estimated ~700-char onset
 # instead, so ordinary in-spec commits stay clear of the tripwire.
+# NOTE: numerically equal to ``_INSTRUCT_MAX_LEN`` above — COINCIDENTAL, not
+# intentional coupling: this bound is calibrated against the per-batch
+# token-ceiling tripwire (see the module docstring's Q5 correction), unrelated
+# to ``_INSTRUCT_MAX_LEN``'s DoS/product cap. Do not derive one from the other.
 _IDEAL_WORDS = 40
 _MAX_TEXT_CHARS = 500
 
@@ -200,13 +209,15 @@ class FishTruncationError(RuntimeError):
     bug this tripwire exists to prevent."""
 
 
-class _FishStream:
+class _FishStream(SegmentStream):
     """Adapts one Fish utterance to the ``TTSStream`` protocol.
 
     Structurally identical to ``_DiaStream`` (the streaming seam is
     backend-agnostic; Fish is segment-level, so it drains a plain
     ``model.generate(text, stream=False, **extras)`` generator through the
-    shared bridge), with the same TWO departures dia established plus a THIRD:
+    shared bridge — ``feed``/``end``/``cancel``/``wait_closed``/``events`` all
+    live on the shared ``SegmentStream`` base now), with the same TWO
+    departures dia established plus a THIRD:
 
     1. **No ``voice`` parameter** — even stronger than dia's, since Fish's
        ``generate()`` discards ``voice`` UNCONDITIONALLY (``del voice, ...``),
@@ -225,44 +236,9 @@ class _FishStream:
         extras: dict[str, Any],
         metal_lock: threading.Lock,
     ) -> None:
+        super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         self._extras = extras  # pre-coerced advertised extras only
-        self._metal_lock = metal_lock
-        self._text = ""
-        self._cancel = threading.Event()
-        self._external_cancel = False
-        # Set by the bridge worker as its final act (lock released + EOF
-        # enqueued). ``wait_closed()`` awaits it so the server can hold a
-        # commit's scheduler slot until the worker has truly exited and the
-        # Metal lock is free — Fish batches can be long (Phase 0 Q2: RTF
-        # ~1.6-1.7), so this is load-bearing for the cancel/Metal-lock
-        # semantics (mirrors dia.py's rationale).
-        self._worker_done = threading.Event()
-        self._worker_started = False
-
-    async def feed(self, text: str) -> None:
-        if self._external_cancel:
-            return
-        self._text += text
-
-    async def end(self) -> None:
-        # Non-blocking end-of-input marker; synthesis runs lazily in events().
-        return None
-
-    async def cancel(self) -> None:
-        self._external_cancel = True
-        self._cancel.set()
-
-    async def wait_closed(self, timeout: float | None = None) -> None:
-        """Block (up to ``timeout`` seconds) until the synthesis worker has
-        exited and released the Metal lock. See ``dia.py``'s ``_DiaStream.
-        wait_closed`` for the full Metal-lock-hold rationale — Fish batches can
-        be long, so a cancelled commit's ``generate()`` runs to its yield
-        boundary before the lock frees."""
-        if not self._worker_started:
-            return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole drain
@@ -274,74 +250,63 @@ class _FishStream:
         gen = self._model.generate(self._text, stream=False, **self._extras)
         return self._check_truncation(gen)
 
+    def _batch_ceiling(self, result: Any) -> int:
+        """Derive the real per-batch ceiling from ``result.prompt["tokens"]``
+        (the batch's own input-text token count, already computed and carried
+        by mlx-audio — see the module docstring's Q5 correction), not
+        re-tokenized here. A legitimate zero still uses the real formula (its
+        own ``max(32, ...)`` floor covers that case); only a genuinely
+        *missing* key falls back to the flat default."""
+        prompt = getattr(result, "prompt", None) or {}
+        input_text_token_count = prompt.get("tokens")
+        if input_text_token_count is not None:
+            # Covers a legitimate zero (empty-input batch) too: the real
+            # formula's own max(32, ...) floor already prevents that from
+            # collapsing to a degenerate ceiling.
+            return min(_DEFAULT_MAX_TOKENS, max(32, int(input_text_token_count) * 12))
+        # Fail SAFE, not closed: only reached when prompt["tokens"] is
+        # genuinely absent (future mlx-audio version stops populating it, or
+        # renames the key) — a real zero is handled above via the real
+        # formula's max(32, ...) floor, not here. Falls back to the flat
+        # default rather than collapsing to max(32, 0)==32 — the latter would
+        # trip the tripwire on every real batch and wedge the backend
+        # entirely (mid-phase review finding, 2026-08-06). Matches
+        # _introspect_util's own "warn, don't raise, on upstream drift"
+        # philosophy.
+        logger.warning(
+            "fish_tts: GenerationResult.prompt['tokens'] missing; "
+            "falling back to the flat %d-token ceiling for this batch",
+            _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+
+    def _make_truncation_error(
+        self, result: Any, token_count: int, ceiling: int
+    ) -> FishTruncationError:
+        prompt = getattr(result, "prompt", None) or {}
+        input_text_token_count = prompt.get("tokens")
+        return FishTruncationError(
+            f"fish_tts: a batch hit its {ceiling}-token per-batch "
+            f"ceiling (token_count={token_count}, "
+            f"input_text_token_count={input_text_token_count}, "
+            f"{len(self._text)} chars committed) — audio was silently "
+            "truncated mid-utterance; failing the response instead of "
+            "reporting a clean completion (commit shorter text)"
+        )
+
     def _check_truncation(self, gen):
         """Pass-through wrapper: yields each ``GenerationResult`` unchanged,
         raising ``FishTruncationError`` if a batch hit the real per-batch
         ceiling. ``stream=False`` means exactly ONE ``GenerationResult`` is
         yielded per batch (unlike qwen3's sub-segment streaming, no
         cross-chunk accumulation is needed here — each result IS one whole
-        batch). The real ceiling is derived per-result from
-        ``result.prompt["tokens"]`` (the batch's own input-text token count,
-        already computed and carried by mlx-audio — see the module docstring's
-        Q5 correction), not re-tokenized here. A legitimate zero still uses
-        the real formula (its own ``max(32, ...)`` floor covers that case);
-        only a genuinely *missing* key falls back to the flat default."""
-        for result in gen:
-            token_count = int(getattr(result, "token_count", 0) or 0)
-            prompt = getattr(result, "prompt", None) or {}
-            input_text_token_count = prompt.get("tokens")
-            if input_text_token_count is not None:
-                # Covers a legitimate zero (empty-input batch) too: the real
-                # formula's own max(32, ...) floor already prevents that from
-                # collapsing to a degenerate ceiling.
-                ceiling = min(_DEFAULT_MAX_TOKENS, max(32, int(input_text_token_count) * 12))
-            else:
-                # Fail SAFE, not closed: only reached when prompt["tokens"] is
-                # genuinely absent (future mlx-audio version stops populating
-                # it, or renames the key) — a real zero is handled above via
-                # the real formula's max(32, ...) floor, not here. Falls back
-                # to the flat default rather than collapsing to max(32, 0)==32
-                # — the latter would trip the tripwire on every real batch and
-                # wedge the backend entirely (mid-phase review finding,
-                # 2026-08-06). Matches _introspect_util's own "warn, don't
-                # raise, on upstream drift" philosophy.
-                logger.warning(
-                    "fish_tts: GenerationResult.prompt['tokens'] missing; "
-                    "falling back to the flat %d-token ceiling for this batch",
-                    _DEFAULT_MAX_TOKENS,
-                )
-                ceiling = _DEFAULT_MAX_TOKENS
-            if token_count >= ceiling:
-                raise FishTruncationError(
-                    f"fish_tts: a batch hit its {ceiling}-token per-batch "
-                    f"ceiling (token_count={token_count}, "
-                    f"input_text_token_count={input_text_token_count}, "
-                    f"{len(self._text)} chars committed) — audio was silently "
-                    "truncated mid-utterance; failing the response instead of "
-                    "reporting a clean completion (commit shorter text)"
-                )
-            yield result
-
-    async def events(self) -> AsyncGenerator[AudioEvent, None]:
-        if self._external_cancel:
-            return
-        loop = asyncio.get_running_loop()
-        self._worker_started = True
-        async for pcm in stream_generate(
-            self._gen_factory,
-            loop=loop,
-            metal_lock=self._metal_lock,
-            cancel=self._cancel,
-            maxsize=_BRIDGE_MAXSIZE,
-            worker_done=self._worker_done,
-        ):
-            if self._external_cancel:
-                return
-            yield AudioEvent(kind="delta", pcm=pcm)
-        if self._external_cancel:
-            return
-        # EOF from generator exhaustion (NOT ``.is_final_chunk``).
-        yield AudioEvent(kind="completed", pcm=b"")
+        batch), so this delegates straight to the shared per-result checker
+        (``_truncation_util.check_per_result_ceiling``)."""
+        return check_per_result_ceiling(
+            gen,
+            ceiling_fn=self._batch_ceiling,
+            make_error=self._make_truncation_error,
+        )
 
 
 class FishBackend:
@@ -478,23 +443,11 @@ class FishBackend:
         # temperature/top_k/top_p/instruct survive, each coerced.
         # ``ref_audio``/``ref_text`` can never reach ``generate()`` because
         # only keys in ``_EXTRA_COERCERS`` are copied.
-        effective: dict[str, Any] = {}
-        if extras:
-            for key, coerce in _EXTRA_COERCERS.items():
-                raw = extras.get(key)
-                if raw is None:
-                    continue
-                coerced = coerce(raw)
-                # ``coerce_instruct`` alone may return ``None`` (a
-                # valid-but-empty-after-strip string) — skip forwarding it
-                # rather than assigning ``effective[key] = None`` (unlike the
-                # numeric coercers, which always return a forwardable value
-                # or raise). ``validate_extras`` only skips a ``None`` RAW
-                # value before calling the coercer, not a ``None`` the
-                # coercer itself produces, so this is fish's own
-                # responsibility.
-                if coerced is not None:
-                    effective[key] = coerced
+        # ``merge_extras`` handles both None-skip guards: a missing raw value,
+        # and ``coerce_instruct``'s own None-on-valid-but-empty-string result
+        # (see its docstring in ``_extras_util``) — fish is the first backend
+        # to actually exercise the second guard.
+        effective = merge_extras(_EXTRA_COERCERS, extras)
         return _FishStream(
             model=self._loaded_model,
             extras=effective,
