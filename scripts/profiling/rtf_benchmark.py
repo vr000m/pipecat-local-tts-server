@@ -22,15 +22,19 @@ instances, reconnect-test loops). This script prints any it detects up front.
 Usage:
   uv run --extra kokoro python scripts/profiling/rtf_benchmark.py --backend kokoro --voice af_heart
   uv run python scripts/profiling/rtf_benchmark.py --backend tone
+  uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --save-audio /tmp/fish_samples
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import subprocess
 import sys
 import time
+import wave
+from pathlib import Path
 
 from tts_server.backends import make_backend
 
@@ -48,6 +52,12 @@ PHRASES = [
         "Goal!\nThe home team scores in the final minute.\nThe keeper had no chance on that strike.",
     ),
 ]
+
+
+def _slug(label: str) -> str:
+    """Filesystem-safe stem for a phrase label, e.g. "1-sentence (live)" ->
+    "1-sentence-live"."""
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
 
 
 def _other_gpu_procs() -> list[str]:
@@ -70,11 +80,18 @@ def _other_gpu_procs() -> list[str]:
     return hits
 
 
-async def _synth_once(backend, text: str, voice: str | None) -> tuple[float, float, float]:
-    """Return (audio_s, ttfb_s, wall_s) for one full utterance."""
+async def _synth_once(
+    backend, text: str, voice: str | None, *, collect_audio: bool = False
+) -> tuple[float, float, float, bytes]:
+    """Return (audio_s, ttfb_s, wall_s, pcm_bytes) for one full utterance.
+
+    ``pcm_bytes`` is empty unless ``collect_audio`` is set — audio is
+    discarded by default so the RTF-only path (the common case) pays no
+    extra memory/copy cost."""
     stream = await backend.open_stream(voice=voice)
     await stream.feed(text)
     await stream.end()
+    pcm = bytearray() if collect_audio else None
     pcm_bytes = 0
     ttfb = None
     t0 = time.perf_counter()
@@ -83,11 +100,22 @@ async def _synth_once(backend, text: str, voice: str | None) -> tuple[float, flo
             if ttfb is None:
                 ttfb = time.perf_counter() - t0
             pcm_bytes += len(ev.pcm)
+            if pcm is not None:
+                pcm.extend(ev.pcm)
         elif ev.kind == "completed":
             break
     wall = time.perf_counter() - t0
     audio_s = pcm_bytes / 2 / backend.sample_rate  # int16 mono
-    return audio_s, (ttfb if ttfb is not None else wall), wall
+    return audio_s, (ttfb if ttfb is not None else wall), wall, bytes(pcm) if pcm else b""
+
+
+def _write_wav(path: Path, pcm: bytes, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)  # int16 mono, matches _synth_once's audio_s math
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
 
 
 async def main() -> int:
@@ -96,6 +124,13 @@ async def main() -> int:
     ap.add_argument("--model", default=None, help="backend model override (else backend default)")
     ap.add_argument("--voice", default=None, help="voice name (e.g. af_heart for kokoro)")
     ap.add_argument("--warm", type=int, default=3, help="warm repeats per phrase")
+    ap.add_argument(
+        "--save-audio",
+        default=None,
+        metavar="DIR",
+        help="write one .wav per phrase (final warm run only) to DIR for a listen-back check "
+        "alongside the RTF numbers; omit to keep the default RTF-only, no-disk-write behavior",
+    )
     args = ap.parse_args()
 
     others = _other_gpu_procs()
@@ -116,15 +151,28 @@ async def main() -> int:
     )
     print(f"start() [cold load + warmup]: {time.perf_counter() - t0:.1f}s\n")
 
+    save_dir = Path(args.save_audio) if args.save_audio else None
+
     hdr = f"{'phrase':22} {'run':8} {'audio_s':>8} {'ttfb_s':>8} {'wall_s':>8} {'RTF':>7}"
     print(hdr)
     print("-" * len(hdr))
     for label, text in PHRASES:
         for i in range(args.warm + 1):
-            audio_s, ttfb, wall = await _synth_once(backend, text, args.voice)
+            # Only the final warm run's audio is worth keeping — earlier
+            # runs (esp. warm1st) are compile/cache outliers per the
+            # profiling README's own convention, and collecting audio on
+            # every run would multiply the pcm-copy cost for no benefit.
+            collect = save_dir is not None and i == args.warm
+            audio_s, ttfb, wall, pcm = await _synth_once(
+                backend, text, args.voice, collect_audio=collect
+            )
             rtf = wall / audio_s if audio_s else float("nan")
             tag = "warm1st" if i == 0 else f"warm{i}"
             print(f"{label:22} {tag:8} {audio_s:8.2f} {ttfb:8.2f} {wall:8.2f} {rtf:7.2f}")
+            if collect and pcm:
+                out = save_dir / f"{args.backend}_{_slug(label)}.wav"
+                _write_wav(out, pcm, backend.sample_rate)
+                print(f"    -> saved {out}")
 
     await backend.close()
     print("\nRTF < ~1 = faster than realtime (live-viable); RTF > 1 = slower (live-unusable).")
