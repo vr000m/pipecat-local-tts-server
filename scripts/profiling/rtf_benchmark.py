@@ -23,12 +23,17 @@ Usage:
   uv run --extra kokoro python scripts/profiling/rtf_benchmark.py --backend kokoro --voice af_heart
   uv run python scripts/profiling/rtf_benchmark.py --backend tone
   uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --save-audio /tmp/fish_samples
+  # inline [tag] variant (prepended to every phrase's text):
+  uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --prepend "[excited] "
+  # extras-kwarg variant (any backend's advertised extras, e.g. fish's instruct):
+  uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import re
 import subprocess
 import sys
@@ -81,14 +86,23 @@ def _other_gpu_procs() -> list[str]:
 
 
 async def _synth_once(
-    backend, text: str, voice: str | None, *, collect_audio: bool = False
+    backend,
+    text: str,
+    voice: str | None,
+    *,
+    extras: dict | None = None,
+    collect_audio: bool = False,
 ) -> tuple[float, float, float, bytes]:
     """Return (audio_s, ttfb_s, wall_s, pcm_bytes) for one full utterance.
 
     ``pcm_bytes`` is empty unless ``collect_audio`` is set — audio is
     discarded by default so the RTF-only path (the common case) pays no
-    extra memory/copy cost."""
-    stream = await backend.open_stream(voice=voice)
+    extra memory/copy cost. ``extras`` is forwarded to ``open_stream``
+    unchanged (every backend's ``open_stream`` accepts it; a backend that
+    doesn't advertise a given key silently drops it, same as the server
+    path) — lets a caller compare, e.g., fish's ``instruct`` kwarg against
+    plain/inline-tag text on identical phrases."""
+    stream = await backend.open_stream(voice=voice, extras=extras)
     await stream.feed(text)
     await stream.end()
     pcm = bytearray() if collect_audio else None
@@ -131,7 +145,23 @@ async def main() -> int:
         help="write one .wav per phrase (final warm run only) to DIR for a listen-back check "
         "alongside the RTF numbers; omit to keep the default RTF-only, no-disk-write behavior",
     )
+    ap.add_argument(
+        "--prepend",
+        default="",
+        help="prepend this string to every PHRASES text before synthesis, e.g. an inline "
+        "'[excited] ' style/emotion tag — lets a run be compared against a plain-text run "
+        "on identical base phrases",
+    )
+    ap.add_argument(
+        "--extras",
+        default=None,
+        metavar="JSON",
+        help="JSON object forwarded to open_stream(extras=...) unchanged, e.g. "
+        '\'{"instruct": "excited sports commentary"}\' for fish_tts — a backend that does '
+        "not advertise a given key silently drops it",
+    )
     args = ap.parse_args()
+    extras = json.loads(args.extras) if args.extras else None
 
     others = _other_gpu_procs()
     if others:
@@ -149,7 +179,12 @@ async def main() -> int:
     print(
         f"backend={args.backend} model={getattr(backend, 'model', None)} rate={backend.sample_rate} Hz"
     )
-    print(f"start() [cold load + warmup]: {time.perf_counter() - t0:.1f}s\n")
+    print(f"start() [cold load + warmup]: {time.perf_counter() - t0:.1f}s")
+    if args.prepend:
+        print(f"prepend: {args.prepend!r}")
+    if extras:
+        print(f"extras: {extras!r}")
+    print()
 
     save_dir = Path(args.save_audio) if args.save_audio else None
 
@@ -157,17 +192,25 @@ async def main() -> int:
     print(hdr)
     print("-" * len(hdr))
     for label, text in PHRASES:
+        text = args.prepend + text
         for i in range(args.warm + 1):
             # Only the final warm run's audio is worth keeping — earlier
             # runs (esp. warm1st) are compile/cache outliers per the
             # profiling README's own convention, and collecting audio on
             # every run would multiply the pcm-copy cost for no benefit.
             collect = save_dir is not None and i == args.warm
-            audio_s, ttfb, wall, pcm = await _synth_once(
-                backend, text, args.voice, collect_audio=collect
-            )
-            rtf = wall / audio_s if audio_s else float("nan")
             tag = "warm1st" if i == 0 else f"warm{i}"
+            try:
+                audio_s, ttfb, wall, pcm = await _synth_once(
+                    backend, text, args.voice, extras=extras, collect_audio=collect
+                )
+            except Exception as exc:  # noqa: BLE001
+                # A backend-level failure (e.g. fish_tts's truncation tripwire)
+                # is itself a result worth seeing next to the other phrases'
+                # numbers, not a reason to abort the whole comparison run.
+                print(f"{label:22} {tag:8} FAILED: {exc}")
+                continue
+            rtf = wall / audio_s if audio_s else float("nan")
             print(f"{label:22} {tag:8} {audio_s:8.2f} {ttfb:8.2f} {wall:8.2f} {rtf:7.2f}")
             if collect and pcm:
                 out = save_dir / f"{args.backend}_{_slug(label)}.wav"
