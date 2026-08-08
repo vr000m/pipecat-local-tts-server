@@ -477,6 +477,138 @@ async def test_truncation_after_earlier_streamed_batch_fails_response():
     await stream.wait_closed(timeout=5.0)
 
 
+# --- L4: _batch_ceiling non-Mapping / missing-key prompt fallback ---------------
+
+
+class _PromptRes:
+    """Minimal ``GenerationResult`` stand-in exposing only ``.prompt`` — for
+    the L4 ``_batch_ceiling`` fallback tests (non-Mapping / missing key)."""
+
+    def __init__(self, prompt):
+        self.prompt = prompt
+
+
+def test_batch_ceiling_falls_back_on_non_mapping_prompt(caplog):
+    """A ``result.prompt`` that is not a ``Mapping`` (e.g. a list) must not
+    crash on ``.get()`` — falls back to the flat default ceiling with a
+    warning, same treatment as a genuinely missing key."""
+    stream = object.__new__(F._FishStream)
+    with caplog.at_level("WARNING"):
+        ceiling = stream._batch_ceiling(_PromptRes(prompt=["not", "a", "mapping"]))
+    assert ceiling == F._DEFAULT_MAX_TOKENS
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a warning for a non-Mapping prompt"
+
+
+def test_batch_ceiling_falls_back_when_tokens_key_missing(caplog):
+    """A dict ``prompt`` missing the ``\"tokens\"`` key falls back to the flat
+    default ceiling with a warning (distinct from a legitimate zero, which
+    uses the real per-input formula via its own ``max(32, ...)`` floor)."""
+    stream = object.__new__(F._FishStream)
+    with caplog.at_level("WARNING"):
+        ceiling = stream._batch_ceiling(_PromptRes(prompt={}))
+    assert ceiling == F._DEFAULT_MAX_TOKENS
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a warning for a missing prompt['tokens'] key"
+
+
+# --- L3: whitespace-only committed buffer ---------------------------------------
+
+
+def test_check_empty_text_rejects_whitespace_only():
+    with pytest.raises(F.FishEmptyTextError):
+        F._check_empty_text("   \n\t  ")
+    with pytest.raises(F.FishEmptyTextError):
+        F._check_empty_text("")
+
+
+def test_check_empty_text_allows_nonempty():
+    F._check_empty_text("hello there")  # must not raise
+
+
+# --- L2: untagged prefix before the first <|speaker:N|> tag ---------------------
+
+
+def test_check_untagged_prefix_rejects_prose_before_first_tag():
+    with pytest.raises(F.FishUntaggedPrefixError):
+        F._check_untagged_prefix("stray prose <|speaker:0|> hello")
+
+
+def test_check_untagged_prefix_allows_tag_at_start():
+    F._check_untagged_prefix("<|speaker:0|> hello")  # must not raise
+
+
+def test_check_untagged_prefix_allows_plain_prose_with_no_speaker_tags():
+    F._check_untagged_prefix("just plain prose, no speaker tags at all")  # must not raise
+
+
+# --- L1: pre-flight guard — short text + instruct = high truncation risk -------
+
+
+class _FixedTokenizer:
+    """Stand-in for ``model.tokenizer``: ``encode`` returns a list of the
+    given length, independent of the actual text — the L1 check only cares
+    about ``len(encode(text))``."""
+
+    def __init__(self, token_count: int) -> None:
+        self._token_count = token_count
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(self._token_count))
+
+
+class _ModelWithTokenizer:
+    def __init__(self, token_count: int) -> None:
+        self.tokenizer = _FixedTokenizer(token_count)
+
+
+class _ModelWithoutTokenizer:
+    """No ``tokenizer`` attribute at all — exercises the fail-safe path."""
+
+
+def _make_instruct_risk_stream(*, model, text: str = "hi") -> F._FishStream:
+    stream = object.__new__(F._FishStream)
+    stream._text = text
+    stream._extras = {"instruct": "be warm and cheerful"}
+    stream._model = model
+    return stream
+
+
+def test_instruct_truncation_risk_rejects_near_floor_input_tokens():
+    """``input_tokens <= _INSTRUCT_RISK_MAX_INPUT_TOKENS`` (2) with a
+    non-empty ``instruct`` extra must raise."""
+    stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(2))
+    with pytest.raises(F.FishInstructTruncationRiskError):
+        stream._check_instruct_truncation_risk()
+
+
+def test_instruct_truncation_risk_allows_safely_long_input_tokens():
+    """A comfortably longer input, even with ``instruct`` set, must not
+    raise."""
+    stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(50))
+    stream._check_instruct_truncation_risk()  # must not raise
+
+
+def test_instruct_truncation_risk_skips_when_no_tokenizer_attr(caplog):
+    """Fail SAFE, not fail CLOSED: a model with no ``tokenizer`` attribute
+    must not raise — just log a warning and skip the check, even though the
+    text is near-floor length."""
+    stream = _make_instruct_risk_stream(model=_ModelWithoutTokenizer())
+    with caplog.at_level("WARNING"):
+        stream._check_instruct_truncation_risk()  # must not raise
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a warning when model.tokenizer is unavailable"
+
+
+def test_instruct_truncation_risk_skips_speaker_tagged_multi_batch_text():
+    """Speaker-tagged multi-batch text is scoped OUT of this check: a
+    whole-buffer token count does not correspond to any single batch's real
+    budget, so the near-floor heuristic must not fire even though the raw
+    token count reported by the (fixed) tokenizer is near-floor."""
+    stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(2), text="<|speaker:0|> hi")
+    stream._check_instruct_truncation_risk()  # must not raise
+
+
 # --- _introspect_util.py: model-agnostic unit coverage (net-new shared helper) -
 #
 # No test exercised the private ``_verify_generate_signature`` before this
