@@ -109,15 +109,27 @@ async def _synth_once(
     pcm_bytes = 0
     ttfb = None
     t0 = time.perf_counter()
-    async for ev in stream.events():
-        if ev.kind == "delta":
-            if ttfb is None:
-                ttfb = time.perf_counter() - t0
-            pcm_bytes += len(ev.pcm)
-            if pcm is not None:
-                pcm.extend(ev.pcm)
-        elif ev.kind == "completed":
-            break
+    try:
+        async for ev in stream.events():
+            if ev.kind == "delta":
+                if ttfb is None:
+                    ttfb = time.perf_counter() - t0
+                pcm_bytes += len(ev.pcm)
+                if pcm is not None:
+                    pcm.extend(ev.pcm)
+            elif ev.kind == "completed":
+                break
+    finally:
+        # A mid-drain failure (exception from the loop body, or the caller's
+        # generator raising) must not leave the worker thread running or the
+        # Metal lock held for the next phrase in the batch — unconditionally
+        # cancel and wait for the worker to fully release before returning
+        # (or re-raising). ``cancel()``/``wait_closed()`` are both idempotent
+        # no-ops on an already-finished stream, so this is safe on the
+        # successful path too.
+        await stream.cancel()
+        if hasattr(stream, "wait_closed"):
+            await stream.wait_closed(timeout=30.0)
     wall = time.perf_counter() - t0
     audio_s = pcm_bytes / 2 / backend.sample_rate  # int16 mono
     return audio_s, (ttfb if ttfb is not None else wall), wall, bytes(pcm) if pcm else b""
