@@ -60,6 +60,7 @@ from websockets.asyncio.server import (
 from . import protocol as P
 from .backend import (
     SupportsExtrasValidation,
+    SupportsTextValidation,
     SupportsVoices,
     SupportsWaitClosed,
     TTSBackend,
@@ -992,7 +993,7 @@ class TTSServer:
                 ws, state, P.ErrorCode.INVALID_CONFIG, voice_err, client_event_id=client_event_id
             )
             return
-        if not state.buffer:
+        if not state.buffer.strip():
             await self._error(
                 ws,
                 state,
@@ -1014,6 +1015,22 @@ class TTSServer:
                 client_event_id=client_event_id,
             )
             return
+
+        # Optional backend hook: reject an input-shape-specific validation
+        # failure (e.g. fish_tts's untagged-prefix guard) as a clean
+        # INVALID_CONFIG at commit time, BEFORE scheduler admission — a
+        # rejected commit costs nothing beyond the check itself.
+        if isinstance(self._backend, SupportsTextValidation):
+            text_err = self._backend.validate_text(state.buffer)
+            if text_err is not None:
+                await self._error(
+                    ws,
+                    state,
+                    P.ErrorCode.INVALID_CONFIG,
+                    text_err,
+                    client_event_id=client_event_id,
+                )
+                return
 
         # Per-commit overrides (voice/language/extras) layer over session config.
         extras_in = msg.get("extras")
