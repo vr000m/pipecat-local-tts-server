@@ -722,6 +722,17 @@ outright (ImportError) rather than silently skip, since the profiler is not test
   `render_tts_plist.py`, CI workflows, READMEs — the narrower Phase-2 verification at lines 601-604
   already scopes this correctly to `server.py`/`protocol.py`; this sentence previously overstated
   it), and it changes only to document the new `instruct` capability.
+  **Superseded 2026-08-08 (`/skein:review-gauntlet` round 3)**: this invariant no longer holds.
+  `tts_server/server.py` and `tts_server/backend.py` both gained real code changes — a new
+  `SupportsTextValidation` protocol (`backend.py`) and its commit-time invocation in the session
+  loop (`server.py`), plus a one-line `state.buffer.strip()` fix to the existing empty-buffer check.
+  This was a deliberate, reviewed change: 3 independent review lenses (code-review, architecture,
+  logic) converged on the same finding that fish_tts's pre-flight text-validation checks ran at the
+  wrong layer (synthesis time, inside `events()`, after a scheduler slot was already consumed)
+  instead of commit time like every other input-validation path in this codebase — the fix required
+  crossing the backend/server boundary the same way `SupportsExtrasValidation` already does. See
+  `CHANGELOG.md`'s `### Changed` section and commit `1724e8e` for the accurate final description;
+  this plan's Acceptance Criteria diff-scope check (below) is correspondingly stale.
 
 ### Dependencies
 - `mlx-audio==0.4.4` (existing pin; ships the `fish_qwen3_omni` model family, including the
@@ -814,6 +825,10 @@ Context lifecycle:
 - Diff-scope check: `git diff main...HEAD --name-only` excludes `tts_server/server.py` and
   `tts_server/protocol.py` (verifies the "no server CODE changes" claim; `docs/protocol.md` is
   expected to appear and is not a violation).
+  **No longer holds as of 2026-08-08** — see the Architecture Decisions correction above.
+  `tts_server/server.py` and `tts_server/backend.py` are both in the final diff, by deliberate,
+  reviewed design (`SupportsTextValidation`). This criterion is retained here as a record of the
+  plan's original scoping intent, not as a currently-enforced gate.
 
 ### Test Results
 _To be filled during implementation._
@@ -1429,3 +1444,53 @@ failures existed.
   training-hours/RTF/latency claims. A follow-up could fetch the full README (not just the first 40
   lines) to check for such figures further down, if a future comparison against upstream's own
   performance claims becomes useful.
+
+### Post-Phase-3: `/skein:review-gauntlet` (2026-08-07 to 2026-08-08)
+
+Three convergence rounds ran against this branch after Phase 3 closed, each restarting from a full
+gate-1 corpus per the loop's own algorithm (multi-file structural fixes both times). Not part of
+the four numbered phases above — recorded here since it materially changed the shipped design.
+
+- **Round 1** (`/code-review xhigh`): extracted three previously-duplicated patterns into shared
+  helpers — `tts_server/backends/_truncation_util.py` (fish's and qwen3's per-batch/per-segment
+  ceiling-check loop skeletons, formulas preserved verbatim per backend), `_extras_util.merge_extras`
+  (the extras-merge loop duplicated across all 5 non-tone backends, including fish's
+  `coerce_instruct`-returns-`None` guard, now universal), and a shared stream base
+  (`_segment_stream.py`, later renamed — see round 3) for the Metal-lock/cancel/`wait_closed` bridge
+  protocol, initially covering only `_DiaStream`/`_Qwen3Stream`/`_FishStream`. Plus a missing
+  regression test for truncation firing after an earlier batch in the same commit had already
+  streamed.
+- **Round 2** (`skein:deep-review` + `/security-review`): completed the shared-base migration to the
+  remaining 3 backends (kokoro/voxtral/pocket_tts — all 6 now share one implementation), renamed the
+  base `SegmentStream` → `BridgedStream` (the old name implied segment-level-only semantics; 3 of 6
+  subclasses are sub-segment-streaming), hardened the `_batch_ceiling` comment to document the
+  `mlx-audio==0.4.4` pin as the real drift safety net, and added fish_tts pre-flight guards
+  (`FishEmptyTextError`, `FishUntaggedPrefixError`, `FishInstructTruncationRiskError`) — later
+  substantially revised in round 3.
+- **Round 3** (`/code-review` + `skein:deep-review` + `/security-review`, 3 independent lenses
+  converging on the same root defect): round 2's pre-flight guards ran at the wrong layer — inside
+  `events()` (synthesis time, after a scheduler slot was consumed), causing a real concurrency bug
+  (`model.tokenizer.encode()` running synchronously on the shared asyncio event loop, stalling every
+  other connection) and a UX bug (the specific error message never reached the client, collapsed to
+  a generic `BACKEND_ERROR`). Fixed by: a new `SupportsTextValidation` protocol (`backend.py`) +
+  `FishBackend.validate_text`, invoked from `server.py`'s commit handler before scheduler
+  admission — **this is the "no server CODE changes" invariant break**, see the Architecture
+  Decisions and Acceptance Criteria corrections above; a generic `state.buffer.strip()` fix in
+  `server.py` replacing fish's fish-only whitespace guard (now applies to all 6 backends); moving
+  `_check_instruct_truncation_risk` into `_gen_factory` (worker thread, inside the Metal lock,
+  fixing the event-loop-blocking bug); and fixing a miscalibrated threshold in that same check
+  (`_INSTRUCT_RISK_MAX_INPUT_TOKENS<=2`, raw token count, rejected the *least* risky inputs and
+  passed the *more* risky N=3-6 range — replaced with a computed-budget threshold). Also renamed
+  `_segment_stream.py` → `_bridge_stream.py` and corrected two false docstring claims ("stdlib-only"
+  and "non sub-segment-streaming"). A follow-up `/code-review` pass after round 3 caught and fixed a
+  regression the round-3 fix itself introduced (an unconditional `cancel()`/`wait_closed()` in
+  `rtf_benchmark.py`'s `finally` block was inflating every reported RTF/wall_s number) plus a
+  malformed-JSON crash in the same script.
+- **Quarantined, not fixed**: backend registration fanned across 3 parallel lists
+  (`make_backend`/`_resolve_model`/`build_parser` choices in `backends/__init__.py`/`__main__.py`) —
+  pre-existing pattern this PR continued rather than introduced; consolidating touches all 6
+  backends, judged out of scope for an auto-fix round.
+- Net new/renamed files from this work: `tts_server/backends/_bridge_stream.py` (new, renamed from
+  `_segment_stream.py`), `tts_server/backends/_truncation_util.py` (new),
+  `tts_server/backends/_introspect_util.py` (new, Phase 1's shared signature-verification guard,
+  listed here for completeness), `SupportsTextValidation` in `tts_server/backend.py` (new protocol).
