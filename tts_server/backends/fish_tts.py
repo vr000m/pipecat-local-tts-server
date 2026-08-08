@@ -66,6 +66,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..backend import TTSStream
+from ._bridge_stream import BridgedStream
 from ._extras_util import (
     coerce_instruct,
     coerce_temperature,
@@ -75,7 +76,6 @@ from ._extras_util import (
     validate_extras,
 )
 from ._introspect_util import verify_generate_signature
-from ._segment_stream import BridgedStream
 from ._truncation_util import check_per_result_ceiling
 
 # Speaker-tag delimiter for fish's multi-speaker payload shape (Q3-verified
@@ -159,8 +159,9 @@ _BRIDGE_MAXSIZE = 8
 # ceiling logic is therefore the one change most likely to silently break
 # this tripwire in either direction.
 #
-# Separately, the L1 pre-flight instruct-truncation-risk guard
-# (``_preflight_check`` / ``FishInstructTruncationRiskError``) adds a SECOND
+# Separately, the L1 instruct-truncation-risk guard
+# (``_check_instruct_truncation_risk`` / ``FishInstructTruncationRiskError``)
+# adds a SECOND
 # private-internals dependency on top of this one: it calls
 # ``model.tokenizer.encode`` directly, which is likewise not a documented
 # public surface. A future mlx-audio restructuring could break that call
@@ -234,30 +235,34 @@ _EXTRA_COERCERS = {
 # allowlist.
 _FISH_EXTRAS = list(_EXTRA_COERCERS)
 
-# L1 (instruct truncation-risk pre-flight): a committed buffer this close to
-# the empty floor, combined with a non-empty ``instruct`` extra, is treated
-# as high-risk — the per-batch ceiling's ``max(32, input_tokens * 12))``
-# floor leaves almost no real generation budget once instruct-driven style
-# control competes with it, and a truncation there is silent (see
-# ``_batch_ceiling``'s own comment on why the tripwire cannot fully
-# substitute for catching this earlier). Deliberately tiny: this is a
-# near-floor guard, not a general "short text" rejection — ordinary short
-# commits WITHOUT ``instruct`` are unaffected.
-_INSTRUCT_RISK_MAX_INPUT_TOKENS = 2
+# L1 (instruct truncation-risk pre-flight): a commit whose REAL per-batch
+# generation budget leaves almost no room, combined with a non-empty
+# ``instruct`` extra, is treated as high-risk. The previous threshold
+# (``_INSTRUCT_RISK_MAX_INPUT_TOKENS = 2``) compared the RAW input-token
+# count directly against a flat floor of 2 — miscalibrated against the real
+# per-batch ceiling formula (``_batch_ceiling``'s ``min(_DEFAULT_MAX_TOKENS,
+# max(32, input_tokens * 12))``): an input of, say, 5 tokens already produces
+# a budget of ``max(32, 60) = 60``, comfortably clearing the old ``<= 2``
+# floor and so NEVER flagged — even though a 60-token generation budget
+# competing against instruct-driven style control is still a real truncation
+# risk. This constant is compared against the COMPUTED budget instead of the
+# raw token count, so it tracks the actual formula the tripwire protects
+# against, not a proxy for it. Deliberately tiny relative to
+# ``_DEFAULT_MAX_TOKENS``: this is a near-floor guard, not a general
+# "short text" rejection — ordinary short commits WITHOUT ``instruct`` are
+# unaffected. 72 is chosen to catch exactly the regression case the old
+# threshold missed (input_tokens=5 -> budget 60 -> now correctly flagged)
+# while still passing comfortably-provisioned commits (input_tokens=50 ->
+# budget 600 -> unaffected).
+_INSTRUCT_RISK_MAX_BUDGET_TOKENS = 72
 
 
 class FishPreflightError(RuntimeError):
-    """Base class for a fish_tts pre-flight validation failure raised from
-    ``_FishStream._preflight_check`` — BEFORE the worker thread starts or the
-    Metal lock is acquired (see ``BridgedStream._preflight_check``'s
-    docstring). A rejected commit here costs nothing beyond the check
-    itself."""
-
-
-class FishEmptyTextError(FishPreflightError):
-    """The committed buffer (``feed()`` calls so far) is empty or
-    whitespace-only. There is nothing to synthesize; failing fast here avoids
-    handing an empty/blank string to ``generate()``."""
+    """Base class for a fish_tts validation failure raised BEFORE synthesis
+    starts and BEFORE the commit is even admitted — specifically
+    ``FishUntaggedPrefixError``, raised from ``FishBackend.validate_text``
+    (the ``SupportsTextValidation`` hook) at commit time. A rejected commit
+    here costs nothing beyond the check itself."""
 
 
 class FishUntaggedPrefixError(FishPreflightError):
@@ -268,14 +273,18 @@ class FishUntaggedPrefixError(FishPreflightError):
     error at all. Raised instead so the drop is a client-visible failure."""
 
 
-class FishInstructTruncationRiskError(FishPreflightError):
-    """A near-floor-length commit (``<= _INSTRUCT_RISK_MAX_INPUT_TOKENS``
-    input tokens) was combined with a non-empty ``instruct`` extra. See
-    ``_INSTRUCT_RISK_MAX_INPUT_TOKENS``'s comment for why this combination is
+class FishInstructTruncationRiskError(RuntimeError):
+    """A commit whose REAL per-batch generation budget (see
+    ``_INSTRUCT_RISK_MAX_BUDGET_TOKENS``) leaves almost no room was combined
+    with a non-empty ``instruct`` extra. See
+    ``_INSTRUCT_RISK_MAX_BUDGET_TOKENS``'s comment for why this combination is
     high-risk for the same silent-truncation failure mode
-    ``FishTruncationError`` exists to catch — this check exists to reject the
-    highest-risk shape BEFORE synthesis starts, rather than rely solely on
-    catching it after the fact."""
+    ``FishTruncationError`` exists to catch. Raised from ``_gen_factory`` —
+    rejected at generate-time, before the model call, NOT a
+    ``FishPreflightError`` subclass: by the time this check runs, the worker
+    thread has already started and the Metal lock has already been acquired,
+    so this is not a zero-cost pre-admission rejection like
+    ``FishUntaggedPrefixError``."""
 
 
 class FishTruncationError(RuntimeError):
@@ -290,16 +299,6 @@ class FishTruncationError(RuntimeError):
     _DEFAULT_MAX_TOKENS`` check would let those truncations through as a
     silent ``completed`` response, reintroducing the exact qwen3 CustomVoice
     bug this tripwire exists to prevent."""
-
-
-def _check_empty_text(text: str) -> None:
-    """L3: reject a whitespace-only (or empty) committed buffer. Checked
-    FIRST in ``_preflight_check`` — the other two checks presuppose there is
-    real text to inspect."""
-    if not text.strip():
-        raise FishEmptyTextError(
-            "fish_tts: committed text is empty or whitespace-only — nothing to synthesize"
-        )
 
 
 def _check_untagged_prefix(text: str) -> None:
@@ -334,14 +333,19 @@ class _FishStream(BridgedStream):
        not merely ignores a positional default.
     2. **``ref_audio``/``ref_text`` are never built** — only advertised, coerced
        extras splat into ``generate()``.
-    3. **Truncation tripwire**: ``_gen_factory`` wraps the model's generator so
-       every yielded batch's token count is checked against the real per-batch
-       ceiling (see ``FishTruncationError``) before it reaches the bridge.
-    4. **Pre-flight guard**: ``_preflight_check`` (the ``BridgedStream`` hook)
-       rejects the highest-risk input shapes (empty/whitespace text, an
-       untagged prefix before the first speaker tag, a near-floor commit
-       paired with ``instruct``) BEFORE synthesis starts — see
-       ``FishPreflightError`` and its subclasses.
+    3. **Truncation guards, both inside ``_gen_factory``**: it first calls
+       ``_check_instruct_truncation_risk`` (rejects a near-floor REAL
+       per-batch generation budget paired with a non-empty ``instruct``
+       extra — see ``FishInstructTruncationRiskError``), BEFORE
+       ``self._model.generate(...)`` is invoked, then wraps the returned
+       generator so every yielded batch's token count is checked against the
+       real per-batch ceiling (see ``FishTruncationError``) before it reaches
+       the bridge. Both run on the worker thread, inside the Metal lock.
+    4. **Untagged-prefix rejection happens at commit time, not here**:
+       non-whitespace text before the first ``<|speaker:N|>`` tag is rejected
+       via ``FishBackend.validate_text`` (the ``SupportsTextValidation``
+       hook), before the commit is even admitted — see
+       ``FishUntaggedPrefixError``.
     """
 
     def __init__(
@@ -355,23 +359,13 @@ class _FishStream(BridgedStream):
         self._model = model
         self._extras = extras  # pre-coerced advertised extras only
 
-    def _preflight_check(self) -> None:
-        """Overrides ``BridgedStream``'s no-op hook. Runs BEFORE the worker
-        thread starts / the Metal lock is acquired (see the base class's
-        docstring). Order is load-bearing: L3 (empty text) first — the other
-        two checks presuppose real text — then L2 (untagged prefix), then L1
-        (instruct truncation-risk), which is the most expensive check (it may
-        tokenize) and the most narrowly scoped."""
-        _check_empty_text(self._text)
-        _check_untagged_prefix(self._text)
-        self._check_instruct_truncation_risk()
-
     def _check_instruct_truncation_risk(self) -> None:
-        """L1: reject a near-floor commit paired with a non-empty ``instruct``
-        extra (see ``_INSTRUCT_RISK_MAX_INPUT_TOKENS``). Scoped OUT for
-        speaker-tagged multi-batch text: mlx-audio splits such a commit into
-        independent per-speaker batches, each with its OWN input-token count
-        — a whole-buffer encode of ``self._text`` does not correspond to any
+        """L1: reject a commit whose REAL per-batch generation budget (see
+        ``_INSTRUCT_RISK_MAX_BUDGET_TOKENS``) leaves almost no room, paired
+        with a non-empty ``instruct`` extra. Scoped OUT for speaker-tagged
+        multi-batch text: mlx-audio splits such a commit into independent
+        per-speaker batches, each with its OWN input-token count — a
+        whole-buffer encode of ``self._text`` does not correspond to any
         single batch's actual budget, so the heuristic would not be measuring
         the thing it claims to measure. Fail SAFE (log + return), not fail
         CLOSED, when ``model.tokenizer.encode`` is unavailable or raises —
@@ -388,8 +382,7 @@ class _FishStream(BridgedStream):
         if encode is None:
             logger.warning(
                 "fish_tts: model.tokenizer.encode unavailable; skipping the "
-                "instruct truncation-risk pre-flight check (fail-safe, not "
-                "fail-closed)"
+                "instruct truncation-risk check (fail-safe, not fail-closed)"
             )
             return
         try:
@@ -397,21 +390,33 @@ class _FishStream(BridgedStream):
         except Exception as exc:  # noqa: BLE001 - best-effort risk heuristic
             logger.warning(
                 "fish_tts: model.tokenizer.encode failed (%s); skipping the "
-                "instruct truncation-risk pre-flight check (fail-safe, not "
-                "fail-closed)",
+                "instruct truncation-risk check (fail-safe, not fail-closed)",
                 exc,
             )
             return
-        if input_tokens <= _INSTRUCT_RISK_MAX_INPUT_TOKENS:
+        # Same formula as ``_batch_ceiling`` — this IS the budget the batch
+        # will actually get, computed the same way, before generate() ever
+        # runs.
+        budget = min(_DEFAULT_MAX_TOKENS, max(32, input_tokens * 12))
+        if budget <= _INSTRUCT_RISK_MAX_BUDGET_TOKENS:
             raise FishInstructTruncationRiskError(
-                f"fish_tts: instruct extra set on a near-floor commit "
-                f"({input_tokens} input tokens <= "
-                f"{_INSTRUCT_RISK_MAX_INPUT_TOKENS}) — high risk of silent "
+                f"fish_tts: instruct extra set on a commit whose real "
+                f"per-batch generation budget ({budget} tokens, from "
+                f"{input_tokens} input tokens) is <= "
+                f"{_INSTRUCT_RISK_MAX_BUDGET_TOKENS} — high risk of silent "
                 "mid-utterance truncation; commit longer text or drop the "
                 "instruct extra"
             )
 
     def _gen_factory(self):
+        # Runs on the worker thread, inside the Metal lock (this call used to
+        # live in ``BridgedStream._preflight_check``, which ran BEFORE the
+        # worker thread started and the lock was acquired — that hook has
+        # been removed; see ``BridgedStream``'s history). Placed FIRST, before
+        # ``self._model.generate(...)``, so a rejection here still costs
+        # nothing beyond the check itself and one tokenizer call — it just no
+        # longer avoids acquiring the Metal lock to do so.
+        self._check_instruct_truncation_risk()
         # Built on the worker thread (inside the Metal lock) so the whole drain
         # is serialized. ``stream=False`` is passed EXPLICITLY (Fish's default
         # is already False) as documentation that this is a deliberate
@@ -594,6 +599,18 @@ class FishBackend:
         ``INVALID_CONFIG`` instead of a mid-synthesis ``BACKEND_ERROR`` raised
         under the Metal lock. Only advertised keys are checked."""
         return validate_extras(_EXTRA_COERCERS, extras)
+
+    def validate_text(self, text: str) -> str | None:
+        """``SupportsTextValidation``: reject the highest-risk text shape
+        (non-whitespace content before the first ``<|speaker:N|>`` tag) at
+        commit time, before the commit is admitted — see
+        ``FishUntaggedPrefixError``. Returns an error message, or ``None`` if
+        the text is acceptable."""
+        try:
+            _check_untagged_prefix(text)
+        except FishUntaggedPrefixError as exc:
+            return str(exc)
+        return None
 
     async def open_stream(
         self,

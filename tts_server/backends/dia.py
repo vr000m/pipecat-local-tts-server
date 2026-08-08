@@ -46,6 +46,7 @@ import threading
 from typing import Any
 
 from ..backend import TTSStream
+from ._bridge_stream import BridgedStream
 from ._extras_util import (
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
@@ -57,7 +58,6 @@ from ._extras_util import (
     validate_extras,
 )
 from ._introspect_util import verify_generate_signature
-from ._segment_stream import BridgedStream
 
 logger = logging.getLogger("tts_server.backends.dia")
 

@@ -45,7 +45,7 @@ from typing import Any
 
 from ..backend import TTSStream
 from ..env import env_str_set
-from ._segment_stream import BridgedStream
+from ._bridge_stream import BridgedStream
 
 logger = logging.getLogger("tts_server.backends.kokoro")
 

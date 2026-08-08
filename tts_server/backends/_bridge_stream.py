@@ -14,9 +14,12 @@ constructor parameter, stored as ``self._bridge_maxsize`` and threaded into
 ``stream_generate(maxsize=...)`` — each subclass passes its own value, so
 per-backend queue depths are unaffected by sharing this base.
 
-Stdlib-only on purpose (same rule as the other ``_*_util`` siblings):
-backends import this at module load, and the lean-import tests forbid
-heavyweight roots (``mlx_audio``/``numpy``) at import time.
+NOT stdlib-only: unlike the ``_*_util`` siblings, this module imports
+``..backend`` (for ``AudioEvent``) and ``._stream_util`` (for
+``stream_generate``) — both lean, non-heavyweight in-package modules. It is
+still safe for every backend to import at module load, and the lean-import
+tests still forbid heavyweight roots (``mlx_audio``/``numpy``) at import
+time; that invariant just does not make this particular module "stdlib-only".
 """
 
 from __future__ import annotations
@@ -31,9 +34,18 @@ from ._stream_util import stream_generate
 
 
 class BridgedStream:
-    """Base ``TTSStream`` adapter for a segment-level (non sub-segment-
-    streaming) backend that drains a plain ``model.generate(text, **extras)``
-    generator through the shared ``_stream_util`` bridge.
+    """Base ``TTSStream`` adapter for a backend that drains a plain
+    ``model.generate(text, **extras)`` generator through the shared
+    ``_stream_util`` bridge.
+
+    NOT limited to segment-level backends: 3 of the 6 current subclasses
+    (pocket_tts, voxtral_tts, qwen3_tts) advertise ``streaming:true`` and ARE
+    sub-segment-streaming — their ``_gen_factory`` yields native sub-segment
+    chunks, not one result per whole segment/batch. The other 3 (dia,
+    fish_tts, kokoro) advertise ``streaming:false`` and yield one result per
+    segment/batch. This base class does not care which: it just drains
+    whatever ``_gen_factory`` yields through the bridge, one ``delta`` event
+    per yielded item.
 
     Subclasses call ``super().__init__(metal_lock=..., bridge_maxsize=...)``
     from their own ``__init__`` (existing subclasses do this first, but
@@ -91,20 +103,9 @@ class BridgedStream:
     def _gen_factory(self) -> Iterator[Any]:
         raise NotImplementedError
 
-    def _preflight_check(self) -> None:
-        """Hook for a subclass to validate the committed ``self._text`` (and
-        any other pre-synthesis state) before the worker thread starts and
-        ``_gen_factory`` is invoked. No-op by default; a subclass overrides
-        this to raise on an input shape known to trip a backend-specific
-        failure mode (e.g. fish_tts's truncation-risk pre-flight guard). A
-        raise here propagates out of ``events()`` before any Metal-lock work
-        begins, so a rejected commit costs nothing beyond the check itself."""
-        return
-
     async def events(self) -> AsyncGenerator[AudioEvent, None]:
         if self._external_cancel:
             return
-        self._preflight_check()
         loop = asyncio.get_running_loop()
         self._worker_started = True
         async for pcm in stream_generate(

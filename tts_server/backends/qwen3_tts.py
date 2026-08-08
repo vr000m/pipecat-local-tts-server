@@ -63,6 +63,7 @@ import threading
 from typing import Any
 
 from ..backend import TTSStream
+from ._bridge_stream import BridgedStream
 from ._extras_util import (
     coerce_temperature,
     coerce_top_k,
@@ -70,7 +71,6 @@ from ._extras_util import (
     merge_extras,
     validate_extras,
 )
-from ._segment_stream import BridgedStream
 from ._truncation_util import check_per_segment_ceiling
 
 logger = logging.getLogger("tts_server.backends.qwen3_tts")
