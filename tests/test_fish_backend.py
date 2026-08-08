@@ -161,6 +161,54 @@ async def test_instruct_present_smoke_case(started_backend):
     assert total_bytes > 0
 
 
+async def test_tagged_multibatch_instruct_still_trips_truncation_posthoc(
+    started_backend, monkeypatch
+):
+    """Speaker-tagged text scopes OUT of the L1 pre-flight
+    (``_check_instruct_truncation_risk`` returns early when
+    ``<|speaker:N|>`` is present — see its docstring), but that does NOT
+    leave tagged+instruct commits uncovered: the post-hoc, per-batch
+    ``_check_truncation`` in ``_gen_factory`` runs unconditionally on every
+    batch, tagged or not, using that batch's OWN ``prompt["tokens"]`` count.
+
+    Drives the FULL real backend (not a spy) through ``open_stream()`` ->
+    ``events()``, with ``model.generate`` monkeypatched on the real, already
+    -loaded model to deterministically yield one ``GenerationResult`` whose
+    ``token_count`` exceeds its own real-formula ceiling — real generation is
+    stochastic (see ``_INSTRUCT_SMOKE_SENTENCE``'s docstring), so this is the
+    only way to assert the overrun path deterministically without flaking in
+    CI, while still exercising every other real code path (tag scoping,
+    extras coercion, the bridge, the post-hoc checker itself)."""
+    from tts_server.backends import fish_tts as F
+
+    class _OverrunResult:
+        def __init__(self, token_count: int, input_tokens: int) -> None:
+            self.token_count = token_count
+            self.prompt = {"tokens": input_tokens}
+            self.audio = [0.0, 0.1, -0.1]
+
+    # input_tokens=6 -> real ceiling = min(1024, max(32, 6*12)) = 72;
+    # token_count=100 overruns it.
+    def fake_generate(text, **kwargs):
+        return iter([_OverrunResult(token_count=100, input_tokens=6)])
+
+    monkeypatch.setattr(started_backend._loaded_model, "generate", fake_generate)
+
+    stream = await started_backend.open_stream(
+        voice=None,
+        language=None,
+        extras={"instruct": "speak in a cheerful, upbeat tone"},
+    )
+    await stream.feed("<|speaker:0|>Hi.\n<|speaker:1|>Hi.")
+    await stream.end()
+    events = []
+    with pytest.raises(F.FishTruncationError, match="ceiling"):
+        async for ev in stream.events():
+            events.append(ev)
+    assert all(ev.kind != "completed" for ev in events)
+    await stream.wait_closed(timeout=5.0)
+
+
 async def test_no_nan_no_clip_on_decoded_chunk(started_backend):
     """no-NaN / no-clipping sanity on a decoded native chunk: the model's float
     audio must contain no NaN/inf and stay within [-1, 1] (peak <= 1.0) so the

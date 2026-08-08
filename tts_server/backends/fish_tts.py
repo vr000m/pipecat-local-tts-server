@@ -371,7 +371,17 @@ class _FishStream(BridgedStream):
         CLOSED, when ``model.tokenizer.encode`` is unavailable or raises —
         this is a best-effort risk heuristic layered on top of the
         after-the-fact ``FishTruncationError`` tripwire, not the only
-        safeguard, so an inability to check must never block synthesis."""
+        safeguard, so an inability to check must never block synthesis.
+
+        Scoping this out does NOT leave tagged text uncovered:
+        ``_check_truncation`` (the post-hoc, per-``GenerationResult`` ceiling
+        check in ``_gen_factory``) runs unconditionally on every batch, tagged
+        or not, using that batch's OWN ``prompt["tokens"]`` count — the real
+        enforcement for the multi-batch case lives there, not here. This
+        method is strictly a cheap pre-flight optimization for the
+        single-batch (untagged) case; it is not the only guard against
+        truncation, so narrowing its scope narrows only which inputs get an
+        early rejection, not which inputs get protection."""
         instruct = self._extras.get("instruct")
         if not instruct:
             return
