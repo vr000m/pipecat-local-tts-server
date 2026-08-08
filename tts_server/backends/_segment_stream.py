@@ -1,23 +1,18 @@
-"""Shared segment-level ``TTSStream`` base class.
+"""Shared ``TTSStream`` base class for backends that drain one utterance
+through the ``_stream_util`` bridge.
 
-``_DiaStream``, ``_Qwen3Stream``, and ``_FishStream`` all adapt one utterance
-to the ``TTSStream`` protocol over the SAME shared ``_stream_util`` bridge:
-``feed()``/``end()``/``cancel()``/``wait_closed()``/``events()`` are
-byte-identical across all three (verified by direct read of the three
-pre-extraction sources — not merely assumed from a paraphrase). Only
+Every backend's stream adapter shares the same ``feed()``/``end()``/
+``cancel()``/``wait_closed()``/``events()`` implementation; only
 ``_gen_factory`` (what actually gets passed to ``model.generate()``) and each
-backend's own extra constructor state (dia: none; qwen3: voice + lang_code;
-fish: none but keeps its own truncation-tripwire wrapper) differ.
+backend's own extra constructor state differ. See ``BridgedStream`` below for
+the full lifecycle contract — this module docstring intentionally does not
+enumerate subclasses, since that list drifts every time a new backend adopts
+this base.
 
-The one non-identical piece folded into the constructor is the per-backend
-streaming-bridge queue depth (dia/fish: 8, qwen3: 32) — previously a bare
-module-level ``_BRIDGE_MAXSIZE`` constant read directly inside ``events()``.
-Since the base class lives in a module shared by all three backends, that
-constant becomes a constructor parameter (``bridge_maxsize``) stored as
-``self._bridge_maxsize`` and threaded into ``stream_generate(maxsize=...)`` —
-each subclass still passes its OWN value, so the effective queue depths are
-unchanged (dia=8, qwen3=32, fish=8); this is a mechanical parameterization,
-not a behavior change.
+The per-backend streaming-bridge queue depth (``bridge_maxsize``) is a
+constructor parameter, stored as ``self._bridge_maxsize`` and threaded into
+``stream_generate(maxsize=...)`` — each subclass passes its own value, so
+per-backend queue depths are unaffected by sharing this base.
 
 Stdlib-only on purpose (same rule as the other ``_*_util`` siblings):
 backends import this at module load, and the lean-import tests forbid
@@ -35,15 +30,17 @@ from ..backend import AudioEvent
 from ._stream_util import stream_generate
 
 
-class SegmentStream:
+class BridgedStream:
     """Base ``TTSStream`` adapter for a segment-level (non sub-segment-
     streaming) backend that drains a plain ``model.generate(text, **extras)``
     generator through the shared ``_stream_util`` bridge.
 
-    Subclasses MUST call ``super().__init__(metal_lock=..., bridge_maxsize=...)``
-    from their own ``__init__`` before setting any additional state (model,
-    extras, voice, ...), and MUST override ``_gen_factory`` — the base
-    implementation raises ``NotImplementedError``.
+    Subclasses call ``super().__init__(metal_lock=..., bridge_maxsize=...)``
+    from their own ``__init__`` (existing subclasses do this first, but
+    nothing here requires that ordering — ``__init__`` only sets plain
+    instance attributes, none of which subclass state setup depends on), and
+    MUST override ``_gen_factory`` — the base implementation raises
+    ``NotImplementedError``.
 
     Attribute names below are load-bearing: existing tests reach into
     ``_metal_lock``, ``_text``, ``_cancel``, ``_external_cancel``,
@@ -94,9 +91,20 @@ class SegmentStream:
     def _gen_factory(self) -> Iterator[Any]:
         raise NotImplementedError
 
+    def _preflight_check(self) -> None:
+        """Hook for a subclass to validate the committed ``self._text`` (and
+        any other pre-synthesis state) before the worker thread starts and
+        ``_gen_factory`` is invoked. No-op by default; a subclass overrides
+        this to raise on an input shape known to trip a backend-specific
+        failure mode (e.g. fish_tts's truncation-risk pre-flight guard). A
+        raise here propagates out of ``events()`` before any Metal-lock work
+        begins, so a rejected commit costs nothing beyond the check itself."""
+        return
+
     async def events(self) -> AsyncGenerator[AudioEvent, None]:
         if self._external_cancel:
             return
+        self._preflight_check()
         loop = asyncio.get_running_loop()
         self._worker_started = True
         async for pcm in stream_generate(

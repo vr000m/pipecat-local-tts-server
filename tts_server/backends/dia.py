@@ -57,7 +57,7 @@ from ._extras_util import (
     validate_extras,
 )
 from ._introspect_util import verify_generate_signature
-from ._segment_stream import SegmentStream
+from ._segment_stream import BridgedStream
 
 logger = logging.getLogger("tts_server.backends.dia")
 
@@ -112,14 +112,14 @@ _EXTRA_COERCERS = {"temperature": _coerce_temperature, "top_p": _coerce_top_p}
 _DIA_EXTRAS = list(_EXTRA_COERCERS)
 
 
-class _DiaStream(SegmentStream):
+class _DiaStream(BridgedStream):
     """Adapts one dia dialogue utterance to the ``TTSStream`` protocol.
 
     Structurally identical to ``_KokoroStream`` (the streaming seam is
     backend-agnostic; dia is segment-level, so it drains a plain
     ``model.generate(text, **extras)`` generator through the shared bridge —
     ``feed``/``end``/``cancel``/``wait_closed``/``events`` all live on the
-    shared ``SegmentStream`` base now), with ONE deliberate departure: there
+    shared ``BridgedStream`` base now), with ONE deliberate departure: there
     is **no ``voice`` parameter** and no ``self._voice`` member. dia ignores
     ``voice`` entirely (decision #1); omitting it from the constructor makes
     "never build a ``voice`` kwarg" unrepresentable rather than

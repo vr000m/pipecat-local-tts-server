@@ -60,7 +60,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import threading
+from collections.abc import Mapping
 from typing import Any
 
 from ..backend import TTSStream
@@ -73,8 +75,13 @@ from ._extras_util import (
     validate_extras,
 )
 from ._introspect_util import verify_generate_signature
-from ._segment_stream import SegmentStream
+from ._segment_stream import BridgedStream
 from ._truncation_util import check_per_result_ceiling
+
+# Speaker-tag delimiter for fish's multi-speaker payload shape (Q3-verified
+# live). Shared by the L1 (instruct truncation-risk scoping) and L2
+# (untagged-prefix) pre-flight checks below.
+_SPEAKER_TAG_RE = re.compile(r"<\|speaker:\d+\|>")
 
 logger = logging.getLogger("tts_server.backends.fish_tts")
 
@@ -126,6 +133,39 @@ _BRIDGE_MAXSIZE = 8
 # live signature). NOT overridden by this backend — kept here so the
 # truncation-tripwire predicate below matches the ceiling actually in effect
 # without hardcoding a duplicate literal at the call site.
+#
+# ``_batch_ceiling`` (below) mirrors mlx-audio's PRIVATE per-batch formula —
+# ``semantic_token_budget = min(max_new_tokens, max(32, text_token_count *
+# 12))`` — verbatim from the installed ``fish_speech.py:699-703`` (not a
+# public API, not documented, and not covered by mlx-audio's own version
+# guarantees). The real safety net here is the ``mlx-audio==0.4.4`` pin, NOT
+# this reimplementation: the pin is what keeps the mirrored formula in sync
+# with the model code actually running. If a future mlx-audio bump changes
+# ``699-703`` and the pin is bumped WITHOUT re-verifying this formula against
+# the new source, the tripwire silently drifts in one of two directions —
+# neither of which fails loudly on its own:
+#   - if the real ceiling grows (upstream raises the multiplier/floor) and
+#     this formula is not updated to match, the tripwire becomes STRICTER
+#     than reality and can raise ``FishTruncationError`` on batches that
+#     actually completed cleanly (a false-positive failure, i.e.
+#     over-detection);
+#   - if the real ceiling shrinks (upstream lowers the multiplier/floor) and
+#     this formula is not updated, the tripwire becomes LOOSER than reality
+#     and can miss a genuine mid-utterance truncation, letting it through as
+#     a clean ``completed`` response (a false-negative, i.e. under-detection
+#     — the exact silent-truncation failure mode this tripwire exists to
+#     catch in the first place).
+# Bumping the mlx-audio pin without re-diffing ``fish_speech.py``'s batch
+# ceiling logic is therefore the one change most likely to silently break
+# this tripwire in either direction.
+#
+# Separately, the L1 pre-flight instruct-truncation-risk guard
+# (``_preflight_check`` / ``FishInstructTruncationRiskError``) adds a SECOND
+# private-internals dependency on top of this one: it calls
+# ``model.tokenizer.encode`` directly, which is likewise not a documented
+# public surface. A future mlx-audio restructuring could break that call
+# independently of anything here — see its own fail-safe (not fail-closed)
+# handling where the attribute is missing.
 _DEFAULT_MAX_TOKENS = 1024
 
 # Model-card language list (Phase 0 Q6, fetched live from both
@@ -194,6 +234,49 @@ _EXTRA_COERCERS = {
 # allowlist.
 _FISH_EXTRAS = list(_EXTRA_COERCERS)
 
+# L1 (instruct truncation-risk pre-flight): a committed buffer this close to
+# the empty floor, combined with a non-empty ``instruct`` extra, is treated
+# as high-risk — the per-batch ceiling's ``max(32, input_tokens * 12))``
+# floor leaves almost no real generation budget once instruct-driven style
+# control competes with it, and a truncation there is silent (see
+# ``_batch_ceiling``'s own comment on why the tripwire cannot fully
+# substitute for catching this earlier). Deliberately tiny: this is a
+# near-floor guard, not a general "short text" rejection — ordinary short
+# commits WITHOUT ``instruct`` are unaffected.
+_INSTRUCT_RISK_MAX_INPUT_TOKENS = 2
+
+
+class FishPreflightError(RuntimeError):
+    """Base class for a fish_tts pre-flight validation failure raised from
+    ``_FishStream._preflight_check`` — BEFORE the worker thread starts or the
+    Metal lock is acquired (see ``BridgedStream._preflight_check``'s
+    docstring). A rejected commit here costs nothing beyond the check
+    itself."""
+
+
+class FishEmptyTextError(FishPreflightError):
+    """The committed buffer (``feed()`` calls so far) is empty or
+    whitespace-only. There is nothing to synthesize; failing fast here avoids
+    handing an empty/blank string to ``generate()``."""
+
+
+class FishUntaggedPrefixError(FishPreflightError):
+    """Non-whitespace text precedes the first ``<|speaker:N|>`` tag in a
+    multi-speaker commit. mlx-audio's batch split on speaker tags silently
+    DROPS any text before the first tag — the client-visible symptom would
+    otherwise be missing audio at the very start of the response with no
+    error at all. Raised instead so the drop is a client-visible failure."""
+
+
+class FishInstructTruncationRiskError(FishPreflightError):
+    """A near-floor-length commit (``<= _INSTRUCT_RISK_MAX_INPUT_TOKENS``
+    input tokens) was combined with a non-empty ``instruct`` extra. See
+    ``_INSTRUCT_RISK_MAX_INPUT_TOKENS``'s comment for why this combination is
+    high-risk for the same silent-truncation failure mode
+    ``FishTruncationError`` exists to catch — this check exists to reject the
+    highest-risk shape BEFORE synthesis starts, rather than rely solely on
+    catching it after the fact."""
+
 
 class FishTruncationError(RuntimeError):
     """A generation batch reached Fish's real per-batch token ceiling: the
@@ -209,15 +292,42 @@ class FishTruncationError(RuntimeError):
     bug this tripwire exists to prevent."""
 
 
-class _FishStream(SegmentStream):
+def _check_empty_text(text: str) -> None:
+    """L3: reject a whitespace-only (or empty) committed buffer. Checked
+    FIRST in ``_preflight_check`` — the other two checks presuppose there is
+    real text to inspect."""
+    if not text.strip():
+        raise FishEmptyTextError(
+            "fish_tts: committed text is empty or whitespace-only — nothing to synthesize"
+        )
+
+
+def _check_untagged_prefix(text: str) -> None:
+    """L2: reject non-whitespace text preceding the first ``<|speaker:N|>``
+    tag. Returns early (no-op) when the text has no speaker tag at all —
+    ordinary untagged prose is always a single batch and this check does not
+    apply to it."""
+    match = _SPEAKER_TAG_RE.search(text)
+    if match is None:
+        return
+    prefix = text[: match.start()]
+    if prefix.strip():
+        raise FishUntaggedPrefixError(
+            "fish_tts: text before the first <|speaker:N|> tag "
+            f"({prefix.strip()!r}) would be silently dropped by mlx-audio's "
+            "speaker-tag batch split — move it after a tag or remove it"
+        )
+
+
+class _FishStream(BridgedStream):
     """Adapts one Fish utterance to the ``TTSStream`` protocol.
 
     Structurally identical to ``_DiaStream`` (the streaming seam is
     backend-agnostic; Fish is segment-level, so it drains a plain
     ``model.generate(text, stream=False, **extras)`` generator through the
     shared bridge — ``feed``/``end``/``cancel``/``wait_closed``/``events`` all
-    live on the shared ``SegmentStream`` base now), with the same TWO
-    departures dia established plus a THIRD:
+    live on the shared ``BridgedStream`` base now), with the same TWO
+    departures dia established plus TWO more:
 
     1. **No ``voice`` parameter** — even stronger than dia's, since Fish's
        ``generate()`` discards ``voice`` UNCONDITIONALLY (``del voice, ...``),
@@ -227,6 +337,11 @@ class _FishStream(SegmentStream):
     3. **Truncation tripwire**: ``_gen_factory`` wraps the model's generator so
        every yielded batch's token count is checked against the real per-batch
        ceiling (see ``FishTruncationError``) before it reaches the bridge.
+    4. **Pre-flight guard**: ``_preflight_check`` (the ``BridgedStream`` hook)
+       rejects the highest-risk input shapes (empty/whitespace text, an
+       untagged prefix before the first speaker tag, a near-floor commit
+       paired with ``instruct``) BEFORE synthesis starts — see
+       ``FishPreflightError`` and its subclasses.
     """
 
     def __init__(
@@ -239,6 +354,62 @@ class _FishStream(SegmentStream):
         super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         self._extras = extras  # pre-coerced advertised extras only
+
+    def _preflight_check(self) -> None:
+        """Overrides ``BridgedStream``'s no-op hook. Runs BEFORE the worker
+        thread starts / the Metal lock is acquired (see the base class's
+        docstring). Order is load-bearing: L3 (empty text) first — the other
+        two checks presuppose real text — then L2 (untagged prefix), then L1
+        (instruct truncation-risk), which is the most expensive check (it may
+        tokenize) and the most narrowly scoped."""
+        _check_empty_text(self._text)
+        _check_untagged_prefix(self._text)
+        self._check_instruct_truncation_risk()
+
+    def _check_instruct_truncation_risk(self) -> None:
+        """L1: reject a near-floor commit paired with a non-empty ``instruct``
+        extra (see ``_INSTRUCT_RISK_MAX_INPUT_TOKENS``). Scoped OUT for
+        speaker-tagged multi-batch text: mlx-audio splits such a commit into
+        independent per-speaker batches, each with its OWN input-token count
+        — a whole-buffer encode of ``self._text`` does not correspond to any
+        single batch's actual budget, so the heuristic would not be measuring
+        the thing it claims to measure. Fail SAFE (log + return), not fail
+        CLOSED, when ``model.tokenizer.encode`` is unavailable or raises —
+        this is a best-effort risk heuristic layered on top of the
+        after-the-fact ``FishTruncationError`` tripwire, not the only
+        safeguard, so an inability to check must never block synthesis."""
+        instruct = self._extras.get("instruct")
+        if not instruct:
+            return
+        if _SPEAKER_TAG_RE.search(self._text):
+            return
+        tokenizer = getattr(self._model, "tokenizer", None)
+        encode = getattr(tokenizer, "encode", None) if tokenizer is not None else None
+        if encode is None:
+            logger.warning(
+                "fish_tts: model.tokenizer.encode unavailable; skipping the "
+                "instruct truncation-risk pre-flight check (fail-safe, not "
+                "fail-closed)"
+            )
+            return
+        try:
+            input_tokens = len(encode(self._text))
+        except Exception as exc:  # noqa: BLE001 - best-effort risk heuristic
+            logger.warning(
+                "fish_tts: model.tokenizer.encode failed (%s); skipping the "
+                "instruct truncation-risk pre-flight check (fail-safe, not "
+                "fail-closed)",
+                exc,
+            )
+            return
+        if input_tokens <= _INSTRUCT_RISK_MAX_INPUT_TOKENS:
+            raise FishInstructTruncationRiskError(
+                f"fish_tts: instruct extra set on a near-floor commit "
+                f"({input_tokens} input tokens <= "
+                f"{_INSTRUCT_RISK_MAX_INPUT_TOKENS}) — high risk of silent "
+                "mid-utterance truncation; commit longer text or drop the "
+                "instruct extra"
+            )
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole drain
@@ -257,7 +428,8 @@ class _FishStream(SegmentStream):
         re-tokenized here. A legitimate zero still uses the real formula (its
         own ``max(32, ...)`` floor covers that case); only a genuinely
         *missing* key falls back to the flat default."""
-        prompt = getattr(result, "prompt", None) or {}
+        prompt = getattr(result, "prompt", None)
+        prompt = prompt if isinstance(prompt, Mapping) else {}
         input_text_token_count = prompt.get("tokens")
         if input_text_token_count is not None:
             # Covers a legitimate zero (empty-input batch) too: the real
@@ -283,7 +455,8 @@ class _FishStream(SegmentStream):
     def _make_truncation_error(
         self, result: Any, token_count: int, ceiling: int
     ) -> FishTruncationError:
-        prompt = getattr(result, "prompt", None) or {}
+        prompt = getattr(result, "prompt", None)
+        prompt = prompt if isinstance(prompt, Mapping) else {}
         input_text_token_count = prompt.get("tokens")
         return FishTruncationError(
             f"fish_tts: a batch hit its {ceiling}-token per-batch "

@@ -70,7 +70,7 @@ from ._extras_util import (
     merge_extras,
     validate_extras,
 )
-from ._segment_stream import SegmentStream
+from ._segment_stream import BridgedStream
 from ._truncation_util import check_per_segment_ceiling
 
 logger = logging.getLogger("tts_server.backends.qwen3_tts")
@@ -202,7 +202,7 @@ class Qwen3TruncationError(RuntimeError):
     response FAILS instead of completing with missing audio."""
 
 
-class _Qwen3Stream(SegmentStream):
+class _Qwen3Stream(BridgedStream):
     """Adapts one Qwen3-TTS utterance to the ``TTSStream`` protocol.
 
     Structurally identical to ``_VoxtralStream`` (the streaming seam is
@@ -210,7 +210,7 @@ class _Qwen3Stream(SegmentStream):
     ``events()`` drives the shared bridge and yields a ``delta`` per native
     sub-segment chunk, then a ``completed`` on generator exhaustion;
     ``cancel()`` sets the bridge's cancel event so the generator breaks out and
-    releases the Metal lock — all now on the shared ``SegmentStream`` base.
+    releases the Metal lock — all now on the shared ``BridgedStream`` base.
     The only difference is ``_gen_factory`` — it builds the streaming
     ``generate()`` with qwen3's kwargs: the resolved voice (or omitted, Base
     path) and the ``lang_code`` mapping.

@@ -34,10 +34,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from ..backend import AudioEvent, TTSStream
+from ..backend import TTSStream
 from ._extras_util import (
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
@@ -45,7 +44,7 @@ from ._extras_util import (
     merge_extras,
     validate_extras,
 )
-from ._stream_util import stream_generate
+from ._segment_stream import BridgedStream
 
 logger = logging.getLogger("tts_server.backends.pocket_tts")
 
@@ -111,11 +110,13 @@ _EXTRA_COERCERS = {"temperature": _coerce_temperature}
 _POCKET_EXTRAS = list(_EXTRA_COERCERS)
 
 
-class _PocketStream:
-    """Adapts one Pocket utterance to the ``TTSStream`` protocol. Structurally
-    identical to ``_VoxtralStream``/``_KokoroStream`` (the streaming seam is
-    backend-agnostic); only ``_gen_factory`` differs (Pocket's kwargs + the
-    voice-omit rule, and it NEVER forwards ref_audio/frames_after_eos)."""
+class _PocketStream(BridgedStream):
+    """Adapts one Pocket utterance to the ``TTSStream`` protocol.
+
+    ``feed``/``end``/``cancel``/``wait_closed``/``events`` all live on the
+    shared ``BridgedStream`` base now; only ``_gen_factory`` differs (Pocket's
+    kwargs + the voice-omit rule, and it NEVER forwards
+    ref_audio/frames_after_eos)."""
 
     def __init__(
         self,
@@ -125,33 +126,10 @@ class _PocketStream:
         extras: dict[str, Any],
         metal_lock: threading.Lock,
     ) -> None:
+        super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         self._voice = voice
         self._extras = extras  # pre-coerced advertised extras only
-        self._metal_lock = metal_lock
-        self._text = ""
-        self._cancel = threading.Event()
-        self._external_cancel = False
-        self._worker_done = threading.Event()
-        self._worker_started = False
-
-    async def feed(self, text: str) -> None:
-        if self._external_cancel:
-            return
-        self._text += text
-
-    async def end(self) -> None:
-        return None
-
-    async def cancel(self) -> None:
-        self._external_cancel = True
-        self._cancel.set()
-
-    async def wait_closed(self, timeout: float | None = None) -> None:
-        if not self._worker_started:
-            return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # ``stream=True`` makes generate() a sub-segment generator;
@@ -168,26 +146,6 @@ class _PocketStream:
             streaming_interval=_STREAMING_INTERVAL,
             **kwargs,
         )
-
-    async def events(self) -> AsyncGenerator[AudioEvent, None]:
-        if self._external_cancel:
-            return
-        loop = asyncio.get_running_loop()
-        self._worker_started = True
-        async for pcm in stream_generate(
-            self._gen_factory,
-            loop=loop,
-            metal_lock=self._metal_lock,
-            cancel=self._cancel,
-            maxsize=_BRIDGE_MAXSIZE,
-            worker_done=self._worker_done,
-        ):
-            if self._external_cancel:
-                return
-            yield AudioEvent(kind="delta", pcm=pcm)
-        if self._external_cancel:
-            return
-        yield AudioEvent(kind="completed", pcm=b"")
 
 
 class PocketBackend:
