@@ -162,6 +162,10 @@ async def main() -> int:
     )
     args = ap.parse_args()
     extras = json.loads(args.extras) if args.extras else None
+    if extras is not None and not isinstance(extras, dict):
+        ap.error(
+            f"--extras must decode to a JSON object, got {type(extras).__name__}: {args.extras!r}"
+        )
 
     others = _other_gpu_procs()
     if others:
