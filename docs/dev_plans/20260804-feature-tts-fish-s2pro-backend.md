@@ -1,6 +1,6 @@
 # Task: tts-server — `fish_tts` (Fish Audio S2 Pro) backend
 
-**Status**: Not Started
+**Status**: Complete — implementation done on `feature/tts-fish-s2pro-backend`; not yet merged (no PR opened)
 **Component**: tts-server (backends)
 **Assigned to**: Varun Singh
 **Priority**: Medium

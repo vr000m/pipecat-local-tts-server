@@ -432,9 +432,11 @@ read aloud literally, not interpreted). Example:
 <|speaker:1|>I'm doing well, thanks for asking!
 ```
 
-**Mixed-input hazard:** untagged prose preceding the *first* `<|speaker:N|>` tag
-is silently dropped by the model's own text-splitting logic — not synthesized,
-not errored. Don't mix an untagged lead-in with tagged turns in the same commit.
+**Mixed-input rejection:** untagged prose preceding the *first* `<|speaker:N|>` tag
+would otherwise be silently dropped by the model's own text-splitting logic. The
+server rejects it at commit time instead, with `error {code: "invalid_config"}` —
+don't mix an untagged lead-in with tagged turns in the same commit; the commit
+will fail with a clear error rather than silently losing the lead-in.
 
 **Cross-batch context sharing:** consecutive `<|speaker:N|>`-tagged turns within
 one committed utterance share generation context — each batch's prompt includes

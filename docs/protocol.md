@@ -180,10 +180,12 @@ in-text tag dialect, riding purely as ordinary substrings the server never parse
   which is `dia`'s `[S1]`/`[S2]` syntax:
   - **`<|speaker:N|>` multi-speaker tags** (e.g. `<|speaker:0|>Hello there.\n<|speaker:1|>Hi!`)
     address distinct speakers within one committed utterance (`voice_count: 0`;
-    `voice` is ignored, same as `dia`). **Mixed-input hazard:** any untagged prose
-    preceding the *first* `<|speaker:N|>` tag is silently dropped by the model's own
-    text-splitting logic, not synthesized and not errored — a client mixing untagged
-    lead-in text with tagged turns will lose the lead-in with no signal. Consecutive
+    `voice` is ignored, same as `dia`). **Mixed-input rejection:** any untagged prose
+    preceding the *first* `<|speaker:N|>` tag would otherwise be silently dropped by
+    the model's own text-splitting logic — the server rejects it instead, at commit
+    time, with `error {code: "invalid_config"}` (`fish_tts`'s `validate_text` hook),
+    so a client mixing untagged lead-in text with tagged turns gets a clear,
+    client-visible error rather than losing the lead-in with no signal. Consecutive
     tagged turns within one committed utterance also **share generation context**
     (each batch's prompt includes the previous batch's audio codes), so callers
     composing multi-turn tagged text should expect that context-sharing, not
