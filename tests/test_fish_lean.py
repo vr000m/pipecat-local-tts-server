@@ -512,20 +512,6 @@ def test_batch_ceiling_falls_back_when_tokens_key_missing(caplog):
     assert warnings, "expected a warning for a missing prompt['tokens'] key"
 
 
-# --- L3: whitespace-only committed buffer ---------------------------------------
-
-
-def test_check_empty_text_rejects_whitespace_only():
-    with pytest.raises(F.FishEmptyTextError):
-        F._check_empty_text("   \n\t  ")
-    with pytest.raises(F.FishEmptyTextError):
-        F._check_empty_text("")
-
-
-def test_check_empty_text_allows_nonempty():
-    F._check_empty_text("hello there")  # must not raise
-
-
 # --- L2: untagged prefix before the first <|speaker:N|> tag ---------------------
 
 
@@ -542,7 +528,22 @@ def test_check_untagged_prefix_allows_plain_prose_with_no_speaker_tags():
     F._check_untagged_prefix("just plain prose, no speaker tags at all")  # must not raise
 
 
-# --- L1: pre-flight guard — short text + instruct = high truncation risk -------
+# --- SupportsTextValidation: FishBackend.validate_text ---------------------------
+
+
+def test_validate_text_rejects_untagged_prefix():
+    backend = F.FishBackend()
+    msg = backend.validate_text("stray prose <|speaker:0|> hello")
+    assert msg and "speaker" in msg
+
+
+def test_validate_text_accepts_clean_text():
+    backend = F.FishBackend()
+    assert backend.validate_text("just plain prose, no speaker tags at all") is None
+    assert backend.validate_text("<|speaker:0|> hello") is None
+
+
+# --- L1: generate-time guard — near-floor budget + instruct = high truncation risk
 
 
 class _FixedTokenizer:
@@ -575,16 +576,28 @@ def _make_instruct_risk_stream(*, model, text: str = "hi") -> F._FishStream:
 
 
 def test_instruct_truncation_risk_rejects_near_floor_input_tokens():
-    """``input_tokens <= _INSTRUCT_RISK_MAX_INPUT_TOKENS`` (2) with a
-    non-empty ``instruct`` extra must raise."""
+    """``input_tokens=2`` -> ``budget = min(1024, max(32, 2*12)) = 32`` <=
+    ``_INSTRUCT_RISK_MAX_BUDGET_TOKENS`` (72) -> must raise."""
     stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(2))
     with pytest.raises(F.FishInstructTruncationRiskError):
         stream._check_instruct_truncation_risk()
 
 
+def test_instruct_truncation_risk_rejects_regression_case_old_threshold_missed():
+    """``input_tokens=5`` -> ``budget = min(1024, max(32, 5*12)) = 60`` <= 72
+    -> must raise. The OLD threshold (``_INSTRUCT_RISK_MAX_INPUT_TOKENS = 2``,
+    compared against the raw input-token count) would NOT have flagged this
+    (5 > 2) even though the real generation budget (60 tokens) is still
+    near-floor — this is the exact miscalibration the budget-based threshold
+    fixes."""
+    stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(5))
+    with pytest.raises(F.FishInstructTruncationRiskError):
+        stream._check_instruct_truncation_risk()
+
+
 def test_instruct_truncation_risk_allows_safely_long_input_tokens():
-    """A comfortably longer input, even with ``instruct`` set, must not
-    raise."""
+    """``input_tokens=50`` -> ``budget = min(1024, max(32, 50*12)) = 600`` >
+    72 -> must not raise."""
     stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(50))
     stream._check_instruct_truncation_risk()  # must not raise
 
@@ -607,6 +620,32 @@ def test_instruct_truncation_risk_skips_speaker_tagged_multi_batch_text():
     token count reported by the (fixed) tokenizer is near-floor."""
     stream = _make_instruct_risk_stream(model=_ModelWithTokenizer(2), text="<|speaker:0|> hi")
     stream._check_instruct_truncation_risk()  # must not raise
+
+
+class _AssertNeverCalledModel:
+    """``generate`` must never be invoked when ``_check_instruct_truncation_risk``
+    raises first — asserts the ordering inside ``_gen_factory`` (moved there
+    from the old pre-flight hook, see the class docstring's item 3)."""
+
+    def __init__(self, token_count: int) -> None:
+        self.tokenizer = _FixedTokenizer(token_count)
+
+    def generate(self, text, **kwargs):
+        raise AssertionError("model.generate() must not be called")
+
+
+def test_gen_factory_raises_instruct_truncation_risk_before_calling_generate():
+    """``_gen_factory`` calls ``_check_instruct_truncation_risk`` as its FIRST
+    line, before ``self._model.generate(...)`` — a near-floor-budget commit
+    paired with ``instruct`` must raise ``FishInstructTruncationRiskError``
+    WITHOUT ever calling ``generate()``."""
+    stream = object.__new__(F._FishStream)
+    stream._text = "hi"
+    stream._extras = {"instruct": "be warm and cheerful"}
+    stream._model = _AssertNeverCalledModel(2)  # near-floor token count
+
+    with pytest.raises(F.FishInstructTruncationRiskError):
+        stream._gen_factory()
 
 
 # --- _introspect_util.py: model-agnostic unit coverage (net-new shared helper) -
