@@ -108,6 +108,7 @@ async def _synth_once(
     pcm = bytearray() if collect_audio else None
     pcm_bytes = 0
     ttfb = None
+    wall = None
     t0 = time.perf_counter()
     try:
         async for ev in stream.events():
@@ -118,6 +119,11 @@ async def _synth_once(
                 if pcm is not None:
                     pcm.extend(ev.pcm)
             elif ev.kind == "completed":
+                # Capture wall time here, at the moment synthesis actually
+                # finished — not after the finally block's cancel()/
+                # wait_closed() cleanup below, which would inflate the
+                # reading by however long teardown takes.
+                wall = time.perf_counter() - t0
                 break
     finally:
         # A mid-drain failure (exception from the loop body, or the caller's
@@ -130,7 +136,12 @@ async def _synth_once(
         await stream.cancel()
         if hasattr(stream, "wait_closed"):
             await stream.wait_closed(timeout=30.0)
-    wall = time.perf_counter() - t0
+    if wall is None:
+        # Loop exited without a "completed" event (e.g. the async generator
+        # ended early/raised before emitting one) — fall back to a
+        # post-cleanup timestamp so the function still returns a value
+        # rather than crashing on the arithmetic below.
+        wall = time.perf_counter() - t0
     audio_s = pcm_bytes / 2 / backend.sample_rate  # int16 mono
     return audio_s, (ttfb if ttfb is not None else wall), wall, bytes(pcm) if pcm else b""
 
@@ -173,7 +184,10 @@ async def main() -> int:
         "not advertise a given key silently drops it",
     )
     args = ap.parse_args()
-    extras = json.loads(args.extras) if args.extras else None
+    try:
+        extras = json.loads(args.extras) if args.extras else None
+    except json.JSONDecodeError as exc:
+        ap.error(f"--extras is not valid JSON ({exc}): {args.extras!r}")
     if extras is not None and not isinstance(extras, dict):
         ap.error(
             f"--extras must decode to a JSON object, got {type(extras).__name__}: {args.extras!r}"
