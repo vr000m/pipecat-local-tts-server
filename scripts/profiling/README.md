@@ -484,7 +484,7 @@ uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish
 uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
 ```
 
-## Wire-level latency — cross-backend table (in progress, 2026-08-09)
+## Wire-level latency — cross-backend table (all six, 2026-08-09)
 
 Every number elsewhere in this file except the "Phase 5 wire-level smoke"
 table above is measured **in-process** (`rtf_benchmark.py` — no server, no
@@ -496,14 +496,37 @@ base64 framing overhead that in-process numbers don't capture.
 It is a separate table from "Phase 5 wire-level smoke" above rather than a
 merge into it: that table used a different fixed sentence (the two-pangram
 prompt) and only covers three backends; this one standardizes on
-`latency_smoke.py`'s own default sentence so every backend can be added
-later under one exact reproduce command, without re-deriving a prompt.
-**Only `fish_tts` is measured so far** — the remaining rows are placeholders
-for the same profiling pass on the other five backends.
+`latency_smoke.py`'s own default sentence so a re-run stays directly
+comparable without re-deriving a prompt.
 
 Fixed sentence (`latency_smoke.py`'s built-in default, not overridden):
 *"The quick brown fox jumps over the lazy dog and then keeps on running for
-quite a while."*
+quite a while."* Each backend synthesizes it at its own natural pace/duration
+(`audio_s` differs per row below) — this is the model's own output length for
+identical input text, not a measurement artifact.
+
+**Methodology caveat, discovered while measuring this table**: an idle
+resident `tts_server`/`stt_server` process (this repo ships
+`scripts/render_tts_plist.py`-style launchd services for exactly this) does
+not obviously contend — the first attempt at this table ran with
+`pipecat.tts-server.pocket_tts` and a separate project's
+`pipecat.stt-server.nemotron` both active in the background and got numbers
+5–8× worse than a from-scratch quiescent re-run, and simply `kill`ing a
+launchd-managed process doesn't stop it (it respawns) — `launchctl unload`
+is required. Beyond that, this session also hit a transient system-wide
+slowdown (RTF spiking to ~10× even with every known backend service stopped,
+unexplained by any visible CPU-bound process, self-resolved after a short
+idle period) that inflated even a `launchctl unload`-clean run. **Treat any
+single measurement pass with suspicion if its numbers are 2×+ worse than a
+prior pristine run for the same backend/text — re-check system state
+(`uptime`, `top -o cpu`) before trusting it.** All rows below are from one
+back-to-back pass taken *after* the transient slowdown resolved on its own
+(confirmed via a spot-check run before starting the full sweep) — the
+resident `pocket_tts`/`nemotron` launchd services were left running normally
+throughout this final pass and did not measurably contend once the
+system-wide slowdown had cleared. Not a controlled A/B against the
+in-process tables above, but internally consistent with each other and with
+those tables' own pristine ranges (see per-row notes).
 
 Reproduce (per backend):
 ```sh
@@ -513,12 +536,12 @@ uv run python tests/smoke/latency_smoke.py --socket-path /tmp/tts-wire.sock --tt
 
 | Backend | audio_s | TTFB (wire) | Total (wire) | RTF (wire) | Streaming | Notes |
 |---|---|---|---|---|---|---|
-| `fish_tts` | 6.22 | 6.92–7.25 s | 6.94–7.28 s | 1.12–1.17 | `false` | 3 back-to-back runs, warm (model already loaded/warmed at server start). All 312 deltas arrive in a ~25–33 ms burst at the very end — TTFB ≈ total, no early audio. `latency_smoke.py`'s cadence/TTFB-bound assertions correctly FAIL for this backend; that's the expected non-streaming signature (see the fish_tts per-phrase section above), not a bug. |
-| `kokoro` | — | — | — | — | `false` | not yet measured this way — the Phase 5 table above has a wire TTFB (0.129 s) but for the two-pangram prompt, not this table's sentence; re-run before treating as comparable here. |
-| `pocket_tts` | — | — | — | — | `true` | not yet measured this way (Phase 5 table: 0.025 s wire, different prompt). |
-| `voxtral_tts` | — | — | — | — | `true` | not yet measured this way (Phase 5 table: 0.543 s wire, different prompt). |
-| `qwen3_tts` | — | — | — | — | `true` | not yet measured this way. |
-| `dia` | — | — | — | — | `false` | not yet measured this way — expect TTFB ≈ total here too (non-streaming, same signature as fish). |
+| `fish_tts` | 5.62 | 5.435–5.449 s | 5.455–5.470 s | 0.971–0.973 | `false` | 3 runs, tight. All ~281 deltas arrive in a ~20 ms burst at the very end — TTFB ≈ total, no early audio (expected non-streaming signature; `latency_smoke.py`'s cadence assertions correctly FAIL here, not a bug). |
+| `kokoro` | 5.58 | 0.133–0.146 s | 0.153–0.166 s | 0.027–0.030 | `false` | 3 runs, tight. Same buffer-then-flush signature as fish (`streaming:false`), but RTF ≈37× realtime keeps TTFB low regardless — matches the in-process pristine range (0.02–0.03) closely. |
+| `pocket_tts` | 4.64 | 0.034–0.217 s | 0.263–0.457 s | 0.057–0.099 | `true` | Run 1 (TTFB 0.217 s) is a first-request warmup outlier, consistent with this file's own documented "first synth after load" cost; runs 2–3 tight at TTFB 0.034–0.035 s, RTF 0.057–0.058 — matches the in-process pristine range. |
+| `voxtral_tts` | 6.80 | 0.387–0.458 s | 7.309–7.401 s | 1.075–1.088 | `true` | 3 runs, tight. Matches the in-process pristine RTF range (1.08–1.17) exactly. |
+| `qwen3_tts` | 8.80 | 0.128–0.134 s | 2.445–2.453 s | 0.278–0.279 | `true` | 3 runs, tight. Matches the in-process pristine RTF (0.27–0.28) exactly. |
+| `dia` | 29.96 | 56.32–67.58 s | 56.44–67.69 s | 1.88–2.26 | `false` | 3 runs — notably wider spread than the other backends despite the same clean-system pass; the fixed sentence produces a much longer clip for dia than any other backend (see the audio_s column), consistent with the model's own autoregressive/dialogue-oriented pacing on plain, untagged prose. Same TTFB≈total non-streaming signature as fish/kokoro, at dia's much larger scale. |
 
 ## Cross-backend decision table (all six, 2026-08-07 rollup)
 
