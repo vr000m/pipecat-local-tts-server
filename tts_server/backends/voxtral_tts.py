@@ -56,10 +56,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from ..backend import AudioEvent, TTSStream
+from ..backend import TTSStream
+from ._bridge_stream import BridgedStream
 from ._extras_util import (
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
@@ -70,9 +70,9 @@ from ._extras_util import (
     coerce_temperature,
     coerce_top_k,
     coerce_top_p,
+    merge_extras,
     validate_extras,
 )
-from ._stream_util import stream_generate
 
 logger = logging.getLogger("tts_server.backends.voxtral_tts")
 
@@ -172,16 +172,13 @@ _STATIC_LANGUAGES = ["en", "fr", "es", "de", "it", "pt", "nl", "ar", "hi"]
 _STATIC_VOICE_COUNT = 20
 
 
-class _VoxtralStream:
+class _VoxtralStream(BridgedStream):
     """Adapts one Voxtral utterance to the ``TTSStream`` protocol.
 
-    Structurally identical to ``_KokoroStream`` (the streaming seam is
-    backend-agnostic): ``feed()`` accumulates text; ``end()`` is non-blocking;
-    ``events()`` drives the shared bridge and yields a ``delta`` per native
-    sub-segment chunk, then a ``completed`` on generator exhaustion; ``cancel()``
-    sets the bridge's cancel event so the generator breaks out and releases the
-    Metal lock. The only difference is ``_gen_factory`` — it builds the streaming
-    ``generate()`` with Voxtral's kwargs and the ``voice``-omit rule.
+    ``feed``/``end``/``cancel``/``wait_closed``/``events`` all live on the
+    shared ``BridgedStream`` base now — only ``_gen_factory`` differs. It
+    builds the streaming ``generate()`` with Voxtral's kwargs and the
+    ``voice``-omit rule.
     """
 
     def __init__(
@@ -192,40 +189,11 @@ class _VoxtralStream:
         extras: dict[str, Any],
         metal_lock: threading.Lock,
     ) -> None:
+        super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         self._voice = voice
         # Pre-coerced effective extras (only advertised keys, values validated).
         self._extras = extras
-        self._metal_lock = metal_lock
-        self._text = ""
-        # Bridge break-out signal (see _KokoroStream for the cancel-vs-exhaustion
-        # distinction the two flags encode).
-        self._cancel = threading.Event()
-        self._external_cancel = False
-        self._worker_done = threading.Event()
-        self._worker_started = False
-
-    async def feed(self, text: str) -> None:
-        if self._external_cancel:
-            return
-        self._text += text
-
-    async def end(self) -> None:
-        # Non-blocking end-of-input marker (R4 steady-stream contract).
-        return None
-
-    async def cancel(self) -> None:
-        self._external_cancel = True
-        self._cancel.set()
-
-    async def wait_closed(self, timeout: float | None = None) -> None:
-        """Block (up to ``timeout``) until the worker has exited and released the
-        Metal lock. See ``_KokoroStream.wait_closed`` for the full rationale —
-        the server awaits this before freeing a cancelled commit's slot."""
-        if not self._worker_started:
-            return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole
@@ -244,29 +212,6 @@ class _VoxtralStream:
             streaming_interval=_STREAMING_INTERVAL,
             **kwargs,
         )
-
-    async def events(self) -> AsyncGenerator[AudioEvent, None]:
-        if self._external_cancel:
-            return
-        loop = asyncio.get_running_loop()
-        self._worker_started = True
-        # Shared bridge owns Metal-lock acquisition for the whole drain, float32
-        # -> int16-LE PCM conversion (R3), bounded backpressure, and EOF on
-        # generator exhaustion (NOT ``.is_final_chunk``).
-        async for pcm in stream_generate(
-            self._gen_factory,
-            loop=loop,
-            metal_lock=self._metal_lock,
-            cancel=self._cancel,
-            maxsize=_BRIDGE_MAXSIZE,
-            worker_done=self._worker_done,
-        ):
-            if self._external_cancel:
-                return
-            yield AudioEvent(kind="delta", pcm=pcm)
-        if self._external_cancel:
-            return
-        yield AudioEvent(kind="completed", pcm=b"")
 
 
 class VoxtralBackend:
@@ -423,12 +368,7 @@ class VoxtralBackend:
         # accepted for protocol uniformity but Voxtral has no ``lang_code``
         # kwarg (language is encoded in the voice preset), so it is not
         # forwarded to ``generate()``.
-        effective: dict[str, Any] = {}
-        if extras:
-            for key, coerce in _EXTRA_COERCERS.items():
-                raw = extras.get(key)
-                if raw is not None:
-                    effective[key] = coerce(raw)
+        effective = merge_extras(_EXTRA_COERCERS, extras)
         return _VoxtralStream(
             model=self._loaded_model,
             voice=voice,

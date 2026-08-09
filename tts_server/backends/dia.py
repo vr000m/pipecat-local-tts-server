@@ -43,10 +43,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from ..backend import AudioEvent, TTSStream
+from ..backend import TTSStream
+from ._bridge_stream import BridgedStream
 from ._extras_util import (
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
@@ -54,9 +54,10 @@ from ._extras_util import (
     TOP_P_MIN,
     coerce_temperature,
     coerce_top_p,
+    merge_extras,
     validate_extras,
 )
-from ._stream_util import stream_generate
+from ._introspect_util import verify_generate_signature
 
 logger = logging.getLogger("tts_server.backends.dia")
 
@@ -111,16 +112,18 @@ _EXTRA_COERCERS = {"temperature": _coerce_temperature, "top_p": _coerce_top_p}
 _DIA_EXTRAS = list(_EXTRA_COERCERS)
 
 
-class _DiaStream:
+class _DiaStream(BridgedStream):
     """Adapts one dia dialogue utterance to the ``TTSStream`` protocol.
 
     Structurally identical to ``_KokoroStream`` (the streaming seam is
     backend-agnostic; dia is segment-level, so it drains a plain
-    ``model.generate(text, **extras)`` generator through the shared bridge), with
-    ONE deliberate departure: there is **no ``voice`` parameter** and no
-    ``self._voice`` member. dia ignores ``voice`` entirely (decision #1); omitting
-    it from the constructor makes "never build a ``voice`` kwarg" unrepresentable
-    rather than test-enforced. ``ref_audio``/``ref_text`` are never built either
+    ``model.generate(text, **extras)`` generator through the shared bridge —
+    ``feed``/``end``/``cancel``/``wait_closed``/``events`` all live on the
+    shared ``BridgedStream`` base now), with ONE deliberate departure: there
+    is **no ``voice`` parameter** and no ``self._voice`` member. dia ignores
+    ``voice`` entirely (decision #1); omitting it from the constructor makes
+    "never build a ``voice`` kwarg" unrepresentable rather than
+    test-enforced. ``ref_audio``/``ref_text`` are never built either
     (decision #2) — only advertised, coerced extras splat into ``generate()``.
     """
 
@@ -131,46 +134,9 @@ class _DiaStream:
         extras: dict[str, Any],
         metal_lock: threading.Lock,
     ) -> None:
+        super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         self._extras = extras  # pre-coerced advertised extras only
-        self._metal_lock = metal_lock
-        self._text = ""
-        self._cancel = threading.Event()
-        self._external_cancel = False
-        # Set by the bridge worker as its final act (lock released + EOF
-        # enqueued). ``wait_closed()`` awaits it so the server can hold a
-        # commit's scheduler slot until the worker has truly exited and the Metal
-        # lock is free — dia segments can be long, so this is load-bearing for the
-        # cancel/Metal-lock semantics (decision #3).
-        self._worker_done = threading.Event()
-        self._worker_started = False
-
-    async def feed(self, text: str) -> None:
-        if self._external_cancel:
-            return
-        self._text += text
-
-    async def end(self) -> None:
-        # Non-blocking end-of-input marker; synthesis runs lazily in events().
-        return None
-
-    async def cancel(self) -> None:
-        self._external_cancel = True
-        self._cancel.set()
-
-    async def wait_closed(self, timeout: float | None = None) -> None:
-        """Block (up to ``timeout`` seconds) until the synthesis worker has
-        exited and released the Metal lock. dia segments can be long, so a
-        cancelled commit's ``generate()`` runs to its yield boundary before the
-        lock frees; the server awaits this before freeing the slot so admission /
-        ``queue_depth`` does not advertise free capacity while the next commit
-        blocks on the still-held lock. ``None`` waits indefinitely; a finite
-        timeout degrades (the next commit serializes on the lock) rather than
-        hanging the dispatcher."""
-        if not self._worker_started:
-            return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole drain is
@@ -181,27 +147,6 @@ class _DiaStream:
         # ``self._voice`` to forward); ``ref_audio``/``ref_text`` are NEVER built
         # (decision #2). Only advertised, coerced extras splat in.
         return self._model.generate(self._text, **self._extras)
-
-    async def events(self) -> AsyncGenerator[AudioEvent, None]:
-        if self._external_cancel:
-            return
-        loop = asyncio.get_running_loop()
-        self._worker_started = True
-        async for pcm in stream_generate(
-            self._gen_factory,
-            loop=loop,
-            metal_lock=self._metal_lock,
-            cancel=self._cancel,
-            maxsize=_BRIDGE_MAXSIZE,
-            worker_done=self._worker_done,
-        ):
-            if self._external_cancel:
-                return
-            yield AudioEvent(kind="delta", pcm=pcm)
-        if self._external_cancel:
-            return
-        # EOF from generator exhaustion (NOT ``.is_final_chunk``).
-        yield AudioEvent(kind="completed", pcm=b"")
 
 
 class DiaBackend:
@@ -238,8 +183,9 @@ class DiaBackend:
         # ``mlx-audio==0.4.4``; a future bump that drops ``temperature``/``top_p``
         # or makes ``voice`` positionally required would silently break the
         # contract. Warn (do not hard-fail) so an upstream signature reshape is
-        # actionable rather than fatal at serve time.
-        self._verify_generate_signature()
+        # actionable rather than fatal at serve time. Shared helper (fish_tts is
+        # the second backend that needs this guard — see its own docstring).
+        verify_generate_signature(self._loaded_model, _DIA_EXTRAS, "dia", logger=logger)
 
         # Rate is a config property available IMMEDIATELY after load — no
         # warmup-generate needed to learn it (R1/R3). Phase 0: dia = 44100.
@@ -258,39 +204,6 @@ class DiaBackend:
         )
 
         await loop.run_in_executor(None, self._warmup)
-
-    def _verify_generate_signature(self) -> None:
-        """Re-verify dia's ``generate()`` accepts the params this backend relies
-        on. Best-effort: a mismatch is logged (actionable) rather than raised, so
-        an upstream reshape surfaces in the operator log instead of wedging serve.
-        Phase 0 (mlx-audio 0.4.4): ``generate(text, voice=None, temperature=1.3,
-        top_p=0.95, split_pattern='\\n', max_tokens=None, verbose=False,
-        ref_audio=None, ref_text=None, **kwargs)``.
-
-        Why ONLY dia does this (the siblings — Kokoro/Pocket/Voxtral — pin the
-        same wheel but do NOT re-introspect): dia's ``generate()`` is the only one
-        whose signature carries the live voice-cloning channel (``ref_audio``/
-        ``ref_text`` as real kwargs) alongside a positional-defaulted ``voice``, so
-        an upstream reshape here is both more likely and more consequential. If
-        this guard is ever needed by a second backend, lift it into a shared
-        helper rather than copying it."""
-        import inspect
-
-        try:
-            sig = inspect.signature(self._loaded_model.generate)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - upstream shape
-            logger.warning("dia: could not introspect generate() signature: %s", exc)
-            return
-        params = sig.parameters
-        has_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        for name in _DIA_EXTRAS:
-            if name not in params and not has_kwargs:
-                logger.warning(
-                    "dia: generate() does not accept advertised extra %r "
-                    "(signature reshape under the pinned wheel?) — it will be "
-                    "swallowed/error at synthesis",
-                    name,
-                )
 
     def _warmup(self) -> None:
         """Drain a tiny dialogue generate under the Metal lock to JIT-compile
@@ -350,12 +263,7 @@ class DiaBackend:
         # DROP any kwarg outside the advertised effective set — only
         # ``temperature``/``top_p`` survive; ``ref_audio``/``ref_text`` can never
         # reach ``generate()`` because only keys in ``_EXTRA_COERCERS`` are copied.
-        effective: dict[str, Any] = {}
-        if extras:
-            for key, coerce in _EXTRA_COERCERS.items():
-                raw = extras.get(key)
-                if raw is not None:
-                    effective[key] = coerce(raw)
+        effective = merge_extras(_EXTRA_COERCERS, extras)
         return _DiaStream(
             model=self._loaded_model,
             extras=effective,

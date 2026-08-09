@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-local-tts-server"
-version = "0.4.0"
+version = "0.5.0"
 description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -120,6 +120,30 @@ dia = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # in the Phase-0 gate, Q6). The package ships only runtime; weights download on
 # first ``serve``. See README → "Backends & licenses".
 qwen3_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
+# Full server install with the Fish Audio S2 Pro mlx-audio backend (its own
+# plan) — a dia-derived ``streaming:false`` segment-level backend
+# (``generate(stream=True)`` raises ``NotImplementedError`` upstream). Default
+# model is ``mlx-community/fish-audio-s2-pro``. No voice concept
+# (``voice_count: 0``; ``generate()`` discards ``voice`` unconditionally); no
+# voice cloning (``ref_audio``/``ref_text`` actively guarded out, decision
+# #2). Advertises a net-new string extra, ``instruct``.
+#
+# mlx-audio is pinned to 0.4.4 (R8), which already ships the Fish Speech model
+# family under ``fish_qwen3_omni`` — no pin bump. Like Pocket/dia/qwen3, fish
+# needs NO bespoke codec/tokenizer dep: ``fish_s1_dac``/``FishTokenizer`` are
+# transitive hard deps of mlx-audio, so this extra is just mlx-audio (unlike
+# kokoro's misaki / voxtral_tts's mistral-common).
+#
+# LICENSE NOTE: the fish-audio-s2-pro weights
+# (``mlx-community/fish-audio-s2-pro``, sourced from ``fishaudio/s2-pro``) are
+# released under the **Fish Audio Research License** — free for research and
+# non-commercial use; any Commercial Purpose requires a separate written
+# license agreement from Fish Audio (contact: business@fish.audio). This is
+# NOT a permissive Apache/MIT-style license (verified in the Phase-0 gate,
+# Q6) — see README → "Backends & licenses" before using this backend
+# commercially. The package ships only runtime; weights download on first
+# ``serve``.
+fish_tts = ["websockets>=13.0", "mlx-audio==0.4.4"]
 # Reference Pipecat-framework adapter (``examples/pipecat_tts_service.py``).
 # This is for running the *example*, not the server itself — it pulls the
 # Pipecat framework (and ``client`` for ``tts_server.client``). It is NOT a

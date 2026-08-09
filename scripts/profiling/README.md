@@ -349,3 +349,240 @@ Reading the table:
 
 Reproduce: `tests/smoke/run_smoke.sh --backend <name> --play`, then
 `tests/smoke/run_multiconn.sh --backend <name> --connections N --turns M`.
+
+## fish_tts per-phrase profile (M4 Max 16-core, 2026-08-06)
+
+Added when `fish_tts` landed. Standard `rtf_benchmark.py` phrase set against
+`mlx-community/fish-audio-s2-pro` (44.1 kHz, `streaming:false` — segment-level,
+`dia`'s direct structural comparator: both non-streaming, one `GenerationResult`
+per commit, TTFB == wall-time). **Contended-but-idle run** (a nemotron
+`stt_server` and a `pocket_tts` `tts_server` were resident, matching the caveat
+on dia's cross-backend table above) — treat as directional, not pristine.
+Cold load + warmup (`start()`): **3.3 s**.
+
+| Phrase | audio_s | TTFB (=wall_s) | RTF |
+|---|---|---|---|
+| 1-sentence (~50 chars) | 3.39 | 6.88–7.54 s | 2.03–2.23 |
+| 2-sentence, 1 seg (~90 chars) | 5.99 | 12.42–12.55 s | 2.07–2.10 |
+| 3-seg, newlines (~140 chars) | 6.46 | 12.88–13.56 s | 2.00–2.10 |
+
+(warm1st excluded as a compile/cache outlier per convention; warm1–warm3 shown,
+flat within noise.)
+
+Reading the table:
+- **`streaming:false`, TTFB == wall_s** — same non-streaming signature as dia:
+  no audio until the whole segment finishes.
+- **RTF ≈ 2.0–2.2 (slower than realtime)** — in the same family as dia's
+  RTF≈2.0, both well above 1, both `streaming:false` non-streaming latency
+  outliers relative to the sub-1 streaming backends (kokoro/pocket/qwen3) and
+  even relative to voxtral (~1.1–1.3).
+- **`\n`-segmentation does not obviously multiply cost the way dia's does**:
+  the 3-seg phrase's wall_s (~13 s) tracks its audio_s (6.46 s) at the same
+  RTF as the 1- and 2-sentence rows, unlike dia where each `\n` segment resets
+  a ~30 s output-ceiling budget. This profiler run used the committed,
+  untagged `PHRASES` set (no `<|speaker:N|>` tags), so it never exercises
+  fish's multi-batch/cross-batch-coupling path (Phase-0 gate Q1) — this table
+  is single-batch-per-phrase throughout.
+- **Peak memory is gate-sourced, not profiler-sourced** (bridge strips
+  mlx-audio's `GenerationResult`, same qwen3/dia precedent). From the Phase-0
+  gate (`tests/smoke/fish_phase0_gate.py`, 2026-08-06): **14.27 GB** (short
+  utterance, 1 batch) / **18.28 GB** (~15s-equivalent long utterance, 1
+  batch) — notably higher than qwen3's 3.08–4.32 GB, worth calling out in
+  README capacity/hardware guidance.
+- **Concurrency caveat**: `streaming:false`, one `GenerationResult` per
+  commit — no sub-segment streaming, so multi-connection behavior serializes
+  per-generation like dia, not like the `streaming:true` backends.
+
+**Discrepancy vs. the Phase-0 gate (Q2) — flagged, not resolved:**
+Gate: short utterance TTFB=5.35 s/RTF=1.62 (3.30 s audio, 1 batch); long
+utterance TTFB=29.49 s/RTF=1.72 (17.14 s audio, 1 batch). Profiler: RTF
+2.0–2.2 across all three phrases — noticeably higher (worse) than the gate's
+1.6–1.7, on much shorter audio (3.4–6.5 s vs. the gate's 3.3/17.1 s), so this
+is not simply "expected variance from different phrase sets": the direction
+(profiler slower) and magnitude (~25–35% higher RTF) line up with a
+documented, load-bearing asymmetry between the two harnesses rather than
+noise. Two candidate causes, not distinguished by this run:
+1. **Compile-mode divergence (the more likely primary cause)**: the Phase-0
+   gate calls `generate()` directly with `mx.compile` active by default;
+   production `FishBackend.start()` (which the profiler drives, since it
+   exercises the real backend) calls `mx.disable_compile()` per Phase 1's
+   proactive `CompilerCache`-segfault mitigation. This eager-vs-compiled
+   asymmetry is exactly the divergence flagged in the plan's Context
+   ("Gate/production measurement divergence" bullet) as untested — this is
+   the first measurement that surfaces a concrete, consistent delta
+   attributable to it, though it was not isolated (no gate-with-
+   `mx.disable_compile()` A/B run exists yet to confirm the attribution).
+2. **GPU contention**: this profiler run had a resident idle `stt_server` +
+   `pocket_tts` `tts_server` (see caveat above); the gate run's process state
+   at measurement time is not recorded in the plan's Findings, so a
+   contention-based explanation cannot be ruled out either.
+
+Both numbers agree fish is well outside the live-viable RTF<1 band regardless
+of which is closer to fish's true floor — this does not change the
+backend's non-streaming, batch-synthesis usage profile.
+
+**Upstream model-card comparison: not available.** Phase 0 Q6 (the plan's
+sole designated source for upstream `fishaudio/s2-pro` performance/scale
+claims) fetched and recorded license text and the 38-language list from both
+`mlx-community/fish-audio-s2-pro` and `fishaudio/s2-pro`, but captured no
+training-hours, RTF, or latency figures from the model card — the plan's
+Findings explicitly note "No training-hours figure was visible in the first
+40 lines fetched." There is nothing to compare the measured numbers above
+against upstream on performance, unlike qwen3 (which had an upstream RTF/TTFB
+claim to contrast against).
+
+Reproduce: `uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts`.
+
+## fish_tts style-control comparison: baseline vs inline `[tag]` vs `instruct` (M4 Max, 2026-08-07)
+
+Three back-to-back `rtf_benchmark.py` runs (same session, same GPU contention
+state throughout — comparable to each other, **not** to the section above's
+2.0–2.2 numbers, which ran under different contention) on the standard
+3-phrase set, probing whether fish's two style-control surfaces (inline
+`[tag]` markup vs the `instruct` kwarg — see *fish_tts capabilities* in the
+top-level README) cost anything over plain text:
+
+| Phrase | baseline (no tag) | inline `[excited]` | `instruct` kwarg (`"excited sports commentary"`) |
+|---|---|---|---|
+| 1-sentence | RTF 1.14–1.16 | RTF 1.17–1.22 | **FAILED** — `FishTruncationError` (132-token ceiling on 11 input tokens) |
+| 2-sentence | RTF 1.22–1.23 | RTF 1.55–1.59 | RTF 1.88–1.91 |
+| 3-seg | RTF 1.28–1.32 | RTF 1.66–1.78 | RTF 1.76–1.80 |
+
+Reading the table:
+- **RTF is the cost axis here, not a pass/fail line** — all three variants
+  are non-streaming (RTF > 1 is baseline fish behavior, not a variant
+  effect). What moves is the *relative* cost between variants.
+- **Baseline stays flat (~1.1–1.3) regardless of phrase length**, confirming
+  RTF is a backend property, not a length effect (matches the per-phrase
+  profile above). Inline-tag and `instruct` both climb with phrase length
+  instead of staying flat — the style-control machinery scales cost with
+  text, baseline doesn't.
+- **Inline `[tag]` is a real but modest tax**: +3–35% over baseline, worse on
+  longer phrases. It also visibly changes generated audio length for the
+  "same" base phrase (a real pacing/expressiveness change, not a free
+  annotation).
+- **`instruct` is the most expensive AND the only one that broke.**
+  Consistently the worst RTF where it worked (1.76–1.91), and it tripped the
+  truncation tripwire outright on the 1-sentence phrase — `instruct`-driven
+  generation produces enough extra tokens to exceed the per-batch ceiling
+  (`max(32, input_tokens*12)`), a ceiling that is *tightest* exactly when
+  text is shortest. So `instruct`'s failure risk is inversely correlated with
+  the phrase length you'd most want it for (short reactive lines). This is
+  the truncation-tripwire fix (same session, commit `d0f2ce1`) doing its job
+  — failing loud instead of silently truncating — not a new bug.
+- **Listening check (user-confirmed):** baseline and inline-`[excited]`-tag
+  samples both sounded good on playback. `instruct`-kwarg samples (2-sentence,
+  3-seg only) were generated but not listening-confirmed.
+
+Practical rule of thumb: prefer inline `[tag]` for lightweight tone steering
+on short/live-reactive commits; reserve `instruct` for longer-form commits
+where its extra token budget has headroom, and expect to eat the RTF cost.
+
+Reproduce:
+```sh
+uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --prepend "[excited] "
+uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
+```
+
+## Wire-level latency — cross-backend table (all six, 2026-08-09)
+
+Every number elsewhere in this file except the "Phase 5 wire-level smoke"
+table above is measured **in-process** (`rtf_benchmark.py` — no server, no
+socket). This table instead measures over a **real running server**, through
+a **real websocket client**, via `tests/smoke/latency_smoke.py` — the number
+an actual client experiences, including server scheduling + transport +
+base64 framing overhead that in-process numbers don't capture.
+
+It is a separate table from "Phase 5 wire-level smoke" above rather than a
+merge into it: that table used a different fixed sentence (the two-pangram
+prompt) and only covers three backends; this one standardizes on
+`latency_smoke.py`'s own default sentence so a re-run stays directly
+comparable without re-deriving a prompt.
+
+Fixed sentence (`latency_smoke.py`'s built-in default, not overridden):
+*"The quick brown fox jumps over the lazy dog and then keeps on running for
+quite a while."* Each backend synthesizes it at its own natural pace/duration
+(`audio_s` differs per row below) — this is the model's own output length for
+identical input text, not a measurement artifact.
+
+**Methodology caveat, discovered while measuring this table**: an idle
+resident `tts_server`/`stt_server` process (this repo ships
+`scripts/render_tts_plist.py`-style launchd services for exactly this) does
+not obviously contend — the first attempt at this table ran with
+`pipecat.tts-server.pocket_tts` and a separate project's
+`pipecat.stt-server.nemotron` both active in the background and got numbers
+5–8× worse than a from-scratch quiescent re-run, and simply `kill`ing a
+launchd-managed process doesn't stop it (it respawns) — `launchctl unload`
+is required. Beyond that, this session also hit a transient system-wide
+slowdown (RTF spiking to ~10× even with every known backend service stopped,
+unexplained by any visible CPU-bound process, self-resolved after a short
+idle period) that inflated even a `launchctl unload`-clean run. **Treat any
+single measurement pass with suspicion if its numbers are 2×+ worse than a
+prior pristine run for the same backend/text — re-check system state
+(`uptime`, `top -o cpu`) before trusting it.** All rows below are from one
+back-to-back pass taken *after* the transient slowdown resolved on its own
+(confirmed via a spot-check run before starting the full sweep) — the
+resident `pocket_tts`/`nemotron` launchd services were left running normally
+throughout this final pass and did not measurably contend once the
+system-wide slowdown had cleared. Not a controlled A/B against the
+in-process tables above, but internally consistent with each other and with
+those tables' own pristine ranges (see per-row notes).
+
+Reproduce (per backend):
+```sh
+uv run python -m tts_server serve --backend <name> --socket-path /tmp/tts-wire.sock &
+uv run python tests/smoke/latency_smoke.py --socket-path /tmp/tts-wire.sock --ttfb-bound 30
+```
+
+| Backend | audio_s | TTFB (wire) | Total (wire) | RTF (wire) | Streaming | Notes |
+|---|---|---|---|---|---|---|
+| `fish_tts` | 5.62 | 5.435–5.449 s | 5.455–5.470 s | 0.971–0.973 | `false` | 3 runs, tight. All ~281 deltas arrive in a ~20 ms burst at the very end — TTFB ≈ total, no early audio (expected non-streaming signature; `latency_smoke.py`'s cadence assertions correctly FAIL here, not a bug). |
+| `kokoro` | 5.58 | 0.133–0.146 s | 0.153–0.166 s | 0.027–0.030 | `false` | 3 runs, tight. Same buffer-then-flush signature as fish (`streaming:false`), but RTF ≈37× realtime keeps TTFB low regardless — matches the in-process pristine range (0.02–0.03) closely. |
+| `pocket_tts` | 4.64 | 0.034–0.217 s | 0.263–0.457 s | 0.057–0.099 | `true` | Run 1 (TTFB 0.217 s) is a first-request warmup outlier, consistent with this file's own documented "first synth after load" cost; runs 2–3 tight at TTFB 0.034–0.035 s, RTF 0.057–0.058 — matches the in-process pristine range. |
+| `voxtral_tts` | 6.80 | 0.387–0.458 s | 7.309–7.401 s | 1.075–1.088 | `true` | 3 runs, tight. Matches the in-process pristine RTF range (1.08–1.17) exactly. |
+| `qwen3_tts` | 8.80 | 0.128–0.134 s | 2.445–2.453 s | 0.278–0.279 | `true` | 3 runs, tight. Matches the in-process pristine RTF (0.27–0.28) exactly. |
+| `dia` | 29.96 | 56.32–67.58 s | 56.44–67.69 s | 1.88–2.26 | `false` | 3 runs — notably wider spread than the other backends despite the same clean-system pass; the fixed sentence produces a much longer clip for dia than any other backend (see the audio_s column), consistent with the model's own autoregressive/dialogue-oriented pacing on plain, untagged prose. Same TTFB≈total non-streaming signature as fish/kokoro, at dia's much larger scale. |
+
+## Cross-backend decision table (all six, 2026-08-07 rollup)
+
+Consolidates every backend's numbers above into one picking guide. RTF/TTFB
+are each backend's own best (least-contended) recorded warm 1-sentence run —
+not all measured in the same session/contention state, so treat cross-row
+RTF deltas as directional, not a controlled A/B (each backend's own
+same-session cross-backend re-run, where one exists, is the more precise
+comparison — see the 2026-07-03 table above).
+
+| Backend | RTF (1-sent, warm) | TTFB | Streaming | Voices | License | Notes |
+|---|---|---|---|---|---|---|
+| `kokoro` | 0.02–0.03 | ~0.08 s | `false`\* | 54 | Apache-2.0 (commercial-safe) | Fastest raw throughput (~37×); widest voice set; default commercial-safe pick |
+| `pocket_tts` | 0.05 | 0.02 s | `true` | 8 | CC-BY-4.0 (commercial OK w/ attribution) | Fastest TTFB; best fit for live streaming |
+| `qwen3_tts` | 0.27–0.28 | 0.12 s | `true` | 9 (CustomVoice) | Apache-2.0 | Fastest *quality-voice* streamer; only sub-realtime backend with voxtral-class voices |
+| `voxtral_tts` | 1.08–1.17 | 0.37–0.38 s | `true` | 20 | **CC-BY-NC (non-commercial)** | Model-floor RTF>1 even pristine; still streams, so partial audio arrives early despite RTF |
+| `dia` | ~2.0–2.4 | segment-level (= first `\n` segment) | `false` | 0 (`[S1]`/`[S2]` in-text) | Apache-2.0 (commercial-safe) | Autoregressive across `\n` — genuinely continuous multi-turn dialogue, at a big RTF cost |
+| `fish_tts` | 1.1–2.5 (varies w/ contention & style-control extras) | = wall_s (whole clip) | `false` | 0 (in-text `<\|speaker:N\|>`) | **Fish Audio Research License — non-commercial only** | Slowest/most memory-hungry (14–18 GB peak); only backend with `instruct`/inline `[tag]` style control |
+
+\* `kokoro` reports `streaming:false` in capabilities, but RTF is low enough
+(~0.03) that whole-clip latency is negligible in practice.
+
+How to read it for a decision:
+- **RTF < 1 = live-viable** (kokoro, pocket, qwen3). RTF > 1 means you wait
+  longer than the clip is long — fine for batch/offline generation, unusable
+  for live commentary or a conversational turn.
+- **Streaming vs non-streaming changes what "TTFB" means.** kokoro / pocket /
+  qwen3 / voxtral start delivering audio before the whole utterance is done.
+  dia and fish don't — TTFB *is* wall time, so a 6 s clip is a 6–15 s wait
+  before any sound, regardless of RTF.
+- **License gates commercial use before performance does.** kokoro, pocket,
+  dia are commercial-safe; voxtral and fish are not (fish is the stricter of
+  the two — research-only, not even CC-BY-NC).
+- **Pick by use case:**
+  - Live commentary / conversational turn-taking → `pocket_tts` (TTFB) or
+    `kokoro` (throughput), both commercial-safe.
+  - Best quality voice still sub-realtime → `qwen3_tts`.
+  - Multi-turn dialogue needing cross-turn continuity → `dia`, if the RTF~2
+    wait is acceptable.
+  - Expressive/stylized narration, batch-generated (not live), non-commercial
+    → `fish_tts`; prefer its inline `[tag]` over `instruct` for the RTF/
+    reliability trade (see the style-control comparison above).
+  - Anything CC-BY-NC-tolerant with best raw voice quality regardless of
+    speed → `voxtral_tts`.

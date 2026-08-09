@@ -104,6 +104,26 @@ class SupportsExtrasValidation(Protocol):
 
 
 @runtime_checkable
+class SupportsTextValidation(Protocol):
+    """Optional backend capability: validate the COMMITTED TEXT itself at the
+    trust boundary (commit), before a slot is consumed.
+
+    This is distinct from ``SupportsExtrasValidation`` (which validates the
+    VALUES of advertised extras): this hook lets a backend reject an
+    input-shape-specific failure in the text buffer itself — e.g. fish_tts's
+    untagged-prefix guard, where non-whitespace text preceding the first
+    ``<|speaker:N|>`` tag would otherwise be silently dropped by the model's
+    own batch split — as a clean ``INVALID_CONFIG`` at commit time, instead of
+    a mid-synthesis ``BACKEND_ERROR`` (or worse, a silent content-loss bug)
+    raised deep inside ``open_stream``/``events()`` after the commit has
+    already been dispatched. Returns an error message, or ``None`` if the text
+    is acceptable. A backend with no text-shape constraints simply omits this
+    method."""
+
+    def validate_text(self, text: str) -> str | None: ...
+
+
+@runtime_checkable
 class TTSBackend(Protocol):
     # Identity surfaced in ``server.hello``/``server.status`` so a client can
     # verify which model is behind a socket. ``model`` is ``None`` for backends

@@ -5,7 +5,63 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-09
+
+### Added
+
+- **`fish_tts` backend** — Fish Audio S2 Pro backend (mlx-audio 0.4.4,
+  `fish_qwen3_omni`; default model `mlx-community/fish-audio-s2-pro`,
+  `streaming:false`, no voice concept, extras `temperature`/`top_k`/`top_p`/
+  `instruct`). `--backend fish_tts` CLI choice, `fish_tts` extra, canonical
+  launchd port **9265**, `just smoke-fish_tts` / `smoke-multiconn-fish_tts`
+  recipes, and two-layer test suites (`tests/test_fish_lean.py` no-mlx +
+  `tests/test_fish_backend.py` mlx-gated). Weights: FISH AUDIO RESEARCH
+  LICENSE AGREEMENT — non-commercial; a separate written agreement is
+  required for commercial use.
+- A real per-batch token-ceiling truncation tripwire
+  (`FishTruncationError`), mirroring mlx-audio's private
+  `semantic_token_budget = min(max_new_tokens, max(32, text_token_count *
+  12))` formula (`fish_speech.py:699-703`) rather than a naive flat
+  `>= 1024` check — a short/medium batch's own 12x-input-token budget can
+  bind tighter than the flat default, so the naive check would let those
+  truncations through as a silent `completed` response. A ceiling hit
+  **fails the response** instead.
+- Two pre-flight guards that reject a high-risk input shape at commit time,
+  before a slot is consumed: non-whitespace text preceding the first
+  `<|speaker:N|>` tag that mlx-audio's batch split would otherwise silently
+  drop (`FishUntaggedPrefixError`, raised from `FishBackend.validate_text` /
+  `_check_untagged_prefix` via the new `SupportsTextValidation` server hook —
+  see below), and a near-floor-length commit combined with a non-empty
+  `instruct` extra (`FishInstructTruncationRiskError`, raised from
+  `_check_instruct_truncation_risk` inside `_gen_factory`, since it needs a
+  tokenizer call under the Metal lock) — a shape at elevated risk of the same
+  silent-truncation failure mode the tripwire above catches after the fact.
+  The instruct guard is scoped out for speaker-tagged multi-batch text (each
+  batch gets its own real per-batch ceiling, so a whole-buffer estimate
+  wouldn't measure the right thing) — the post-hoc tripwire above still
+  covers that case, since it runs unconditionally per batch regardless of
+  tagging.
+- The server now rejects an empty/whitespace-only committed buffer generically
+  (`BUFFER_EMPTY`, `state.buffer.strip()` in `server.py`) ahead of any
+  backend-specific check — not a `fish_tts`-specific error type.
+
+### Changed
+
+- Extracted the shared segment-level `TTSStream` adapter (`feed`/`end`/
+  `cancel`/`wait_closed`/`events`) into `tts_server/backends/_bridge_stream.py`
+  as `BridgedStream` (renamed from `SegmentStream`, formerly
+  `_segment_stream.py`); `dia`, `qwen3_tts`, `fish_tts`, `kokoro`,
+  `voxtral_tts`, and `pocket_tts` all now inherit it — each subclass keeps
+  only its own constructor state and `_gen_factory` override.
+- Added a `SupportsTextValidation` protocol (`tts_server/backend.py`) —
+  parallel to the existing `SupportsExtrasValidation` — letting a backend
+  reject an input-shape-specific failure in the committed text itself (e.g.
+  `fish_tts`'s untagged-prefix guard) as a clean `INVALID_CONFIG` at commit
+  time, before scheduler admission. `server.py` calls it right after the
+  empty-buffer/max-chars checks and before per-commit overrides are applied.
+  `BridgedStream`'s earlier `_preflight_check()` synthesis-time hook was
+  removed in favor of this commit-time server hook — validation now happens
+  before a slot is consumed, not after synthesis has already started.
 
 ## [0.4.0] - 2026-07-04
 

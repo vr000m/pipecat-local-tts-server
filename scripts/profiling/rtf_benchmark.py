@@ -22,15 +22,24 @@ instances, reconnect-test loops). This script prints any it detects up front.
 Usage:
   uv run --extra kokoro python scripts/profiling/rtf_benchmark.py --backend kokoro --voice af_heart
   uv run python scripts/profiling/rtf_benchmark.py --backend tone
+  uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --save-audio /tmp/fish_samples
+  # inline [tag] variant (prepended to every phrase's text):
+  uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --prepend "[excited] "
+  # extras-kwarg variant (any backend's advertised extras, e.g. fish's instruct):
+  uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import re
 import subprocess
 import sys
 import time
+import wave
+from pathlib import Path
 
 from tts_server.backends import make_backend
 
@@ -48,6 +57,12 @@ PHRASES = [
         "Goal!\nThe home team scores in the final minute.\nThe keeper had no chance on that strike.",
     ),
 ]
+
+
+def _slug(label: str) -> str:
+    """Filesystem-safe stem for a phrase label, e.g. "1-sentence (live)" ->
+    "1-sentence-live"."""
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
 
 
 def _other_gpu_procs() -> list[str]:
@@ -70,24 +85,74 @@ def _other_gpu_procs() -> list[str]:
     return hits
 
 
-async def _synth_once(backend, text: str, voice: str | None) -> tuple[float, float, float]:
-    """Return (audio_s, ttfb_s, wall_s) for one full utterance."""
-    stream = await backend.open_stream(voice=voice)
+async def _synth_once(
+    backend,
+    text: str,
+    voice: str | None,
+    *,
+    extras: dict | None = None,
+    collect_audio: bool = False,
+) -> tuple[float, float, float, bytes]:
+    """Return (audio_s, ttfb_s, wall_s, pcm_bytes) for one full utterance.
+
+    ``pcm_bytes`` is empty unless ``collect_audio`` is set — audio is
+    discarded by default so the RTF-only path (the common case) pays no
+    extra memory/copy cost. ``extras`` is forwarded to ``open_stream``
+    unchanged (every backend's ``open_stream`` accepts it; a backend that
+    doesn't advertise a given key silently drops it, same as the server
+    path) — lets a caller compare, e.g., fish's ``instruct`` kwarg against
+    plain/inline-tag text on identical phrases."""
+    stream = await backend.open_stream(voice=voice, extras=extras)
     await stream.feed(text)
     await stream.end()
+    pcm = bytearray() if collect_audio else None
     pcm_bytes = 0
     ttfb = None
+    wall = None
     t0 = time.perf_counter()
-    async for ev in stream.events():
-        if ev.kind == "delta":
-            if ttfb is None:
-                ttfb = time.perf_counter() - t0
-            pcm_bytes += len(ev.pcm)
-        elif ev.kind == "completed":
-            break
-    wall = time.perf_counter() - t0
+    try:
+        async for ev in stream.events():
+            if ev.kind == "delta":
+                if ttfb is None:
+                    ttfb = time.perf_counter() - t0
+                pcm_bytes += len(ev.pcm)
+                if pcm is not None:
+                    pcm.extend(ev.pcm)
+            elif ev.kind == "completed":
+                # Capture wall time here, at the moment synthesis actually
+                # finished — not after the finally block's cancel()/
+                # wait_closed() cleanup below, which would inflate the
+                # reading by however long teardown takes.
+                wall = time.perf_counter() - t0
+                break
+    finally:
+        # A mid-drain failure (exception from the loop body, or the caller's
+        # generator raising) must not leave the worker thread running or the
+        # Metal lock held for the next phrase in the batch — unconditionally
+        # cancel and wait for the worker to fully release before returning
+        # (or re-raising). ``cancel()``/``wait_closed()`` are both idempotent
+        # no-ops on an already-finished stream, so this is safe on the
+        # successful path too.
+        await stream.cancel()
+        if hasattr(stream, "wait_closed"):
+            await stream.wait_closed(timeout=30.0)
+    if wall is None:
+        # Loop exited without a "completed" event (e.g. the async generator
+        # ended early/raised before emitting one) — fall back to a
+        # post-cleanup timestamp so the function still returns a value
+        # rather than crashing on the arithmetic below.
+        wall = time.perf_counter() - t0
     audio_s = pcm_bytes / 2 / backend.sample_rate  # int16 mono
-    return audio_s, (ttfb if ttfb is not None else wall), wall
+    return audio_s, (ttfb if ttfb is not None else wall), wall, bytes(pcm) if pcm else b""
+
+
+def _write_wav(path: Path, pcm: bytes, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)  # int16 mono, matches _synth_once's audio_s math
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
 
 
 async def main() -> int:
@@ -96,7 +161,37 @@ async def main() -> int:
     ap.add_argument("--model", default=None, help="backend model override (else backend default)")
     ap.add_argument("--voice", default=None, help="voice name (e.g. af_heart for kokoro)")
     ap.add_argument("--warm", type=int, default=3, help="warm repeats per phrase")
+    ap.add_argument(
+        "--save-audio",
+        default=None,
+        metavar="DIR",
+        help="write one .wav per phrase (final warm run only) to DIR for a listen-back check "
+        "alongside the RTF numbers; omit to keep the default RTF-only, no-disk-write behavior",
+    )
+    ap.add_argument(
+        "--prepend",
+        default="",
+        help="prepend this string to every PHRASES text before synthesis, e.g. an inline "
+        "'[excited] ' style/emotion tag — lets a run be compared against a plain-text run "
+        "on identical base phrases",
+    )
+    ap.add_argument(
+        "--extras",
+        default=None,
+        metavar="JSON",
+        help="JSON object forwarded to open_stream(extras=...) unchanged, e.g. "
+        '\'{"instruct": "excited sports commentary"}\' for fish_tts — a backend that does '
+        "not advertise a given key silently drops it",
+    )
     args = ap.parse_args()
+    try:
+        extras = json.loads(args.extras) if args.extras else None
+    except json.JSONDecodeError as exc:
+        ap.error(f"--extras is not valid JSON ({exc}): {args.extras!r}")
+    if extras is not None and not isinstance(extras, dict):
+        ap.error(
+            f"--extras must decode to a JSON object, got {type(extras).__name__}: {args.extras!r}"
+        )
 
     others = _other_gpu_procs()
     if others:
@@ -114,17 +209,43 @@ async def main() -> int:
     print(
         f"backend={args.backend} model={getattr(backend, 'model', None)} rate={backend.sample_rate} Hz"
     )
-    print(f"start() [cold load + warmup]: {time.perf_counter() - t0:.1f}s\n")
+    print(f"start() [cold load + warmup]: {time.perf_counter() - t0:.1f}s")
+    if args.prepend:
+        print(f"prepend: {args.prepend!r}")
+    if extras:
+        print(f"extras: {extras!r}")
+    print()
+
+    save_dir = Path(args.save_audio) if args.save_audio else None
 
     hdr = f"{'phrase':22} {'run':8} {'audio_s':>8} {'ttfb_s':>8} {'wall_s':>8} {'RTF':>7}"
     print(hdr)
     print("-" * len(hdr))
     for label, text in PHRASES:
+        text = args.prepend + text
         for i in range(args.warm + 1):
-            audio_s, ttfb, wall = await _synth_once(backend, text, args.voice)
-            rtf = wall / audio_s if audio_s else float("nan")
+            # Only the final warm run's audio is worth keeping — earlier
+            # runs (esp. warm1st) are compile/cache outliers per the
+            # profiling README's own convention, and collecting audio on
+            # every run would multiply the pcm-copy cost for no benefit.
+            collect = save_dir is not None and i == args.warm
             tag = "warm1st" if i == 0 else f"warm{i}"
+            try:
+                audio_s, ttfb, wall, pcm = await _synth_once(
+                    backend, text, args.voice, extras=extras, collect_audio=collect
+                )
+            except Exception as exc:  # noqa: BLE001
+                # A backend-level failure (e.g. fish_tts's truncation tripwire)
+                # is itself a result worth seeing next to the other phrases'
+                # numbers, not a reason to abort the whole comparison run.
+                print(f"{label:22} {tag:8} FAILED: {exc}")
+                continue
+            rtf = wall / audio_s if audio_s else float("nan")
             print(f"{label:22} {tag:8} {audio_s:8.2f} {ttfb:8.2f} {wall:8.2f} {rtf:7.2f}")
+            if collect and pcm:
+                out = save_dir / f"{args.backend}_{_slug(label)}.wav"
+                _write_wav(out, pcm, backend.sample_rate)
+                print(f"    -> saved {out}")
 
     await backend.close()
     print("\nRTF < ~1 = faster than realtime (live-viable); RTF > 1 = slower (live-unusable).")

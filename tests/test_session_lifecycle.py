@@ -62,6 +62,21 @@ async def test_input_text_clear_round_trip_drops_buffer():
         assert err["error"]["code"] == P.ErrorCode.BUFFER_EMPTY.value
 
 
+async def test_commit_on_whitespace_only_buffer_is_buffer_empty_not_backend_error():
+    """A buffer that is non-empty but whitespace-only (e.g. ``"   "``) must
+    be rejected as ``BUFFER_EMPTY`` at commit time — server.py checks
+    ``state.buffer.strip()``, not ``state.buffer`` — instead of reaching the
+    backend and failing as a mid-synthesis ``BACKEND_ERROR``."""
+    async with (
+        running_server(ToneBackend(segment_count=1, segment_delay_ms=0)) as srv,
+        connected_client(srv) as (client, _hello),
+    ):
+        await client.append("   \n\t  ")
+        await client.commit()
+        err = await next_event(client, "error")
+        assert err["error"]["code"] == P.ErrorCode.BUFFER_EMPTY.value
+
+
 # --- response.failed --------------------------------------------------------
 
 

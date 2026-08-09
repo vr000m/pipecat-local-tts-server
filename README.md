@@ -50,6 +50,12 @@ uv add "pipecat-local-tts-server[dia]"
 # Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
 # Silicon; mlx-audio==0.4.4). Weights carry the HF card tag apache-2.0.
 uv add "pipecat-local-tts-server[qwen3_tts]"
+
+# Fish (S2 Pro) backend — streaming:false, instruct + inline [tag]/
+# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.4.4). Weights are
+# under the Fish Audio Research License — free for research/non-commercial
+# use, commercial use requires a separate agreement (business@fish.audio).
+uv add "pipecat-local-tts-server[fish_tts]"
 ```
 
 From source (development):
@@ -77,6 +83,11 @@ uv sync --extra dia
 # Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
 # Silicon; mlx-audio==0.4.4). Weights carry the HF card tag apache-2.0.
 uv sync --extra qwen3_tts
+
+# Fish (S2 Pro) backend — streaming:false, instruct + inline [tag]/
+# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.4.4). Weights are
+# under the Fish Audio Research License; see "Backends & licenses".
+uv sync --extra fish_tts
 
 # the reference Pipecat adapter example (pulls the Pipecat framework)
 uv sync --extra examples
@@ -119,6 +130,7 @@ and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
 | pocket_tts | `pipecat.tts-server.pocket_tts` | 8965 |
 | dia | `pipecat.tts-server.dia` | 9065 |
 | qwen3_tts | `pipecat.tts-server.qwen3_tts` | 9165 |
+| fish_tts | `pipecat.tts-server.fish_tts` | 9265 |
 
 ```sh
 # install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
@@ -255,12 +267,19 @@ Operators are responsible for honouring each model's license.
 | `pocket_tts` | `pocket_tts` | `true` | mlx-community/pocket-tts | CC-BY-4.0 (commercial OK w/ attribution) |
 | `dia` | `dia` | `false` | mlx-community/Dia-1.6B-fp16 | Apache-2.0 (commercial-safe) |
 | `qwen3_tts` | `qwen3_tts` | `true` | mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 | apache-2.0 (HF card tag; no LICENSE file in the repo) |
+| `fish_tts` | `fish_tts` | `false` | mlx-community/fish-audio-s2-pro | **Fish Audio Research License (non-commercial; commercial requires separate agreement)** |
 
 > **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
 > **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`
 > (CC-BY-4.0), `dia` (Apache-2.0), and Kokoro (Apache-2.0) are commercial-safe
 > (pocket needs attribution). The choice of backend (and thus of model license)
-> is the operator's.
+> is the operator's. `fish_tts` is the **second** backend under restrictive
+> terms (`voxtral_tts`'s CC-BY-NC being the first) and the first under a
+> *research-only* license: free for research and non-commercial use, royalty-
+> free, worldwide, non-exclusive, non-transferable, non-sublicensable, and
+> revocable — **no commercial rights are granted** without a separate written
+> license agreement from Fish Audio (contact: `business@fish.audio`). See
+> *fish_tts capabilities* below.
 
 ### Voxtral TTS capabilities (as shipped)
 
@@ -375,6 +394,95 @@ mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 (mlx-audio 0.4.4):
 > tokens per generation segment and, if the ceiling is ever reached, FAILS the
 > response (`response.failed` with `BACKEND_ERROR`) rather than completing with
 > silently missing audio. Commit shorter chunks for long content.
+
+### fish_tts capabilities (as shipped)
+
+A `streaming:false`, segment-level backend (mirrors the `dia` template —
+`generate(stream=True)` raises `NotImplementedError` upstream, so every commit's
+batches drain through the same non-streaming bridge). There is **no voice
+concept** (`voice_count: 0`): Fish's `generate()` deletes its `voice` parameter
+unconditionally, so a supplied `voice` is accepted by the server and structurally
+discarded by the backend — even more absolute than `dia`'s discard, since Fish
+never even inspects the value. No voice cloning (`ref_audio`/`ref_text` left
+unwired, decision #2 — the **"Option A accepted cost"**: the WS protocol has no
+reference-audio transport, so this is out of scope, not merely unwired by
+convenience). Verified against mlx-community/fish-audio-s2-pro (mlx-audio 0.4.4,
+Phase 0 gate):
+
+| Field | Value | Note |
+|---|---|---|
+| rate | **44100** | from `server.hello.audio.rate`, read from `model.sample_rate` (NOT 24000, matches `dia`) |
+| `streaming` | `false` | segment-level; one `GenerationResult` per text batch |
+| `binary_audio` | `false` | base64-in-JSON for v1 |
+| `text_formats` | `["plain"]` | `<|speaker:N|>` and `[tag]` markup ride **inside** plain text (undocumented on the wire — see `docs/protocol.md` §6, Option A/B) |
+| `languages` | 38-language static list (`en`, `zh`, `ja`, `ko`, `es`, …) | from the upstream model card (Phase 0 Q6); no `language` kwarg exists in `generate()`'s signature |
+| `voice_count` | `0` | no enumerable voices; speakers (if any) are addressed via in-text `<|speaker:N|>` tags |
+| `extras` | `["temperature","top_k","top_p","instruct"]` | fish's effective sampling kwargs, plus `instruct` — the first backend to advertise a string-typed style-control extra (`ref_audio`/`ref_text` never advertised — no cloning) |
+| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
+| `max_text_chars` | **`500`** | hard server cap — well below kokoro/voxtral_tts/pocket_tts/dia's 2000 (qwen3_tts is lower still, at 800); derived from Phase 0's per-batch token-ceiling calibration, not from license class — a truncation tripwire (`FishTruncationError` → `response.failed`/`BACKEND_ERROR`) also guards the real per-batch token ceiling (see the dev plan Findings for the calibration) |
+
+**Multi-speaker tag syntax — `<|speaker:N|>` — is NOT `dia`'s `[S1]`/`[S2]`
+syntax.** A caller must pick the right dialect for the backend it targets; the
+server cannot disambiguate or reject a wrong-dialect tag (same "Option A
+accepted cost" as `dia` — e.g. a fish `<|speaker:1|>` tag sent to Kokoro would be
+read aloud literally, not interpreted). Example:
+
+```text
+<|speaker:0|>Hello, how are you today?
+<|speaker:1|>I'm doing well, thanks for asking!
+```
+
+**Mixed-input rejection:** untagged prose preceding the *first* `<|speaker:N|>` tag
+would otherwise be silently dropped by the model's own text-splitting logic. The
+server rejects it at commit time instead, with `error {code: "invalid_config"}` —
+don't mix an untagged lead-in with tagged turns in the same commit; the commit
+will fail with a clear error rather than silently losing the lead-in.
+
+**Cross-batch context sharing:** consecutive `<|speaker:N|>`-tagged turns within
+one committed utterance share generation context — each batch's prompt includes
+the previous batch's audio codes, so a caller composing multi-turn tagged text
+should expect that context-sharing, not independent per-turn generation
+(Phase 0 gate Q1, confirmed on this machine).
+
+**Inline `[tag]` emotion/expression markup** is free-form bracketed text,
+accepted anywhere in the payload without server-side validation. The example
+vocabulary below is the same 34 example tags from the installed mlx-audio
+package's `fish_qwen3_omni/README.md` ("Fine-Grained Inline Control" section,
+regrouped thematically here rather than kept in upstream's original order) — the source
+itself frames these as *"Examples include"* free-form textual descriptions for
+open-ended expression control, i.e. the mechanism is open-ended and other
+bracketed descriptions may also work, untested:
+
+`[pause]` `[short pause]` `[emphasis]` `[laughing]` `[laughing tone]`
+`[chuckle]` `[chuckling]` `[tsk]` `[singing]` `[excited]` `[excited tone]`
+`[interrupting]` `[volume up]` `[volume down]` `[loud]` `[low volume]`
+`[low voice]` `[echo]` `[angry]` `[sigh]` `[whisper]` `[screaming]`
+`[shouting]` `[surprised]` `[shocked]` `[delight]` `[sad]` `[moaning]`
+`[exhale]` `[inhale]` `[panting]` `[audience laughter]` `[with strong accent]`
+`[clearing throat]`
+
+For the authoritative, potentially-more-current reference (Fish Audio may add
+more tags upstream), see the
+[`mlx-community/fish-audio-s2-pro` model card](https://huggingface.co/mlx-community/fish-audio-s2-pro)
+and Fish Audio's own S2 Pro documentation. As with `dia`'s `[S1]`/`[S2]` tags,
+these are plain substrings the server never parses (**"Option A accepted
+cost"**): a fish-dialect tag sent to a non-fish backend is read aloud literally,
+not interpreted.
+
+**`instruct` is a separate style-control surface**, not an in-text tag — it is
+a plain string request extra (see the `extras` table row above), validated to
+be a non-oversized `str`; an oversized or non-`str` `instruct` is **rejected**,
+never silently clamped or truncated (unlike `temperature`/`top_p`/`top_k`,
+where any in-range value is still a valid sample knob — a truncated
+instruction would silently change what the model is told to do). An
+empty-or-whitespace-only `instruct` is **valid**, not rejected — it is
+silently coerced to `None` and omitted from the forwarded extras, the same
+"unset extra" convention as leaving `instruct` out entirely. **The precedence
+between `instruct` and an in-text
+`[tag]` when they conflict is undefined and model-determined** — the server
+performs no arbitration and forwards both unmodified apart from
+whitespace-stripping of `instruct`; this is untested, do not assume one
+overrides the other without observing actual model output.
 
 ### Kokoro capabilities (as shipped)
 

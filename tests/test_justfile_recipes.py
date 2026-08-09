@@ -155,6 +155,17 @@ def test_resolve_dia_exits_zero_with_canonical_port():
     assert port == 9065
 
 
+@_skip_no_just
+def test_resolve_fish_tts_exits_zero_with_canonical_port():
+    """``fish_tts`` is now wired into the resolver map at its canonical port
+    9265 (next in the +100 sequence after dia's 9065; plan Decision, port
+    convention table)."""
+    label, host, port = _resolve_fields("fish_tts")
+    assert label == "pipecat.tts-server.fish_tts"
+    assert host == "127.0.0.1"
+    assert port == 9265
+
+
 # ---------------------------------------------------------------------------
 # _plist_endpoint: tts-list reads the live endpoint (and auth token) from the
 # agent's own plist, so a secured agent is probed WITH its token instead of

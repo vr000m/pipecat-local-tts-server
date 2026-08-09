@@ -97,6 +97,84 @@ def coerce_top_p(raw: Any) -> float:
     return value
 
 
+def coerce_instruct(raw: Any, max_len: int) -> str | None:
+    """Validate a client-supplied ``instruct`` string (net-new: the first
+    string-typed advertised extra — see ``fish_tts.py``).
+
+    Generic checks only: ``raw`` must be a ``str`` (this alone rejects
+    ``bool``/``bytes``/numbers — neither ``bool`` nor ``bytes`` is an
+    ``isinstance`` match for ``str``, unlike the numeric coercers' need for an
+    explicit ``bool`` guard). Leading/trailing whitespace is stripped.
+
+    Unlike ``coerce_temperature``/``coerce_top_k``/``coerce_top_p`` (which
+    CLAMP an out-of-bound value — any in-range sample knob is still valid), an
+    oversized ``instruct`` is REJECTED, not truncated: silently cutting an
+    instruction changes what the client actually told the model to do. The
+    length bound (``max_len``) is a parameter, not a module constant — each
+    backend that advertises ``instruct`` supplies its own calibrated bound
+    (e.g. ``fish_tts.py``'s ``_INSTRUCT_MAX_LEN``); this module stays a
+    generic, cross-backend DoS/correctness bound library and must not silently
+    hand a fish-calibrated number to some future second ``instruct``-advertising
+    backend.
+
+    Returns ``None`` for a valid-but-empty-after-strip string — the sibling
+    convention that an unset extra is omitted from the forwarded ``generate()``
+    kwargs, never forwarded as ``""``/``None``. This is a deliberate departure
+    from the numeric coercers' return contract (they always return a
+    forwardable value or raise): **callers must skip a ``None`` result rather
+    than assign it** — ``validate_extras`` already skips a ``None`` *raw*
+    value via ``.get()`` before ever calling a coercer, but that guard does not
+    cover a coercer that itself PRODUCES ``None``, which only ``coerce_instruct``
+    does.
+    """
+    if not isinstance(raw, str):
+        # ValueError (not TypeError) is deliberate: validate_extras() catches
+        # ValueError uniformly across every coercion failure in this module.
+        raise ValueError(f"instruct must be a string, got {raw!r}")  # noqa: TRY004
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    if len(stripped) > max_len:
+        raise ValueError(
+            f"instruct must be at most {max_len} characters, got {len(stripped)} after stripping"
+        )
+    return stripped
+
+
+def merge_extras(
+    coercers: Mapping[str, Callable[[Any], Any]], extras: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Shared ``open_stream`` filter/coerce loop: walk ``extras`` through the
+    backend's own ``coercers`` allowlist (the same dict ``validate_extras``
+    walks) and return only the coerced, forwardable values.
+
+    Two independent ``None``-skip guards, for two different reasons:
+
+    - A ``None`` (or absent) *raw* value means the client did not send that
+      extra — skipped before the coercer ever runs, same as
+      ``validate_extras``.
+    - A coercer that itself *returns* ``None`` (today, only
+      ``coerce_instruct`` — a valid-but-empty-after-strip string) means "this
+      extra ended up unset after validation" — its result is skipped too,
+      rather than forwarding ``effective[key] = None`` into ``generate()``.
+      This guard is a no-op for the purely-numeric coercers elsewhere
+      (``coerce_temperature``/``coerce_top_k``/``coerce_top_p`` never return
+      ``None`` — they always return a forwardable value or raise), so sharing
+      it here costs those backends nothing.
+    """
+    effective: dict[str, Any] = {}
+    if not extras:
+        return effective
+    for key, coerce in coercers.items():
+        raw = extras.get(key)
+        if raw is None:
+            continue
+        coerced = coerce(raw)
+        if coerced is not None:
+            effective[key] = coerced
+    return effective
+
+
 def validate_extras(
     coercers: Mapping[str, Callable[[Any], Any]], extras: Mapping[str, Any]
 ) -> str | None:

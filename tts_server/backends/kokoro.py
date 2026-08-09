@@ -41,12 +41,11 @@ import asyncio
 import logging
 import math
 import threading
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from ..backend import AudioEvent, TTSStream
+from ..backend import TTSStream
 from ..env import env_str_set
-from ._stream_util import stream_generate
+from ._bridge_stream import BridgedStream
 
 logger = logging.getLogger("tts_server.backends.kokoro")
 
@@ -217,15 +216,12 @@ _MAX_TEXT_CHARS = 2000
 _BRIDGE_MAXSIZE = 8
 
 
-class _KokoroStream:
+class _KokoroStream(BridgedStream):
     """Adapts one Kokoro utterance to the ``TTSStream`` protocol.
 
-    ``feed()`` accumulates text; ``end()`` is non-blocking (it only marks
-    end-of-input — the worker is kicked lazily by ``events()`` so first audio
-    ships per segment, not after the whole utterance). ``events()`` drives the
-    shared bridge and yields a ``delta`` per segment, then a ``completed`` on
-    generator exhaustion. ``cancel()`` sets the bridge's cancel event so the
-    generator breaks out and releases the Metal lock.
+    ``feed``/``end``/``cancel``/``wait_closed``/``events`` all live on the
+    shared ``BridgedStream`` base now — only ``_gen_factory`` differs (see the
+    shared base for the full lifecycle rationale).
     """
 
     def __init__(
@@ -237,69 +233,11 @@ class _KokoroStream:
         speed: float | None,
         metal_lock: threading.Lock,
     ) -> None:
+        super().__init__(metal_lock=metal_lock, bridge_maxsize=_BRIDGE_MAXSIZE)
         self._model = model
         self._voice = voice
         self._lang_code = lang_code
         self._speed = speed
-        self._metal_lock = metal_lock
-        self._text = ""
-        # ``_cancel`` is the bridge's break-out signal. The bridge ALSO sets it
-        # in its own consumer ``finally`` on NORMAL exhaustion (to let the worker
-        # release the lock), so ``_cancel`` alone cannot distinguish "client
-        # barge-in" from "drain finished". ``_external_cancel`` is set ONLY by
-        # ``cancel()`` (a real barge-in) and is what gates the terminal
-        # ``completed`` event.
-        self._cancel = threading.Event()
-        self._external_cancel = False
-        # Set by the bridge worker as its final act (lock released + EOF
-        # enqueued). ``wait_closed()`` awaits it so the server can hold a
-        # commit's scheduler slot until the worker has truly exited and the
-        # Metal lock is free — not merely until the drain task was cancelled.
-        self._worker_done = threading.Event()
-        # True once ``events()`` has actually started the bridge worker. Guards
-        # ``wait_closed()`` from blocking forever when synthesis never ran (a
-        # pre-synthesis cancel returns early without a worker / a held lock).
-        self._worker_started = False
-
-    async def feed(self, text: str) -> None:
-        if self._external_cancel:
-            return
-        self._text += text
-
-    async def end(self) -> None:
-        # Non-blocking: end-of-input marker only. Synthesis runs lazily inside
-        # ``events()`` so ``end()`` returns before the first segment completes
-        # (the R4 steady-stream contract).
-        return None
-
-    async def cancel(self) -> None:
-        # Breaks the generator out at the next yield boundary, releasing the
-        # process-wide Metal lock so a cancelled response does not pin it.
-        self._external_cancel = True
-        self._cancel.set()
-
-    async def wait_closed(self, timeout: float | None = None) -> None:
-        """Block (up to ``timeout`` seconds) until the synthesis worker has
-        exited and released the Metal lock. The server awaits this before freeing
-        a cancelled commit's scheduler slot: ``cancel()`` only *requests* a break
-        (honoured at the next yield boundary), so a long single-segment
-        ``generate`` can keep the process-wide lock for tens of seconds after the
-        drain task is cancelled. Without this wait, admission / ``queue_depth``
-        would advertise free capacity while the next commit blocks on that
-        still-held lock.
-
-        ``timeout`` bounds the wait: ``threading.Event.wait(timeout)`` returns
-        (releasing the executor thread) even if the worker never sets
-        ``worker_done`` — so a wedged native ``generate`` cannot hang the server's
-        single dispatcher forever. On timeout the next commit simply serializes on
-        the still-held lock (correct, just not pre-counted) — degrade, never hang.
-        ``None`` waits indefinitely (used by tests that need the exact release)."""
-        if not self._worker_started:
-            return
-        loop = asyncio.get_running_loop()
-        # ``Event.wait`` takes the timeout positionally; pass it through the
-        # executor so a timed-out wait reclaims the thread instead of leaking it.
-        await loop.run_in_executor(None, self._worker_done.wait, timeout)
 
     def _gen_factory(self):
         # Built on the worker thread (inside the Metal lock) so the whole
@@ -314,32 +252,6 @@ class _KokoroStream:
             lang_code=self._lang_code,
             **kwargs,
         )
-
-    async def events(self) -> AsyncGenerator[AudioEvent, None]:
-        if self._external_cancel:
-            return
-        loop = asyncio.get_running_loop()
-        # The bridge starts the worker thread synchronously; mark started so
-        # ``wait_closed()`` knows there is a worker (and a lock) to wait on.
-        self._worker_started = True
-        # The shared bridge owns: Metal-lock acquisition for the whole drain,
-        # float32 -> int16-LE PCM conversion (R3 clip+asymmetric map), bounded
-        # producer-side backpressure, and EOF on generator exhaustion.
-        async for pcm in stream_generate(
-            self._gen_factory,
-            loop=loop,
-            metal_lock=self._metal_lock,
-            cancel=self._cancel,
-            maxsize=_BRIDGE_MAXSIZE,
-            worker_done=self._worker_done,
-        ):
-            if self._external_cancel:
-                return
-            yield AudioEvent(kind="delta", pcm=pcm)
-        if self._external_cancel:
-            return
-        # EOF from generator exhaustion (NOT ``.is_final_chunk``).
-        yield AudioEvent(kind="completed", pcm=b"")
 
 
 class KokoroBackend:
