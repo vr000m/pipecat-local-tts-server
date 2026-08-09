@@ -16,6 +16,16 @@ Findings from the 2026-07-04 run (see dev-plan follow-ups):
 - dia      — dialogue model, goes full drama (25 s takes at RTF ≈ 2).
 - voxtral  — near-silence for elongated graphemes; effectively refuses.
 
+Fish added later (2026-08-09 run, after fish_tts landed):
+
+- fish     — sampled and NON-monotonic, same failure mode as qwen3 (30 O's
+             ≈ 2.55 s voiced, but 60 O's dropped to ≈ 0.98 s — shorter, not
+             longer). Not truncation (fish's per-batch token ceiling scales
+             with INPUT length, so more O's means more budget, not less);
+             this is the model choosing to compress/cut the sustain, same
+             as pocket's compression but inconsistent with it (pocket's
+             60-O compression is still monotonically longer than its 30-O).
+
 Usage (one backend per process — model globals don't cohabit):
 
     uv run --extra kokoro      python scripts/goal_elongation_probe.py kokoro  /tmp/goal_wavs
@@ -23,6 +33,7 @@ Usage (one backend per process — model globals don't cohabit):
     uv run --extra pocket_tts  python scripts/goal_elongation_probe.py pocket  /tmp/goal_wavs
     uv run --extra dia         python scripts/goal_elongation_probe.py dia     /tmp/goal_wavs
     uv run --extra voxtral_tts python scripts/goal_elongation_probe.py voxtral /tmp/goal_wavs
+    uv run --extra fish_tts    python scripts/goal_elongation_probe.py fish    /tmp/goal_wavs
 
 Analysis only (re-measure existing WAVs, no model load):
 
@@ -69,6 +80,11 @@ BACKENDS = {
         "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
         {"stream": True, "streaming_interval": 0.4, "voice": "ryan"},
         True,  # same CompilerCache crash guard the backend applies
+    ),
+    "fish": (
+        "mlx-community/fish-audio-s2-pro",
+        {"stream": False},
+        True,  # same worker-thread CompilerCache crash guard the backend applies
     ),
 }
 
