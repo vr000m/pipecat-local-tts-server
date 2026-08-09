@@ -484,6 +484,42 @@ uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish
 uv run --extra fish_tts python scripts/profiling/rtf_benchmark.py --backend fish_tts --extras '{"instruct": "excited sports commentary"}'
 ```
 
+## Wire-level latency — cross-backend table (in progress, 2026-08-09)
+
+Every number elsewhere in this file except the "Phase 5 wire-level smoke"
+table above is measured **in-process** (`rtf_benchmark.py` — no server, no
+socket). This table instead measures over a **real running server**, through
+a **real websocket client**, via `tests/smoke/latency_smoke.py` — the number
+an actual client experiences, including server scheduling + transport +
+base64 framing overhead that in-process numbers don't capture.
+
+It is a separate table from "Phase 5 wire-level smoke" above rather than a
+merge into it: that table used a different fixed sentence (the two-pangram
+prompt) and only covers three backends; this one standardizes on
+`latency_smoke.py`'s own default sentence so every backend can be added
+later under one exact reproduce command, without re-deriving a prompt.
+**Only `fish_tts` is measured so far** — the remaining rows are placeholders
+for the same profiling pass on the other five backends.
+
+Fixed sentence (`latency_smoke.py`'s built-in default, not overridden):
+*"The quick brown fox jumps over the lazy dog and then keeps on running for
+quite a while."*
+
+Reproduce (per backend):
+```sh
+uv run python -m tts_server serve --backend <name> --socket-path /tmp/tts-wire.sock &
+uv run python tests/smoke/latency_smoke.py --socket-path /tmp/tts-wire.sock --ttfb-bound 30
+```
+
+| Backend | audio_s | TTFB (wire) | Total (wire) | RTF (wire) | Streaming | Notes |
+|---|---|---|---|---|---|---|
+| `fish_tts` | 6.22 | 6.92–7.25 s | 6.94–7.28 s | 1.12–1.17 | `false` | 3 back-to-back runs, warm (model already loaded/warmed at server start). All 312 deltas arrive in a ~25–33 ms burst at the very end — TTFB ≈ total, no early audio. `latency_smoke.py`'s cadence/TTFB-bound assertions correctly FAIL for this backend; that's the expected non-streaming signature (see the fish_tts per-phrase section above), not a bug. |
+| `kokoro` | — | — | — | — | `false` | not yet measured this way — the Phase 5 table above has a wire TTFB (0.129 s) but for the two-pangram prompt, not this table's sentence; re-run before treating as comparable here. |
+| `pocket_tts` | — | — | — | — | `true` | not yet measured this way (Phase 5 table: 0.025 s wire, different prompt). |
+| `voxtral_tts` | — | — | — | — | `true` | not yet measured this way (Phase 5 table: 0.543 s wire, different prompt). |
+| `qwen3_tts` | — | — | — | — | `true` | not yet measured this way. |
+| `dia` | — | — | — | — | `false` | not yet measured this way — expect TTFB ≈ total here too (non-streaming, same signature as fish). |
+
 ## Cross-backend decision table (all six, 2026-08-07 rollup)
 
 Consolidates every backend's numbers above into one picking guide. RTF/TTFB
