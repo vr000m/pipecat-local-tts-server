@@ -432,3 +432,27 @@ smoke-multiconn-phonon *args:
 # Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
 smoke-reconnect *args:
     tests/smoke/run_reconnect.sh {{args}}
+
+# ---------------------------------------------------------------------------
+# macOS menu bar app ("Pipecat Service Toolbar", macos/). See macos/README.md.
+# ---------------------------------------------------------------------------
+
+# Build macos/build/Pipecat Service Toolbar.app (wheel + pinned uv + uv.lock pins + STT helper, ad-hoc signed).
+# Set SIGN_IDENTITY="Developer ID Application: …" to sign for distribution.
+app-build:
+    macos/scripts/build_app.sh
+
+# Build the app bundle, then launch it (quits a running copy first).
+app-open: app-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    osascript -e 'quit app id "ai.pipecat.ServiceToolbar"' 2>/dev/null || true
+    open "macos/build/Pipecat Service Toolbar.app"
+
+# Run the app unbundled from the checkout (builds the wheel from this repo; uses your uv).
+app-run *args:
+    swift run --package-path macos PipecatServiceToolbar {{args}}
+
+# Swift unit tests (+ a live tone-server test when .venv exists: `uv sync --extra client`).
+app-test:
+    swift test --package-path macos

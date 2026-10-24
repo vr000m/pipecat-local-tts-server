@@ -273,3 +273,20 @@ class DiaBackend:
     async def close(self) -> None:
         # Release the model so its mlx/Metal resources can be reclaimed.
         self._loaded_model = None
+
+
+# mlx-audio 0.6.1's Dia loader pulls its audio codec from a second repo
+# (``DAC.from_pretrained`` -> ``snapshot_download(allow_patterns=[*.safetensors, *.json])``).
+DIA_CODEC_REPO = "mlx-community/descript-audio-codec-44khz"
+
+
+def prefetch_specs(model: str | None) -> list:
+    """Snapshots ``python -m tts_server prefetch --backend dia`` fetches: the model
+    repo plus the DAC codec repo mlx-audio loads alongside it."""
+    from ..prefetch import SnapshotSpec, model_specs
+
+    specs = model_specs(model, DEFAULT_DIA_MODEL)
+    specs.append(
+        SnapshotSpec(DIA_CODEC_REPO, allow_patterns=("*.safetensors", "*.json"), kind="codec")
+    )
+    return specs

@@ -30,6 +30,18 @@ from pathlib import Path
 from .backends import make_backend
 from .server import serve
 
+# Every backend name ``make_backend`` accepts; shared by ``serve`` and ``prefetch``.
+BACKEND_CHOICES = (
+    "tone",
+    "kokoro",
+    "voxtral_tts",
+    "pocket_tts",
+    "dia",
+    "qwen3_tts",
+    "fish_tts",
+    "phonon",
+)
+
 # ``TTSClient`` and ``protocol`` are imported lazily inside the status-subcommand
 # helpers so the serve path (run at every launchd startup) doesn't pay for
 # ``websockets.asyncio.client`` it never uses, and so the lean serve path stays
@@ -209,11 +221,101 @@ def _add_endpoint_flags(p: argparse.ArgumentParser, *, include_uri: bool = False
     )
 
 
+def _preflight_listener(args: argparse.Namespace) -> None:
+    """Fail in milliseconds, not after a model load, when the listener can't bind.
+
+    ``TTSServer.start()`` loads the backend BEFORE binding (the rate comes from
+    the model), so a busy port would otherwise surface only after a multi-GB
+    download. Mirrors what the real bind will do: the stale-socket probe for a
+    UDS, and a ``SO_REUSEADDR`` bind (what asyncio sets on POSIX) for TCP. The
+    TOCTOU window is accepted; the real bind still reports through the same
+    error classifier.
+    """
+    import socket
+
+    from .server import _clear_stale_unix_socket
+
+    if args.socket_path:
+        _clear_stale_unix_socket(Path(args.socket_path))
+        return
+    if not args.host or not args.port:
+        return  # missing endpoint (ServerConfig reports it) or port 0 (ephemeral)
+    for family, socktype, proto, _canon, addr in socket.getaddrinfo(
+        args.host, args.port, type=socket.SOCK_STREAM
+    ):
+        with socket.socket(family, socktype, proto) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(addr)
+
+
+async def _emit_ready(server) -> None:
+    """``ready`` callback for ``serve --supervised``: one JSON line on stdout."""
+    from .supervise import emit
+
+    cfg = server.config
+    backend = server.backend
+    port = None if cfg.socket_path else (server.listening_port() or cfg.port)
+    emit(
+        {
+            "event": "ready",
+            "backend": backend.backend_name,
+            "model": backend.model,
+            "host": None if cfg.socket_path else cfg.host,
+            "port": port,
+            "socket_path": cfg.socket_path,
+            "rate": backend.sample_rate,
+            "pid": os.getpid(),
+        }
+    )
+
+
 def _cmd_serve(args: argparse.Namespace) -> None:
     logging.basicConfig(
         level=args.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if not args.supervised:
+        _run_serve(args)
+        return
+
+    # Supervised mode (driven by the macOS app): stdout carries only JSON
+    # lifecycle events; logs stay on stderr; stdin EOF stops the server.
+    from . import supervise
+
+    with supervise.json_channel():
+        try:
+            _preflight_listener(args)
+            _run_serve(args, ready=_emit_ready, stop_on_stdin_eof=True)
+        except KeyboardInterrupt:
+            raise
+        except SystemExit as exc:
+            # Config errors raise ``SystemExit("tts_server: ...")``; surface them
+            # as an event too so the app can show the message.
+            if isinstance(exc.code, str):
+                supervise.emit(
+                    {
+                        "event": "error",
+                        "code": supervise.CODE_CONFIG,
+                        "message": exc.code,
+                        "exc_type": "SystemExit",
+                    }
+                )
+            raise
+        except Exception as exc:
+            logging.getLogger("tts_server").error("tts_server: fatal error", exc_info=exc)
+            code, message = supervise.classify_startup_error(exc)
+            supervise.emit(
+                {
+                    "event": "error",
+                    "code": code,
+                    "message": message,
+                    "exc_type": type(exc).__name__,
+                }
+            )
+            raise SystemExit(1) from None
+
+
+def _run_serve(args: argparse.Namespace, **serve_kwargs) -> None:
     resolved_model = _resolve_model(args.backend, args.model)
     # Startup model logging (R6): log the resolved backend + model BEFORE the
     # (potentially slow) model load so an operator sees what is being loaded.
@@ -242,6 +344,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             ping_timeout_seconds=_resolve_keepalive(
                 "TTS_WS_PING_TIMEOUT", P.KEEPALIVE_PING_TIMEOUT_SECONDS
             ),
+            **serve_kwargs,
         )
     )
 
@@ -408,6 +511,20 @@ def _cmd_voices(args: argparse.Namespace) -> None:
                 print(f"  {label}: {item}", file=out)
 
 
+def _cmd_prefetch(args: argparse.Namespace) -> None:
+    """``prefetch`` subcommand: download (or ``--check``) a backend's weights."""
+    logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    from . import prefetch
+
+    model = _resolve_model(args.backend, args.model)
+    code = prefetch.run_prefetch(args.backend, model, check=args.check, json_mode=args.json)
+    if code:
+        raise SystemExit(code)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the ``tts_server`` argument parser (serve + status + voices subcommands).
 
@@ -420,25 +537,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = subparsers.add_parser("serve", help="run the server (default)")
     _add_endpoint_flags(p_serve)
-    p_serve.add_argument(
-        "--backend",
-        choices=(
-            "tone",
-            "kokoro",
-            "voxtral_tts",
-            "pocket_tts",
-            "dia",
-            "qwen3_tts",
-            "fish_tts",
-            "phonon",
-        ),
-        default="tone",
-    )
+    p_serve.add_argument("--backend", choices=BACKEND_CHOICES, default="tone")
     # Default None so ``_resolve_model`` applies a backend-aware fallback
     # (the Kokoro repo for ``kokoro``; no model for ``tone``). An explicit value
     # always wins and is passed through verbatim.
     p_serve.add_argument("--model", default=None)
     p_serve.add_argument("--log-level", default="INFO")
+    p_serve.add_argument(
+        "--supervised",
+        action="store_true",
+        help=(
+            "for a supervising app: print JSON lifecycle events (ready/error) on "
+            "stdout and stop when stdin reaches EOF"
+        ),
+    )
+
+    p_prefetch = subparsers.add_parser(
+        "prefetch", help="download a backend's model weights without serving"
+    )
+    p_prefetch.add_argument("--backend", choices=BACKEND_CHOICES, required=True)
+    p_prefetch.add_argument("--model", default=None)
+    p_prefetch.add_argument(
+        "--check",
+        action="store_true",
+        help="report whether the weights are already cached (never touches the network)",
+    )
+    p_prefetch.add_argument("--json", action="store_true", help="emit JSON-lines events on stdout")
+    p_prefetch.add_argument("--log-level", default="WARNING")
 
     p_status = subparsers.add_parser(
         "status", help="probe a running server with server.status and print its reply"
@@ -470,7 +595,11 @@ def main() -> None:
     # ``-h``/``--help`` is NOT reinterpreted as a serve flag.
     argv = sys.argv[1:]
     top_level_help = argv and argv[0] in {"-h", "--help"}
-    if argv and not argv[0].startswith("-") and argv[0] in {"serve", "status", "voices"}:
+    if (
+        argv
+        and not argv[0].startswith("-")
+        and argv[0] in {"serve", "status", "voices", "prefetch"}
+    ):
         sub, rest = argv[0], argv[1:]
     elif top_level_help:
         sub, rest = None, argv
@@ -488,6 +617,8 @@ def main() -> None:
         _cmd_status(args)
     elif args.cmd == "voices":
         _cmd_voices(args)
+    elif args.cmd == "prefetch":
+        _cmd_prefetch(args)
     else:
         _cmd_serve(args)
 

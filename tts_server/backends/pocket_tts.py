@@ -274,3 +274,44 @@ class PocketBackend:
 
     async def close(self) -> None:
         self._loaded_model = None
+
+
+# Predefined voice embeddings mlx-audio 0.6.1 fetches lazily at generate time
+# (``utils.PREDEFINED_VOICES``: ``hf://<repo>/embeddings/<name>.safetensors@<sha>``).
+# Fallback values for when mlx-audio is not importable; read live otherwise.
+_POCKET_VOICES_REPO = "kyutai/pocket-tts-without-voice-cloning"
+_POCKET_VOICES_SHA = "d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3"
+
+
+def _pocket_voice_source() -> tuple[str, str]:
+    """``(repo_id, revision)`` of the predefined voice embeddings."""
+    try:
+        from mlx_audio.tts.models.pocket_tts.utils import PREDEFINED_VOICES  # type: ignore
+
+        uri = next(iter(PREDEFINED_VOICES.values()))
+        path, _, sha = uri.removeprefix("hf://").partition("@")
+        repo = "/".join(path.split("/")[:2])
+        if repo and sha:
+            return repo, sha
+    except Exception:  # noqa: BLE001, S110 - lean env or upstream shape change
+        pass
+    return _POCKET_VOICES_REPO, _POCKET_VOICES_SHA
+
+
+def prefetch_specs(model: str | None) -> list:
+    """Snapshots ``python -m tts_server prefetch --backend pocket_tts`` fetches: the
+    model repo plus the predefined voice embeddings (optional, like at runtime)."""
+    from ..prefetch import SnapshotSpec, model_specs
+
+    specs = model_specs(model, DEFAULT_POCKET_MODEL)
+    repo, sha = _pocket_voice_source()
+    specs.append(
+        SnapshotSpec(
+            repo,
+            revision=sha,
+            allow_patterns=("embeddings/*.safetensors",),
+            kind="voice",
+            required=False,
+        )
+    )
+    return specs

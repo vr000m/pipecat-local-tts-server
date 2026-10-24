@@ -657,3 +657,11 @@ class FishBackend:
     async def close(self) -> None:
         # Release the model so its mlx/Metal resources can be reclaimed.
         self._loaded_model = None
+
+
+def prefetch_specs(model: str | None) -> list:
+    """Snapshots ``python -m tts_server prefetch --backend fish_tts`` fetches: the
+    one mlx-audio repo ``load()`` reads (tokenizer/codec files ship inside it)."""
+    from ..prefetch import model_specs
+
+    return model_specs(model, DEFAULT_FISH_MODEL)

@@ -5,6 +5,36 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - Unreleased
+
+### Added
+
+- **`serve --supervised`** for a managing parent process: stdout carries only JSON
+  lines (`ready` once listening with the real port, or `error` with a stable `code`
+  such as `EADDRINUSE`, `ModuleNotFoundError`, `ModelDownloadError`), a busy port is
+  reported before the model loads, and stdin EOF stops the server like SIGTERM.
+- **`prefetch` subcommand**: downloads exactly what `serve` would fetch (model repo,
+  dia's codec, pocket_tts voice embeddings, phonon's pinned revision and enabled
+  voices, and the phonon-q8/q4 conversion) with optional JSON-lines progress, and
+  `--check` reports whether the weights are cached without touching the network.
+  Each backend module now exports `prefetch_specs(model)`.
+- `pipecat-tts` console script (same CLI as `python -m tts_server`).
+- **Pipecat Service Toolbar** (`macos/`): native SwiftUI menu bar app that installs
+  and serves local speech services on fixed loopback ports. TTS: every backend here
+  (bundled pinned `uv` + this wheel + `uv.lock` constraints; a managed CPython 3.12 and
+  one venv per service). STT: Apple Speech (SpeechAnalyzer behind a native WebSocket
+  server), Whisper and Kyutai (`moshi_mlx`), all on the `pipecat-local-stt-server` wire
+  protocol. Running-only main menu, an Add Models catalog, copy URL / Pipecat service /
+  env from a right-click menu, model deletion, and "Try it" for both directions.
+  `just app-build` / `app-open` / `app-run` / `app-test`.
+
+### Changed
+
+- `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
+  (both still `RuntimeError` subclasses).
+- `TTSServer.listening_port()` returns `None` for a Unix socket instead of a
+  character of its path; `TTSServer` exposes read-only `backend` and `config`.
+
 ## [0.6.0] - 2026-10-22
 
 ### Added

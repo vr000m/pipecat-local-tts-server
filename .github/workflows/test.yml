@@ -66,7 +66,9 @@ jobs:
             tests/test_multiconn_fairness.py \
             tests/test_render_tts_plist.py \
             tests/test_justfile_recipes.py \
-            tests/test_status_port.py
+            tests/test_status_port.py \
+            tests/test_supervised_cli.py \
+            tests/test_prefetch_cli.py
 
   # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
   # reference Pipecat adapter tests. These are NOT in the lean allow-list above:
@@ -147,3 +149,25 @@ jobs:
                 d.DEFAULT_DIA_MODEL, q.DEFAULT_QWEN3_MODEL, f.DEFAULT_FISH_MODEL,
                 ph.DEFAULT_PHONON_MODEL)
           PY
+
+  # The macOS menu bar app (macos/): Swift 6 package build + unit tests. The live
+  # supervised tone-server test in CoreTests runs because `uv sync --extra client`
+  # creates the repo .venv it looks for; the real install end-to-end test stays
+  # opt-in (PIPECAT_TOOLBAR_E2E=1) since it downloads Python, packages and weights.
+  test-macos-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync lean env (for the live tone-server test)
+        run: uv sync --extra client
+      - name: Build the app package
+        run: swift build --package-path macos
+      - name: Swift tests
+        run: swift test --package-path macos

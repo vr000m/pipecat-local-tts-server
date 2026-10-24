@@ -305,3 +305,40 @@ def test_plist_endpoint_extracts_auth_token_file(tmp_path):
     assert (host, port) == ("127.0.0.1", "8765")
     assert sock == ""
     assert authfile == token_path
+
+
+# ---------------------------------------------------------------------------
+# Drift invariant: the macOS menu bar app's catalog (a fourth copy of the map)
+# ---------------------------------------------------------------------------
+
+MACOS_CATALOG = REPO_ROOT / "macos" / "Sources" / "PipecatToolbarCore" / "Service.swift"
+
+
+def _macos_catalog_ports(kind: str = "tts") -> dict[str, int]:
+    """``{server name: port}`` for one service kind, parsed from ``Service.swift``:
+    enum cases map Swift names to server names (``case pocketTTS = "pocket_tts"``),
+    and each ``ServiceInfo(service: .x, kind: .tts, ... port: N, ...)`` literal
+    carries the kind and port."""
+    text = MACOS_CATALOG.read_text()
+    names = {
+        m.group(1): m.group(2) or m.group(1)
+        for m in re.finditer(r'^\s*case (\w+)(?: = "(\w+)")?\s*$', text, re.MULTILINE)
+    }
+    return {
+        names[m.group(1)]: int(m.group(3))
+        for m in re.finditer(r"service: \.(\w+), kind: \.(tts|stt),.*?port: (\d+)", text, re.DOTALL)
+        if m.group(2) == kind
+    }
+
+
+def test_macos_app_catalog_matches_readme_ports():
+    ports = _macos_catalog_ports("tts")
+    table = _readme_port_table()
+    assert set(ports) == _argparse_backends()
+    assert ports == {backend: port for backend, (_label, port) in table.items()}
+
+
+def test_macos_app_stt_ports_do_not_collide_with_tts():
+    stt = _macos_catalog_ports("stt")
+    assert stt, "expected STT services in the macOS catalog"
+    assert not set(stt.values()) & set(_macos_catalog_ports("tts").values())

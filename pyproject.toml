@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-local-tts-server"
-version = "0.6.0"
+version = "0.7.0"
 description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -182,6 +182,11 @@ dev = [
     # stdlib-only so the lean base never requires a dev-only dependency.
     "numpy>=1.26",
 ]
+
+[project.scripts]
+# Same CLI as ``python -m tts_server``; gives a per-backend venv (the macOS menu
+# bar app creates one per backend) a stable executable to point at.
+pipecat-tts = "tts_server.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/vr000m/pipecat-local-tts-server"

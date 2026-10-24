@@ -51,6 +51,10 @@ _TTS_MODULES = [
     # ``mlx_audio`` / ``huggingface_hub`` stay lazy inside the seams (Phase 1).
     "tts_server.backends.phonon",
     "tts_server.backends.phonon_voices",
+    # The supervising-app hooks (``serve --supervised`` / ``prefetch``) stay lean:
+    # ``huggingface_hub``/``tqdm`` are imported only inside the download seams.
+    "tts_server.supervise",
+    "tts_server.prefetch",
 ]
 
 # Top-level package names that must NEVER appear in ``sys.modules`` as a side
