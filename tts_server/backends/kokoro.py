@@ -508,3 +508,11 @@ class KokoroBackend:
         # process-wide lock is intentionally not torn down (it is a module-free
         # instance attribute; dropping the model is sufficient).
         self._loaded_model = None
+
+
+def prefetch_specs(model: str | None) -> list:
+    """Snapshots ``python -m tts_server prefetch --backend kokoro`` fetches: the
+    one mlx-audio repo ``load()`` reads (tokenizer/codec files ship inside it)."""
+    from ..prefetch import model_specs
+
+    return model_specs(model, DEFAULT_KOKORO_MODEL)

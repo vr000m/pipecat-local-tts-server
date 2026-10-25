@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Every job only reads the repo; nothing here needs a writable GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   # Lean job: client-only install on Linux. Proves the lean base (websockets
   # only, no mlx-audio / numpy) resolves, the package imports without pulling
@@ -63,10 +67,19 @@ jobs:
             tests/test_auth.py \
             tests/test_resource_limits.py \
             tests/test_backpressure.py \
+            tests/test_request_lifecycle.py \
             tests/test_multiconn_fairness.py \
             tests/test_render_tts_plist.py \
             tests/test_justfile_recipes.py \
-            tests/test_status_port.py
+            tests/test_status_port.py \
+            tests/test_supervised_cli.py \
+            tests/test_app_helper_cancel.py \
+            tests/test_prefetch_cli.py \
+            tests/test_macos_catalog_drift.py \
+            tests/test_backend_registry.py \
+            tests/test_supervise_lifecycle.py \
+            tests/test_supervised_contract.py \
+            tests/test_supervised_smoke_helpers.py
 
   # Examples job: installs the `examples` extra (pipecat-ai, pinned) and runs the
   # reference Pipecat adapter tests. These are NOT in the lean allow-list above:
@@ -147,3 +160,25 @@ jobs:
                 d.DEFAULT_DIA_MODEL, q.DEFAULT_QWEN3_MODEL, f.DEFAULT_FISH_MODEL,
                 ph.DEFAULT_PHONON_MODEL)
           PY
+
+  # The macOS menu bar app (macos/): Swift 6 package build + unit tests. The live
+  # supervised tone-server test in CoreTests runs because `uv sync --extra client`
+  # creates the repo .venv it looks for; the real install end-to-end test stays
+  # opt-in (PIPECAT_TOOLBAR_E2E=1) since it downloads Python, packages and weights.
+  test-macos-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: latest-stable
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync lean env (for the live tone-server test)
+        run: uv sync --extra client
+      - name: Build the app package
+        run: swift build --package-path macos
+      - name: Swift tests
+        run: swift test --package-path macos

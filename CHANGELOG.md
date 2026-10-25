@@ -5,7 +5,141 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - Unreleased
+
+### Added
+
+- **`serve --supervised`** for a managing parent process: stdout carries only JSON
+  lines (`ready` once listening with the real port, or `error` with a stable `code`
+  such as `EADDRINUSE`, `ModuleNotFoundError`, `ModelDownloadError`), a busy port is
+  reported before the model loads, and stdin EOF stops the server like SIGTERM.
+- **`prefetch` subcommand**: downloads exactly what `serve` would fetch (model repo,
+  dia's codec, pocket_tts voice embeddings, phonon's pinned revision and enabled
+  voices, and the phonon-q8/q4 conversion) with optional JSON-lines progress, and
+  `--check` reports whether the weights are cached without touching the network (a
+  snapshot with an unfinished download blob, or missing a shard its index names, is not
+  cached).
+  Each backend module now exports `prefetch_specs(model)`.
+- `pipecat-tts` console script (same CLI as `python -m tts_server`).
+- **App-path smoke** (`just smoke-supervised [backend]`, `just smoke-supervised-all`;
+  `tests/smoke/supervised_smoke.py`): drives a backend the way the menu bar app does
+  (`prefetch --json --check`, `serve --supervised` on an ephemeral loopback port with the
+  app's environment, the `ready` line, a TCP synthesis, a busy-port `EADDRINUSE`, and a
+  stdin-EOF stop with no orphan). Never downloads weights unless `--download`.
+- **Pipecat Service Toolbar** (`macos/`): native SwiftUI menu bar app that installs
+  and serves local speech services on fixed loopback ports. TTS: every backend here
+  (bundled pinned `uv` + this wheel + `uv.lock` constraints; a managed CPython 3.12 and
+  one venv per service). STT: Apple Speech (SpeechAnalyzer behind a native WebSocket
+  server), Whisper and Kyutai (`moshi_mlx`), all on the `pipecat-local-stt-server` wire
+  protocol. Running-only main menu, an Add Models catalog, copy URL / Pipecat service /
+  env from a right-click menu, model deletion, and "Try it" for both directions.
+  Quitting stops the install or download step in flight (and the bootstrap's wheel
+  build), lets no later step start, and waits up to 20 s for installs and removals to
+  unwind; deleting a service with "Delete Everything" removes its model weights even
+  when its environment is outdated, and reports any it could not delete. An abandoned
+  Kyutai transcription releases the backend (cancelled per 80 ms frame). Cancel
+  always ends an install (SIGKILL 5 s after SIGTERM) and never counts as a finished
+  one; deleting a service mid-install cancels the install first; model deletion only
+  touches `models--*` folders in the Hugging Face hub cache and the server's own
+  derived-weights folder; a startup error is never lost to the server's exit; the
+  TTS "Try it" request lifecycle is one pure state machine (`TTSRequestMachine`,
+  tested over every state x event cell, random interleavings against a model server
+  and a live tone server): requests go out one at a time on a reused connection,
+  each starting with `input_text.clear`; Stop before the commit sends no commit and
+  Stop after it sends `response.cancel` behind it; a frame acts only on the request
+  its `response_id` / `previous_event_id` names; each request reports its outcome
+  once; a request the server goes silent on times out and reconnects. It shows
+  server error messages and ends cleanly when the output device changes. A cancelled queued install records
+  nothing; an install step no longer waits on a grandchild holding its pipes.
+  STT environments install against checked-in, hash-pinned constraints
+  (`macos/constraints/stt-<engine>.txt`, `--require-hashes`) and load model weights
+  pinned to a commit, which `prefetch` downloads and `serve-stt` loads; neither pin
+  marks an existing environment outdated. The supervised/prefetch JSON lines both
+  emitters write (this server and the STT helper) are fixed in
+  `docs/supervised-contract.json` and drift-tested from both sides.
+  `HF_TOKEN` reaches only `prefetch` and `serve`, never `uv`. The Apple Speech
+  server caps clients at 8 and decodes one at a time, and survives Stop with a
+  decode in flight; microphone audio is resampled without per-buffer seams.
+  Model deletion refuses a path whose backend directory is a symlink out of the
+  cache; stopping a subprocess also ends its descendants (process group) and never
+  hangs on a failed or refused launch; a server exit reported after a removal no
+  longer marks the service installed; quit cancels an Apple Speech model install;
+  the Apple Speech server closes a client that stops reading its replies.
+  `just app-build` / `app-open` / `app-run` / `app-test`. Right-click a running
+  service for **Test Voice** (speaks "Hello world, this is the Pipecat test server
+  using the <model> model.") or **Test Transcription** (a bundled spoken clip, no
+  microphone, checked against its sentence); the STT Try it "Test Clip" button uses
+  the same clip instead of a live system-voice synthesis.
+
+### Changed
+
+- `docs/protocol.md` §3 now states the request lifecycle on a reused connection
+  (no wire change, protocol stays v0.1): every refusal of an append or commit keeps the
+  buffer, so a client MUST `input_text.clear` before its next append after any append or
+  commit that was not admitted and that it will not retry (a refusal, a failed send, or a
+  request abandoned before it was admitted), and SHOULD clear before every request; a
+  barge-in cancel must follow the commit it stops. "Try it" now does
+  both, so a refused request's text can no longer prefix the next one and Stop between
+  append and commit no longer leaves a synthesis holding the connection.
+- Pipecat Service Toolbar internals (no change to behaviour, ports or on-disk layout):
+  the per-service lifecycle state machine moved from the app target into
+  `PipecatToolbarCore` as a pure reducer (`ServiceLifecycle.reduce`) plus an effect
+  runner (`ServiceDriver`) with injectable environment, process, port, Apple Speech
+  and clock seams; `ServiceModel` is now a thin `@Observable` adapter and the Swift
+  tests depend on Core only. Add Models' download size now counts every snapshot an
+  install fetches at its pinned revision (Phonon's pin, dia's codec, pocket_tts's
+  voice embeddings, the STT helper's file filter at its `MODEL_REVISIONS` pin, which
+  `ServiceCatalog.sttModelRevisions` repeats) from `ServiceCatalog.snapshots(for:)`,
+  which a lean drift test compares with each backend's `prefetch_specs(model)` and
+  with the helper's pins.
+- `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
+  (both still `RuntimeError` subclasses).
+- `TTSServer.listening_port()` returns `None` for a Unix socket instead of a
+  character of its path; `TTSServer` exposes read-only `backend` and `config`.
+- Backend names live in one registry, `tts_server.backends.BACKENDS` (module,
+  class, default-model constant, prefetch hooks per backend). `make_backend`, the
+  `--backend` choices of `serve`/`prefetch` (`__main__.BACKEND_CHOICES`), the
+  default-model fallback and the `prefetch` dispatch all derive from it; the hook
+  shapes are Protocols in `tts_server.backend` (`BackendPrefetch`,
+  `SupportsPrefetchFinalize`, `SupportsPrefetchCheckExtra`). No CLI or output change.
+- `serve()` takes `lifecycle=` (a `tts_server.server.ServeLifecycle`: `attach`,
+  `startup_abandoned`) instead of the unreleased `stop_on_stdin_eof=`. The
+  `--supervised` policy (ready/error lines, exit codes, stdin-EOF stop, hard exit
+  when the supervisor leaves mid-startup) moved to `tts_server.supervise`
+  (`run_supervised`, `StdinEofLifecycle`, `emit_ready`); `server` no longer imports
+  `supervise` or calls `os._exit`. JSON lines and exit codes are unchanged.
+
+### Fixed
+
+- phonon: a q8/q4 conversion killed by SIGTERM (the app's Cancel) or `os._exit` no
+  longer leaves its temp folder forever; the next conversion of the same key removes
+  temp folders whose process is gone.
+- Pipecat Service Toolbar: a late refresh (Reset, Try Again, a sibling's install, a
+  slow cache probe) no longer hides a running server or undoes a Delete; Cancel during
+  the busy-port check works and a late answer is dropped; an obsolete server's `error`
+  line no longer judges the next server; an Apple Speech download already under way
+  is attached to (progress and Cancel work); a fresh install cancelled during setup
+  reads as not installed; Delete Everything also removes partially downloaded repos
+  and reports any folder it refused; a bundled app missing an STT engine's hash pins
+  refuses that install instead of resolving unpinned; choosing "Default voice" in
+  Try it is remembered; stale audio no longer replays after an output-device change;
+  `just app-open` quits the bundle id the build used.
+- Pipecat Service Toolbar: an environment from before variants keeps its builder
+  installed when a sibling variant installs or is cancelled; a variant record that
+  can't be written or removed now fails the install or removal instead of reporting
+  success; Reset is refused while a service is running, installing or removing;
+  Stop and quit stop a busy-port probe (`lsof`) in flight; quit always stops the
+  environment manager's subprocesses (a cache probe included) and waits for a
+  bootstrap or Reset in flight; Try Again and Reset no longer start a second
+  bootstrap or Reset while one runs.
+- Pipecat Service Toolbar: Delete Everything on one variant keeps (and reports) the
+  model folders when a sibling's cache check gives no answer, such as one quit stopped,
+  so quitting while Phonon 8-bit is removed no longer deletes the voices Phonon still
+  uses; a late bootstrap refresh after quit no longer attaches an Apple Speech install,
+  and the download-size lookup no longer starts after quit; Stop cancels a busy-port
+  probe at once instead of after its re-read; Get, Start and Delete wait while Reset
+  or a bootstrap runs (a Start during Reset no longer fails with "missing the STT
+  helper"); a stop after a process was reaped never signals a reused pid's group.
 
 ## [0.6.1] - 2026-10-23
 

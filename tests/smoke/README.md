@@ -92,6 +92,38 @@ just smoke-multiconn-fish_tts --turns 3   # concurrency against fish_tts (non-st
 just smoke-multiconn-phonon               # concurrency against phonon (fast streaming backend, RTF≈0.04×)
 ```
 
+## App path (`supervised_smoke.py`)
+
+`run_smoke.sh` starts a plain `serve` on a Unix socket; the macOS menu bar app
+never does that. `supervised_smoke.py` is a proxy for the app: it runs the exact
+commands `EnvironmentManager.swift` builds, with the app's scrubbed environment
+(`ProcessEnvironment.base()` + `HF_TOKEN`, drift-tested) and a temp cwd, on a free
+**ephemeral** loopback port (never a canonical `_resolve` port or 8665-8672):
+
+| Phase | What must hold |
+|---|---|
+| `prefetch-check` | `prefetch --backend B --json --check`: every stdout line is a `docs/supervised-contract.json` event, ending in one `summary`. `--download` runs a real `prefetch --json` first (off by default: GBs). |
+| `ready` | `serve --supervised --host 127.0.0.1 --port P --log-level INFO`: the first stdout line is `ready` with the backend, resolved model, real port and the child's own pid, within `--ready-timeout` (30 s tone, 600 s otherwise, the app's `readyTimeout`). |
+| `synth` | `TTSClient` over TCP: `hello.audio.rate == ready.rate`, int16 PCM, gapless `seq` from 0, `duration_ms` matches the samples, non-silent; TTFB/RTF/cadence printed (`latency_smoke.cadence_metrics`). |
+| `busy-port` | a second supervised serve on the live port prints `error{code: EADDRINUSE}` before any model load (no `starting` log) and exits non-zero. |
+| `eof-stop` | closing stdin alone (no signal) exits 0 within `--stop-bound` (10 s, the app's `stopGrace`); stdout carried only JSON lines; the port is released; nothing is left in the child's process group. |
+| `eof-during-startup` | stdin closed right after launch also exits 0 (app quit mid-load). |
+
+```sh
+just smoke-supervised                     # tone (no weights)
+just smoke-supervised phonon              # one backend, uses this .venv as-is
+just smoke-supervised-all                 # every backend in tts_server.backends.BACKENDS
+just smoke-supervised kokoro --python "<app env>/bin/python"   # test an env the app built
+just smoke-supervised phonon --download   # allow the real prefetch (network, weights)
+```
+
+Weights not cached: the serve phases `SKIP (needs weights)` (busy-port still runs,
+with `HF_HUB_OFFLINE=1`). Extra not installed in the interpreter: they `SKIP (extra not
+installed)` from the `ModuleNotFoundError` line the app would get. A kokoro env
+without `misaki` still reports `ready` (its warmup failure is non-fatal) and FAILs at
+`synth`. `--keep` keeps the per-child stderr logs. The pure checks live in
+`_supervised_contract.py` (lean-tested by `tests/test_supervised_smoke_helpers.py`).
+
 ## Multi-connection / backpressure (`run_multiconn.sh` + `multiconn_smoke.py`)
 
 Two (or more) clients share one backend and **interleave** their requests, so

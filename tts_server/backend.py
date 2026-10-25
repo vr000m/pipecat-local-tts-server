@@ -29,11 +29,14 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from ._audio import float_to_pcm16
+
+if TYPE_CHECKING:
+    from .prefetch import SnapshotSpec
 
 
 @dataclass
@@ -159,6 +162,39 @@ class SupportsVoices(Protocol):
     for it)."""
 
     def voices(self) -> list[str]: ...
+
+
+# ---------------------------------------------------------------------------
+# Prefetch hooks (``python -m tts_server prefetch``). Implemented by a backend
+# MODULE, not the backend instance: prefetch runs without constructing or
+# starting a backend. ``tts_server.backends`` resolves the module through its
+# registry and checks these structurally, like the ``Supports*`` protocols above.
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class BackendPrefetch(Protocol):
+    """REQUIRED for every registered backend with weights: the Hugging Face
+    snapshots its ``start()`` downloads, so ``prefetch`` fetches the same set."""
+
+    def prefetch_specs(self, model: str | None) -> list[SnapshotSpec]: ...
+
+
+@runtime_checkable
+class SupportsPrefetchFinalize(Protocol):
+    """Optional: work to do once the snapshots are cached (phonon converts its
+    quantized aliases). ``emit`` is the JSON-lines sink, ``None`` in text mode."""
+
+    def prefetch_finalize(
+        self, model: str | None, emit: Callable[[dict[str, Any]], None] | None
+    ) -> None: ...
+
+
+@runtime_checkable
+class SupportsPrefetchCheckExtra(Protocol):
+    """Optional: extra fields merged into the ``prefetch --check`` summary."""
+
+    def prefetch_check_extra(self, model: str | None) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------

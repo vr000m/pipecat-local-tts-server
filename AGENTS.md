@@ -32,13 +32,15 @@ uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 
 ## CLI (`python -m tts_server <subcommand>`)
 
-Endpoint precedence everywhere: **URI > socket > host+port**.
+Also installed as the `pipecat-tts` console script (same `main()`). Endpoint
+precedence everywhere: **URI > socket > host+port**.
 
 | Subcommand | Flags | Notes |
 |---|---|---|
-| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts,fish_tts,phonon}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`) | Runs the server. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). `phonon` also accepts the aliases `phonon` (fp), `phonon-q8`, `phonon-q4` (converted once into `$XDG_CACHE_HOME/pipecat-tts-server/phonon/`). No `--uri` (the listener is built from socket-path/host+port). |
+| `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts,fish_tts,phonon}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`), `--supervised` | Runs the server. `--supervised` (for the macOS app): stdout carries only JSON lines (`ready` once listening, or `error{code}`, e.g. `EADDRINUSE` before the model load), and stdin EOF stops the server like SIGTERM. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). `phonon` also accepts the aliases `phonon` (fp), `phonon-q8`, `phonon-q4` (converted once into `$XDG_CACHE_HOME/pipecat-tts-server/phonon/`). No `--uri` (the listener is built from socket-path/host+port). |
 | `status` | `--socket-path`, `--host`, `--port`, `--uri <ws://…>`, `--auth-token-file`, `--timeout <s>` (default `3.0`), `--json` | Preflight health probe: handshake + `server.status`, prints backend/model/rate/caps/queue-depth/voices/uptime/pid. Exits non-zero if unreachable. `--json` emits raw `hello`+`status`. |
 | `voices` | `--backend <name>` (default `phonon`; any other exits non-zero), `--language <code>`, `--json`, `--refresh` | Lists the bundled Phonon voice catalog (slug, language, enabled via `PIPECAT_TTS_PHONON_VOICES`, cached in the HF cache; `cached` is `?`/JSON `null` when `huggingface_hub` is not installed). `--refresh` diffs the live `voices.jsonl` (added/removed/changed, plus duplicate and invalid/reserved slugs) and changes nothing. Never talks to a server. |
+| `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `convert` (phonon aliases), `warning` (an optional snapshot failed), `check`/`summary`, `error`; fields in README). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
 use `--auth-token-file`.
@@ -53,7 +55,17 @@ use `--auth-token-file`.
 | `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to re-advertise after installing their extra G2P package. |
 | `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
+| `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |
 | `TTS_WS_PING_INTERVAL` / `TTS_WS_PING_TIMEOUT` | server | Keepalive ping period / pong timeout (seconds). Defaults `20` / `120`: ping kept, pong timeout **large but finite** so GIL-holding Metal compute can't trip a `1011` mid-generation *and* a dead idle peer is still reaped (~140s). a disable token (`none`/`off`/`disable`/`disabled` or any zero) disables a knob (disabling the timeout reintroduces the idle-peer leak). Mirror knobs on `TTSClient(ping_interval=, ping_timeout=)`. |
+
+Installer (`scripts/install_tts_agent.sh`, behind the `just tts-*` recipes, which set
+them from the canonical port map): `PIPECAT_TTS_LABEL` (launchd label / plist name,
+default `pipecat.tts-server`), `PIPECAT_TTS_BACKEND` (default `tone`),
+`PIPECAT_TTS_HOST` (default `127.0.0.1`), `PIPECAT_TTS_PORT` (default `8665`),
+`PIPECAT_TTS_MODEL` (optional), `PIPECAT_TTS_LOG_DIR` (default
+`~/Library/Logs/pipecat-tts`), `PIPECAT_TTS_AUTH_TOKEN_FILE` (required for a
+non-loopback host). macOS app build knobs (`SIGN_IDENTITY`, `CONFIG`, `BUNDLE_ID`,
+`PIPECAT_TTS_BUILD_CACHE`, `PIPECAT_UV`) are listed in `macos/README.md`.
 
 CLI flags and env vars are **trusted** inputs; untrusted input is websocket
 traffic. The UDS (default mode `0o600`, parent-dir guarded) is the trust boundary.
@@ -69,7 +81,9 @@ CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
 explicit allow-list of lean test files — extend it when adding a lean test), an
 **examples** job (pinned pipecat-ai), and a **macOS smoke** job (`--all-extras`;
 verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
-/ pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis). See
+/ pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis), and a
+**macOS app** job (`test-macos-app`, macos-15: `swift build` + `swift test --package-path
+macos`, with the lean env synced for the live tone-server test). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a
@@ -94,6 +108,10 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | `just smoke-tone` / `smoke-kokoro` / `smoke-multilingual` | Live end-to-end smoke (starts a real server on an isolated socket). |
 | `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` / `smoke-fish_tts` / `smoke-phonon` | Per-backend live smoke (WAV round-trip + TTFB/cadence, or rate assertion for the non-streaming backends). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
+| `just smoke-supervised [backend] [args]` / `smoke-supervised-all` | App-path smoke (`tests/smoke/supervised_smoke.py`): the macOS app's exact `prefetch --json --check` → `serve --supervised` on an ephemeral loopback port → `ready` line → TCP synth → busy-port `EADDRINUSE` → stdin-EOF stop, with the app's scrubbed env. Default `tone`; `-all` loops `BACKENDS`. Never downloads unless `--download`; `--python <env>` tests an app-installed env. |
+| `just app-build` / `app-open` | Build (and launch) `macos/build/Pipecat Service Toolbar.app`: server wheel + pinned uv + `uv.lock` constraints + STT helper, ad-hoc signed (`SIGN_IDENTITY` for Developer ID). |
+| `just app-run` / `app-test` | Run the menu bar app unbundled (`swift run`) / Swift tests (`PIPECAT_TOOLBAR_E2E=1` adds the real install tests and the Apple Speech wire test). |
+| `just app-smoke` | Unattended UI smoke (`macos/scripts/ui_smoke.sh`, no Accessibility grant): `--snapshot` render, bundle launch + bootstrap, quit and SIGTERM leave no children. Clicking through the panel stays manual (`macos/README.md`). |
 | `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` / `-fish_tts` / `-phonon` | Per-backend multi-connection fairness smoke. |
 
 Smoke scripts start their own server on a `mktemp` socket and tear it down — they
@@ -114,9 +132,22 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 
 - Keep the lean base import-clean: never import mlx/numpy/torch at module load in
   `tts_server` or its backends — lazy-import inside `start()`/`_get_model`.
-- Backends implement the `TTSBackend`/`TTSStream` protocols in `tts_server/backend.py`;
-  register them in `tts_server/backends/__init__.py` (`make_backend`). The server
-  depends only on the abstract protocol types.
+- Backends implement the `TTSBackend`/`TTSStream` protocols in `tts_server/backend.py`
+  and are registered with **one** `BackendEntry` in `BACKENDS`
+  (`tts_server/backends/__init__.py`: module, class, `DEFAULT_*_MODEL` attribute).
+  That registry is the only list of backend names: `make_backend`, the CLI
+  `--backend` choices (`BACKEND_CHOICES`), the default-model fallback and the
+  `prefetch` dispatch derive from it (`tests/test_backend_registry.py` checks it
+  against the Swift catalog and the justfile). The server depends only on the
+  abstract protocol types.
+- Each backend module also exports `prefetch_specs(model) -> list[SnapshotSpec]`
+  (the `BackendPrefetch` protocol in `tts_server/backend.py`; optional
+  `prefetch_finalize` / `prefetch_check_extra`) naming every HF snapshot its
+  `start()` downloads, so `prefetch` and the macOS app stay in sync with `serve`.
+- Supervised-mode policy (`--supervised` JSON lines, exit codes, stdin EOF, the
+  hard exit mid-startup) lives in `tts_server/supervise.py`; `server.serve()` only
+  takes the abstract `ServeLifecycle` hook and must not import `supervise` or end
+  the process (`tests/test_supervise_lifecycle.py`).
 - `language` values are BACKEND-SPECIFIC, not a normalized ISO namespace: each
   backend advertises its model's native vocabulary (`kokoro`/`voxtral_tts` use
   ISO 639-1 codes like `"en"`; `qwen3_tts` uses full words like `"english"`
@@ -133,4 +164,6 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 - `scripts/render_tts_plist.py` — plist renderer for launchd agents (pure `plistlib`, injection-safe, fail-closed auth).
 - `scripts/install_tts_agent.sh` — env-keyed `launchctl bootstrap` lifecycle wrapper.
 - `scripts/profiling/` — RTF/latency benchmarks (perf baseline for new backends).
+- `tts_server/supervise.py` / `tts_server/prefetch.py` — supervised-mode JSON channel and the `prefetch` subcommand (lean; hf imported lazily). Their events and error codes are fixed in `docs/supervised-contract.json`, shared with the macOS app's STT helper and drift-tested by `tests/test_supervised_contract.py` — change the contract file with any event/field/code change.
+- `macos/` — "Pipecat Service Toolbar", a native SwiftUI menu bar app that installs TTS backends and STT engines (Apple Speech, Whisper, Kyutai) with an embedded `uv` and serves them on loopback ports. Its catalog (`Sources/PipecatToolbarCore/Service.swift`) is a drift-tested copy of the port map. STT environments install against `macos/constraints/stt-<engine>.txt` (hash-pinned; regenerate with `uv run python macos/scripts/compile_stt_constraints.py` after changing an STT requirement). See `macos/README.md` and `macos/docs/`.
 - `docs/protocol.md`, `docs/dev_plans/` — wire spec, development plans.

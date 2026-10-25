@@ -27,8 +27,12 @@ import os
 import sys
 from pathlib import Path
 
-from .backends import make_backend
+from .backends import BACKEND_NAMES, BACKENDS, make_backend
 from .server import serve
+
+# Every backend name ``make_backend`` accepts; shared by ``serve`` and ``prefetch``.
+# Derived from the registry (``tts_server.backends.BACKENDS``), never listed here.
+BACKEND_CHOICES = BACKEND_NAMES
 
 # ``TTSClient`` and ``protocol`` are imported lazily inside the status-subcommand
 # helpers so the serve path (run at every launchd startup) doesn't pay for
@@ -41,40 +45,13 @@ def _resolve_model(backend: str, model: str | None) -> str | None:
 
     An explicit ``--model`` always wins (passed through verbatim — the
     server-side ``--backend`` is the trust anchor). When unset, ``kokoro`` uses
-    its repo default (read lazily from the backend module so the constant is not
-    duplicated); ``tone`` has no model.
+    its repo default (read lazily from the backend module through the registry
+    so the constant is not duplicated); ``tone`` has no model.
     """
     if model is not None:
         return model
-    if backend == "kokoro":
-        from .backends.kokoro import DEFAULT_KOKORO_MODEL
-
-        return DEFAULT_KOKORO_MODEL
-    if backend == "voxtral_tts":
-        from .backends.voxtral_tts import DEFAULT_VOXTRAL_MODEL
-
-        return DEFAULT_VOXTRAL_MODEL
-    if backend == "pocket_tts":
-        from .backends.pocket_tts import DEFAULT_POCKET_MODEL
-
-        return DEFAULT_POCKET_MODEL
-    if backend == "dia":
-        from .backends.dia import DEFAULT_DIA_MODEL
-
-        return DEFAULT_DIA_MODEL
-    if backend == "qwen3_tts":
-        from .backends.qwen3_tts import DEFAULT_QWEN3_MODEL
-
-        return DEFAULT_QWEN3_MODEL
-    if backend == "fish_tts":
-        from .backends.fish_tts import DEFAULT_FISH_MODEL
-
-        return DEFAULT_FISH_MODEL
-    if backend == "phonon":
-        from .backends.phonon import DEFAULT_PHONON_MODEL
-
-        return DEFAULT_PHONON_MODEL
-    return None
+    entry = BACKENDS.get(backend)
+    return entry.default_model() if entry is not None else None
 
 
 def _resolve_keepalive(env_name: str, default: float | None) -> float | None:
@@ -209,11 +186,55 @@ def _add_endpoint_flags(p: argparse.ArgumentParser, *, include_uri: bool = False
     )
 
 
+def _preflight_listener(args: argparse.Namespace) -> None:
+    """Fail in milliseconds, not after a model load, when the listener can't bind.
+
+    ``TTSServer.start()`` loads the backend BEFORE binding (the rate comes from
+    the model), so a busy port would otherwise surface only after a multi-GB
+    download. Mirrors what the real bind will do: the stale-socket probe for a
+    UDS, and a ``SO_REUSEADDR`` bind (what asyncio sets on POSIX) for TCP. The
+    TOCTOU window is accepted; the real bind still reports through the same
+    error classifier.
+    """
+    import socket
+
+    from .server import _clear_stale_unix_socket
+
+    if args.socket_path:
+        _clear_stale_unix_socket(Path(args.socket_path))
+        return
+    if not args.host or not args.port:
+        return  # missing endpoint (ServerConfig reports it) or port 0 (ephemeral)
+    for family, socktype, proto, _canon, addr in socket.getaddrinfo(
+        args.host, args.port, type=socket.SOCK_STREAM
+    ):
+        with socket.socket(family, socktype, proto) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(addr)
+
+
 def _cmd_serve(args: argparse.Namespace) -> None:
     logging.basicConfig(
         level=args.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if not args.supervised:
+        _run_serve(args)
+        return
+
+    # Supervised mode (driven by the macOS app): stdout carries only JSON
+    # lifecycle events; logs stay on stderr; stdin EOF stops the server. The
+    # policy lives in ``supervise``; this just supplies the serve run.
+    from . import supervise
+
+    def _run(**hooks) -> None:
+        _preflight_listener(args)
+        _run_serve(args, **hooks)
+
+    supervise.run_supervised(_run)
+
+
+def _run_serve(args: argparse.Namespace, **serve_kwargs) -> None:
     resolved_model = _resolve_model(args.backend, args.model)
     # Startup model logging (R6): log the resolved backend + model BEFORE the
     # (potentially slow) model load so an operator sees what is being loaded.
@@ -242,6 +263,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             ping_timeout_seconds=_resolve_keepalive(
                 "TTS_WS_PING_TIMEOUT", P.KEEPALIVE_PING_TIMEOUT_SECONDS
             ),
+            **serve_kwargs,
         )
     )
 
@@ -408,6 +430,20 @@ def _cmd_voices(args: argparse.Namespace) -> None:
                 print(f"  {label}: {item}", file=out)
 
 
+def _cmd_prefetch(args: argparse.Namespace) -> None:
+    """``prefetch`` subcommand: download (or ``--check``) a backend's weights."""
+    logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    from . import prefetch
+
+    model = _resolve_model(args.backend, args.model)
+    code = prefetch.run_prefetch(args.backend, model, check=args.check, json_mode=args.json)
+    if code:
+        raise SystemExit(code)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the ``tts_server`` argument parser (serve + status + voices subcommands).
 
@@ -420,25 +456,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = subparsers.add_parser("serve", help="run the server (default)")
     _add_endpoint_flags(p_serve)
-    p_serve.add_argument(
-        "--backend",
-        choices=(
-            "tone",
-            "kokoro",
-            "voxtral_tts",
-            "pocket_tts",
-            "dia",
-            "qwen3_tts",
-            "fish_tts",
-            "phonon",
-        ),
-        default="tone",
-    )
+    p_serve.add_argument("--backend", choices=BACKEND_CHOICES, default="tone")
     # Default None so ``_resolve_model`` applies a backend-aware fallback
     # (the Kokoro repo for ``kokoro``; no model for ``tone``). An explicit value
     # always wins and is passed through verbatim.
     p_serve.add_argument("--model", default=None)
     p_serve.add_argument("--log-level", default="INFO")
+    p_serve.add_argument(
+        "--supervised",
+        action="store_true",
+        help=(
+            "for a supervising app: print JSON lifecycle events (ready/error) on "
+            "stdout and stop when stdin reaches EOF"
+        ),
+    )
+
+    p_prefetch = subparsers.add_parser(
+        "prefetch", help="download a backend's model weights without serving"
+    )
+    p_prefetch.add_argument("--backend", choices=BACKEND_CHOICES, required=True)
+    p_prefetch.add_argument("--model", default=None)
+    p_prefetch.add_argument(
+        "--check",
+        action="store_true",
+        help="report whether the weights are already cached (never touches the network)",
+    )
+    p_prefetch.add_argument("--json", action="store_true", help="emit JSON-lines events on stdout")
+    p_prefetch.add_argument("--log-level", default="WARNING")
 
     p_status = subparsers.add_parser(
         "status", help="probe a running server with server.status and print its reply"
@@ -470,7 +514,11 @@ def main() -> None:
     # ``-h``/``--help`` is NOT reinterpreted as a serve flag.
     argv = sys.argv[1:]
     top_level_help = argv and argv[0] in {"-h", "--help"}
-    if argv and not argv[0].startswith("-") and argv[0] in {"serve", "status", "voices"}:
+    if (
+        argv
+        and not argv[0].startswith("-")
+        and argv[0] in {"serve", "status", "voices", "prefetch"}
+    ):
         sub, rest = argv[0], argv[1:]
     elif top_level_help:
         sub, rest = None, argv
@@ -488,6 +536,8 @@ def main() -> None:
         _cmd_status(args)
     elif args.cmd == "voices":
         _cmd_voices(args)
+    elif args.cmd == "prefetch":
+        _cmd_prefetch(args)
     else:
         _cmd_serve(args)
 

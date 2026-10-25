@@ -6,18 +6,114 @@ module) to succeed with only the lean base (``websockets``) installed. Heavy
 deps are lazy-imported inside functions (e.g. inside a backend's ``start()`` /
 ``_get_model``).
 
-``make_backend`` is the single name->backend resolver (mirrors stt's
-``_make_backend``): resolution stays LAZY — selecting ``"kokoro"`` imports
-``tts_server.backends.kokoro`` (which does NOT pull ``mlx_audio`` at module load)
-and constructs the backend; ``mlx_audio`` enters the process only when the
-backend's ``start()`` runs. The CLI (``python -m tts_server serve --backend ...``)
-calls this so a base install without the ``kokoro`` extra can still resolve and
-construct ``tone``, and the missing-extra failure surfaces in ``start()``.
+:data:`BACKENDS` is the single source of truth for backend names. Everything
+that enumerates or dispatches on a backend name derives from it: the CLI
+``--backend`` choices (``serve`` and ``prefetch``), ``make_backend`` (mirrors
+stt's ``_make_backend``), the default-model fallback, and the ``prefetch``
+hooks. A :class:`BackendEntry` names its module and attributes as strings, so
+resolution stays LAZY: selecting ``"kokoro"`` imports
+``tts_server.backends.kokoro`` (which does NOT pull ``mlx_audio`` at module
+load) and constructs the backend; ``mlx_audio`` enters the process only when the
+backend's ``start()`` runs. A base install without the ``kokoro`` extra can
+therefore still resolve and construct ``tone``, and the missing-extra failure
+surfaces in ``start()``.
+
+To add a backend: write ``tts_server/backends/<name>.py`` (a ``TTSBackend``
+class taking ``model=``, a ``DEFAULT_*_MODEL`` constant and the module-level
+``prefetch_specs(model)`` hook, see ``tts_server.backend.BackendPrefetch``) and
+append one :class:`BackendEntry` below.
 """
 
 from __future__ import annotations
 
-from ..backend import TTSBackend
+import importlib
+from dataclasses import dataclass
+from types import ModuleType
+
+from ..backend import BackendPrefetch, TTSBackend
+
+
+@dataclass(frozen=True)
+class BackendEntry:
+    """One registered backend: where its class, default model and prefetch hooks live.
+
+    Attributes are looked up on the module at call time (never cached), so the
+    module stays unimported until a name is selected and a test's monkeypatch of
+    a module attribute is honoured.
+    """
+
+    name: str
+    # Absolute module path holding ``factory`` (and the prefetch hooks).
+    module: str
+    # ``TTSBackend`` class name. Constructed with ``model=`` unless
+    # ``default_model_attr`` is None (a backend with no model, i.e. ``tone``).
+    factory: str
+    # Module-level ``DEFAULT_*_MODEL`` constant, or None for no model.
+    default_model_attr: str | None = None
+    # False only for a backend with nothing to download (``tone``).
+    prefetches: bool = True
+
+    def load(self) -> ModuleType:
+        return importlib.import_module(self.module)
+
+    def default_model(self) -> str | None:
+        """The model ``serve``/``prefetch`` use when ``--model`` is not given."""
+        if self.default_model_attr is None:
+            return None
+        return getattr(self.load(), self.default_model_attr)
+
+    def create(self, model: str | None = None) -> TTSBackend:
+        """Construct the backend (cheap; heavy deps load in ``start()``)."""
+        cls = getattr(self.load(), self.factory)
+        if self.default_model_attr is None:
+            return cls()
+        return cls(model=model or self.default_model())
+
+    def prefetch_hooks(self) -> BackendPrefetch | None:
+        """The module implementing ``BackendPrefetch``; None = nothing to fetch."""
+        if not self.prefetches:
+            return None
+        mod = self.load()
+        if not isinstance(mod, BackendPrefetch):
+            raise TypeError(
+                f"backend {self.name!r} is registered with prefetch hooks but "
+                f"{self.module} defines no prefetch_specs(model)"
+            )
+        return mod
+
+
+def _entry(name: str, factory: str, default_model_attr: str) -> BackendEntry:
+    return BackendEntry(name, f"{__name__}.{name}", factory, default_model_attr)
+
+
+# Order is the CLI ``--backend`` choices order (shown in ``--help``).
+BACKENDS: dict[str, BackendEntry] = {
+    e.name: e
+    for e in (
+        BackendEntry("tone", "tts_server.backend", "ToneBackend", prefetches=False),
+        _entry("kokoro", "KokoroBackend", "DEFAULT_KOKORO_MODEL"),
+        _entry("voxtral_tts", "VoxtralBackend", "DEFAULT_VOXTRAL_MODEL"),
+        _entry("pocket_tts", "PocketBackend", "DEFAULT_POCKET_MODEL"),
+        _entry("dia", "DiaBackend", "DEFAULT_DIA_MODEL"),
+        _entry("qwen3_tts", "Qwen3Backend", "DEFAULT_QWEN3_MODEL"),
+        _entry("fish_tts", "FishBackend", "DEFAULT_FISH_MODEL"),
+        _entry("phonon", "PhononBackend", "DEFAULT_PHONON_MODEL"),
+    )
+}
+
+#: Every backend name, in registry order.
+BACKEND_NAMES: tuple[str, ...] = tuple(BACKENDS)
+
+
+def get_backend(name: str) -> BackendEntry:
+    """The registry entry for ``name``; ``ValueError`` for an unknown name."""
+    try:
+        return BACKENDS[name]
+    except KeyError:
+        # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
+        # callable outside the CLI, so it must not terminate the process. The CLI
+        # entry point (``__main__._run_serve``) translates it to a clean exit.
+        raise ValueError(f"unknown backend: {name!r}") from None
 
 
 def make_backend(name: str, model: str | None = None) -> TTSBackend:
@@ -26,60 +122,4 @@ def make_backend(name: str, model: str | None = None) -> TTSBackend:
     Resolution is lazy: heavy backend modules are imported only when their name
     is selected, and even then they do not pull ``mlx_audio`` until ``start()``.
     """
-    if name == "tone":
-        from ..backend import ToneBackend
-
-        return ToneBackend()
-    if name == "kokoro":
-        # Lazy import so a base install without the ``kokoro`` extra still
-        # resolves/constructs ``tone``. ``kokoro.py`` imports ``mlx_audio`` only
-        # inside ``start()``, never at module load, so this import does NOT
-        # transitively pull ``mlx_audio`` — the missing-extra failure surfaces
-        # fast in ``start()``, not here at construction.
-        from .kokoro import DEFAULT_KOKORO_MODEL, KokoroBackend
-
-        return KokoroBackend(model=model or DEFAULT_KOKORO_MODEL)
-    if name == "voxtral_tts":
-        # Lazy import (same invariant as kokoro): ``voxtral_tts.py`` imports
-        # ``mlx_audio`` only inside ``start()``, so this branch does NOT pull
-        # ``mlx_audio`` — the missing-extra failure surfaces in ``start()``.
-        from .voxtral_tts import DEFAULT_VOXTRAL_MODEL, VoxtralBackend
-
-        return VoxtralBackend(model=model or DEFAULT_VOXTRAL_MODEL)
-    if name == "pocket_tts":
-        # Lazy import (same invariant): ``pocket_tts.py`` imports ``mlx_audio``
-        # only inside ``start()``.
-        from .pocket_tts import DEFAULT_POCKET_MODEL, PocketBackend
-
-        return PocketBackend(model=model or DEFAULT_POCKET_MODEL)
-    if name == "dia":
-        # Lazy import (same invariant): ``dia.py`` imports ``mlx_audio`` only
-        # inside ``start()``, so this branch does NOT pull ``mlx_audio`` — the
-        # missing-extra failure surfaces in ``start()``.
-        from .dia import DEFAULT_DIA_MODEL, DiaBackend
-
-        return DiaBackend(model=model or DEFAULT_DIA_MODEL)
-    if name == "qwen3_tts":
-        # Lazy import (same invariant): ``qwen3_tts.py`` imports ``mlx_audio``
-        # only inside ``start()``, so this branch does NOT pull ``mlx_audio`` —
-        # the missing-extra failure surfaces in ``start()``.
-        from .qwen3_tts import DEFAULT_QWEN3_MODEL, Qwen3Backend
-
-        return Qwen3Backend(model=model or DEFAULT_QWEN3_MODEL)
-    if name == "fish_tts":
-        # Lazy import (same invariant): ``fish_tts.py`` imports ``mlx_audio``
-        # only inside ``start()``, so this branch does NOT pull ``mlx_audio`` —
-        # the missing-extra failure surfaces in ``start()``.
-        from .fish_tts import DEFAULT_FISH_MODEL, FishBackend
-
-        return FishBackend(model=model or DEFAULT_FISH_MODEL)
-    if name == "phonon":
-        # Lazy import (same invariant): ``phonon.py`` imports ``mlx_audio`` /
-        # ``huggingface_hub`` only inside its seams, called from ``start()``.
-        from .phonon import DEFAULT_PHONON_MODEL, PhononBackend
-
-        return PhononBackend(model=model or DEFAULT_PHONON_MODEL)
-    # ``ValueError`` (not ``SystemExit``): this is a library-level resolver also
-    # callable outside the CLI, so it must not terminate the process. The CLI
-    # entry point (``__main__._cmd_serve``) translates it to a clean ``exit(2)``.
-    raise ValueError(f"unknown backend: {name!r}")
+    return get_backend(name).create(model)

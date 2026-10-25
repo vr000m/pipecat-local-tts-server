@@ -1,0 +1,555 @@
+idle/down | userSpeak -> connecting(tryit-1)/opening : waiting, connect
+idle/down | userStop -> idle/down : stopAudio
+idle/down | userPrepare -> idle/opening : connect
+idle/down | abort -> idle/down : stopAudio
+idle/down | connected -> idle/up : hello, send status
+idle/down | connectionLost -> idle/down : -
+idle/down | timeout -> idle/down : drop
+idle/down | detach -> idle/down : disconnect, stopAudio
+idle/down | sent clear own -> idle/down : drop
+idle/down | sent append own -> idle/down : drop
+idle/down | sent commit own -> idle/down : drop
+idle/down | sent clear foreign -> idle/down : drop
+idle/down | sent append foreign -> idle/down : drop
+idle/down | sent cancel -> idle/down : -
+idle/down | sent status -> idle/down : -
+idle/down | committed own -> idle/down : drop
+idle/down | committed foreign -> idle/down : drop
+idle/down | committed no-id -> idle/down : drop
+idle/down | cleared own -> idle/down : drop
+idle/down | cleared foreign -> idle/down : drop
+idle/down | created own -> idle/down : drop
+idle/down | created foreign -> idle/down : drop
+idle/down | audio own -> idle/down : drop
+idle/down | audio foreign -> idle/down : drop
+idle/down | done own -> idle/down : drop
+idle/down | done foreign -> idle/down : drop
+idle/down | cancelled own -> idle/down : drop
+idle/down | cancelled foreign -> idle/down : drop
+idle/down | failed own -> idle/down : drop
+idle/down | failed foreign -> idle/down : drop
+idle/down | error commit own -> idle/down : drop
+idle/down | error append own -> idle/down : drop
+idle/down | error foreign -> idle/down : drop
+idle/down | error no-id -> idle/down : drop
+idle/down | status -> idle/down : voices
+idle/down | hello -> idle/down : drop
+idle/down | other -> idle/down : drop
+idle/opening | userSpeak -> connecting(tryit-1)/opening : waiting
+idle/opening | userStop -> idle/opening : stopAudio
+idle/opening | userPrepare -> idle/opening : -
+idle/opening | abort -> idle/opening : stopAudio
+idle/opening | connected -> idle/up : hello, send status
+idle/opening | connectionLost -> idle/down : -
+idle/opening | timeout -> idle/opening : drop
+idle/opening | detach -> idle/down : disconnect, stopAudio
+idle/opening | sent clear own -> idle/opening : drop
+idle/opening | sent append own -> idle/opening : drop
+idle/opening | sent commit own -> idle/opening : drop
+idle/opening | sent clear foreign -> idle/opening : drop
+idle/opening | sent append foreign -> idle/opening : drop
+idle/opening | sent cancel -> idle/opening : -
+idle/opening | sent status -> idle/opening : -
+idle/opening | committed own -> idle/opening : drop
+idle/opening | committed foreign -> idle/opening : drop
+idle/opening | committed no-id -> idle/opening : drop
+idle/opening | cleared own -> idle/opening : drop
+idle/opening | cleared foreign -> idle/opening : drop
+idle/opening | created own -> idle/opening : drop
+idle/opening | created foreign -> idle/opening : drop
+idle/opening | audio own -> idle/opening : drop
+idle/opening | audio foreign -> idle/opening : drop
+idle/opening | done own -> idle/opening : drop
+idle/opening | done foreign -> idle/opening : drop
+idle/opening | cancelled own -> idle/opening : drop
+idle/opening | cancelled foreign -> idle/opening : drop
+idle/opening | failed own -> idle/opening : drop
+idle/opening | failed foreign -> idle/opening : drop
+idle/opening | error commit own -> idle/opening : drop
+idle/opening | error append own -> idle/opening : drop
+idle/opening | error foreign -> idle/opening : drop
+idle/opening | error no-id -> idle/opening : drop
+idle/opening | status -> idle/opening : voices
+idle/opening | hello -> idle/opening : drop
+idle/opening | other -> idle/opening : drop
+idle/up | userSpeak -> clearing(tryit-1)/up : begin, send clear tryit-1.clear
+idle/up | userStop -> idle/up : stopAudio
+idle/up | userPrepare -> idle/up : -
+idle/up | abort -> idle/up : stopAudio
+idle/up | connected -> idle/up : hello, send status
+idle/up | connectionLost -> idle/down : -
+idle/up | timeout -> idle/up : drop
+idle/up | detach -> idle/down : disconnect, stopAudio
+idle/up | sent clear own -> idle/up : drop
+idle/up | sent append own -> idle/up : drop
+idle/up | sent commit own -> idle/up : drop
+idle/up | sent clear foreign -> idle/up : drop
+idle/up | sent append foreign -> idle/up : drop
+idle/up | sent cancel -> idle/up : -
+idle/up | sent status -> idle/up : -
+idle/up | committed own -> idle/up : drop
+idle/up | committed foreign -> idle/up : drop
+idle/up | committed no-id -> idle/up : drop
+idle/up | cleared own -> idle/up : drop
+idle/up | cleared foreign -> idle/up : drop
+idle/up | created own -> idle/up : drop
+idle/up | created foreign -> idle/up : drop
+idle/up | audio own -> idle/up : drop
+idle/up | audio foreign -> idle/up : drop
+idle/up | done own -> idle/up : drop
+idle/up | done foreign -> idle/up : drop
+idle/up | cancelled own -> idle/up : drop
+idle/up | cancelled foreign -> idle/up : drop
+idle/up | failed own -> idle/up : drop
+idle/up | failed foreign -> idle/up : drop
+idle/up | error commit own -> idle/up : drop
+idle/up | error append own -> idle/up : drop
+idle/up | error foreign -> idle/up : drop
+idle/up | error no-id -> idle/up : drop
+idle/up | status -> idle/up : voices
+idle/up | hello -> idle/up : drop
+idle/up | other -> idle/up : drop
+connecting | userSpeak -> connecting(tryit-2)/opening : finish tryit-1 stopped, waiting
+connecting | userStop -> done(tryit-1,stopped)/opening : finish tryit-1 stopped
+connecting | userPrepare -> connecting(tryit-1)/opening : -
+connecting | abort -> failed(tryit-1)/opening : failed tryit-1 playback
+connecting | connected -> clearing(tryit-1)/up : hello, send status, begin, send clear tryit-1.clear
+connecting | connectionLost -> failed(tryit-1)/down : failed tryit-1 connection
+connecting | timeout -> failed(tryit-1)/down : disconnect, failed tryit-1 connection
+connecting | detach -> idle/down : disconnect, stopAudio
+connecting | sent clear own -> connecting(tryit-1)/opening : drop
+connecting | sent append own -> connecting(tryit-1)/opening : drop
+connecting | sent commit own -> connecting(tryit-1)/opening : drop
+connecting | sent clear foreign -> connecting(tryit-1)/opening : drop
+connecting | sent append foreign -> connecting(tryit-1)/opening : drop
+connecting | sent cancel -> connecting(tryit-1)/opening : -
+connecting | sent status -> connecting(tryit-1)/opening : -
+connecting | committed own -> connecting(tryit-1)/opening : drop
+connecting | committed foreign -> connecting(tryit-1)/opening : drop
+connecting | committed no-id -> connecting(tryit-1)/opening : drop
+connecting | cleared own -> connecting(tryit-1)/opening : drop
+connecting | cleared foreign -> connecting(tryit-1)/opening : drop
+connecting | created own -> connecting(tryit-1)/opening : drop
+connecting | created foreign -> connecting(tryit-1)/opening : drop
+connecting | audio own -> connecting(tryit-1)/opening : drop
+connecting | audio foreign -> connecting(tryit-1)/opening : drop
+connecting | done own -> connecting(tryit-1)/opening : drop
+connecting | done foreign -> connecting(tryit-1)/opening : drop
+connecting | cancelled own -> connecting(tryit-1)/opening : drop
+connecting | cancelled foreign -> connecting(tryit-1)/opening : drop
+connecting | failed own -> connecting(tryit-1)/opening : drop
+connecting | failed foreign -> connecting(tryit-1)/opening : drop
+connecting | error commit own -> connecting(tryit-1)/opening : drop
+connecting | error append own -> connecting(tryit-1)/opening : drop
+connecting | error foreign -> connecting(tryit-1)/opening : drop
+connecting | error no-id -> connecting(tryit-1)/opening : drop
+connecting | status -> connecting(tryit-1)/opening : voices
+connecting | hello -> connecting(tryit-1)/opening : drop
+connecting | other -> connecting(tryit-1)/opening : drop
+clearing | userSpeak -> clearing(tryit-2)/up : finish tryit-1 stopped, begin, send clear tryit-2.clear
+clearing | userStop -> done(tryit-1,stopped)/up : finish tryit-1 stopped
+clearing | userPrepare -> clearing(tryit-1)/up : -
+clearing | abort -> failed(tryit-1)/up : failed tryit-1 playback
+clearing | connected -> clearing(tryit-1)/up : hello, send status
+clearing | connectionLost -> failed(tryit-1)/down : failed tryit-1 connection
+clearing | timeout -> failed(tryit-1)/down : disconnect, failed tryit-1 connection
+clearing | detach -> idle/down : disconnect, stopAudio
+clearing | sent clear own -> appending(tryit-1)/up : send append tryit-1.append
+clearing | sent append own -> clearing(tryit-1)/up : drop
+clearing | sent commit own -> clearing(tryit-1)/up : drop
+clearing | sent clear foreign -> clearing(tryit-1)/up : drop
+clearing | sent append foreign -> clearing(tryit-1)/up : drop
+clearing | sent cancel -> clearing(tryit-1)/up : -
+clearing | sent status -> clearing(tryit-1)/up : -
+clearing | committed own -> clearing(tryit-1)/up : drop
+clearing | committed foreign -> clearing(tryit-1)/up : drop
+clearing | committed no-id -> clearing(tryit-1)/up : drop
+clearing | cleared own -> clearing(tryit-1)/up : -
+clearing | cleared foreign -> clearing(tryit-1)/up : drop
+clearing | created own -> clearing(tryit-1)/up : drop
+clearing | created foreign -> clearing(tryit-1)/up : drop
+clearing | audio own -> clearing(tryit-1)/up : drop
+clearing | audio foreign -> clearing(tryit-1)/up : drop
+clearing | done own -> clearing(tryit-1)/up : drop
+clearing | done foreign -> clearing(tryit-1)/up : drop
+clearing | cancelled own -> clearing(tryit-1)/up : drop
+clearing | cancelled foreign -> clearing(tryit-1)/up : drop
+clearing | failed own -> clearing(tryit-1)/up : drop
+clearing | failed foreign -> clearing(tryit-1)/up : drop
+clearing | error commit own -> refused(tryit-1)/up : failed tryit-1 busy
+clearing | error append own -> refused(tryit-1)/up : failed tryit-1 payload_too_large
+clearing | error foreign -> clearing(tryit-1)/up : drop
+clearing | error no-id -> refused(tryit-1)/up : failed tryit-1 internal_error
+clearing | status -> clearing(tryit-1)/up : voices
+clearing | hello -> clearing(tryit-1)/up : drop
+clearing | other -> clearing(tryit-1)/up : drop
+appending | userSpeak -> clearing(tryit-2)/up : finish tryit-1 stopped, begin, send clear tryit-2.clear
+appending | userStop -> done(tryit-1,stopped)/up : finish tryit-1 stopped
+appending | userPrepare -> appending(tryit-1)/up : -
+appending | abort -> failed(tryit-1)/up : failed tryit-1 playback
+appending | connected -> appending(tryit-1)/up : hello, send status
+appending | connectionLost -> failed(tryit-1)/down : failed tryit-1 connection
+appending | timeout -> failed(tryit-1)/down : disconnect, failed tryit-1 connection
+appending | detach -> idle/down : disconnect, stopAudio
+appending | sent clear own -> appending(tryit-1)/up : drop
+appending | sent append own -> committing(tryit-1)/up : send commit tryit-1
+appending | sent commit own -> appending(tryit-1)/up : drop
+appending | sent clear foreign -> appending(tryit-1)/up : drop
+appending | sent append foreign -> appending(tryit-1)/up : drop
+appending | sent cancel -> appending(tryit-1)/up : -
+appending | sent status -> appending(tryit-1)/up : -
+appending | committed own -> appending(tryit-1)/up : drop
+appending | committed foreign -> appending(tryit-1)/up : drop
+appending | committed no-id -> appending(tryit-1)/up : drop
+appending | cleared own -> appending(tryit-1)/up : -
+appending | cleared foreign -> appending(tryit-1)/up : drop
+appending | created own -> appending(tryit-1)/up : drop
+appending | created foreign -> appending(tryit-1)/up : drop
+appending | audio own -> appending(tryit-1)/up : drop
+appending | audio foreign -> appending(tryit-1)/up : drop
+appending | done own -> appending(tryit-1)/up : drop
+appending | done foreign -> appending(tryit-1)/up : drop
+appending | cancelled own -> appending(tryit-1)/up : drop
+appending | cancelled foreign -> appending(tryit-1)/up : drop
+appending | failed own -> appending(tryit-1)/up : drop
+appending | failed foreign -> appending(tryit-1)/up : drop
+appending | error commit own -> refused(tryit-1)/up : failed tryit-1 busy
+appending | error append own -> refused(tryit-1)/up : failed tryit-1 payload_too_large
+appending | error foreign -> appending(tryit-1)/up : drop
+appending | error no-id -> refused(tryit-1)/up : failed tryit-1 internal_error
+appending | status -> appending(tryit-1)/up : voices
+appending | hello -> appending(tryit-1)/up : drop
+appending | other -> appending(tryit-1)/up : drop
+committing | userSpeak -> cancelling(tryit-1,-,stopped,next:tryit-2)/up : finish tryit-1 stopped, send cancel, waiting
+committing | userStop -> cancelling(tryit-1,-,stopped,next:-)/up : finish tryit-1 stopped, send cancel
+committing | userPrepare -> committing(tryit-1)/up : -
+committing | abort -> cancelling(tryit-1,-,failed,next:-)/up : failed tryit-1 playback, send cancel
+committing | connected -> committing(tryit-1)/up : hello, send status
+committing | connectionLost -> failed(tryit-1)/down : failed tryit-1 connection
+committing | timeout -> failed(tryit-1)/down : disconnect, failed tryit-1 connection
+committing | detach -> idle/down : disconnect, stopAudio
+committing | sent clear own -> committing(tryit-1)/up : drop
+committing | sent append own -> committing(tryit-1)/up : drop
+committing | sent commit own -> committing(tryit-1)/up : -
+committing | sent clear foreign -> committing(tryit-1)/up : drop
+committing | sent append foreign -> committing(tryit-1)/up : drop
+committing | sent cancel -> committing(tryit-1)/up : -
+committing | sent status -> committing(tryit-1)/up : -
+committing | committed own -> inFlight(tryit-1,r1)/up : -
+committing | committed foreign -> committing(tryit-1)/up : drop
+committing | committed no-id -> inFlight(tryit-1,r1)/up : -
+committing | cleared own -> committing(tryit-1)/up : -
+committing | cleared foreign -> committing(tryit-1)/up : drop
+committing | created own -> committing(tryit-1)/up : drop
+committing | created foreign -> committing(tryit-1)/up : drop
+committing | audio own -> committing(tryit-1)/up : drop
+committing | audio foreign -> committing(tryit-1)/up : drop
+committing | done own -> committing(tryit-1)/up : drop
+committing | done foreign -> committing(tryit-1)/up : drop
+committing | cancelled own -> committing(tryit-1)/up : drop
+committing | cancelled foreign -> committing(tryit-1)/up : drop
+committing | failed own -> committing(tryit-1)/up : drop
+committing | failed foreign -> committing(tryit-1)/up : drop
+committing | error commit own -> refused(tryit-1)/up : failed tryit-1 busy
+committing | error append own -> cancelling(tryit-1,-,refused,next:-)/up : failed tryit-1 payload_too_large, send cancel
+committing | error foreign -> committing(tryit-1)/up : drop
+committing | error no-id -> cancelling(tryit-1,-,failed,next:-)/up : failed tryit-1 internal_error, send cancel
+committing | status -> committing(tryit-1)/up : voices
+committing | hello -> committing(tryit-1)/up : drop
+committing | other -> committing(tryit-1)/up : drop
+inFlight | userSpeak -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : finish tryit-1 stopped, send cancel, waiting
+inFlight | userStop -> cancelling(tryit-1,r1,stopped,next:-)/up : finish tryit-1 stopped, send cancel
+inFlight | userPrepare -> inFlight(tryit-1,r1)/up : -
+inFlight | abort -> cancelling(tryit-1,r1,failed,next:-)/up : failed tryit-1 playback, send cancel
+inFlight | connected -> inFlight(tryit-1,r1)/up : hello, send status
+inFlight | connectionLost -> failed(tryit-1)/down : failed tryit-1 connection
+inFlight | timeout -> failed(tryit-1)/down : disconnect, failed tryit-1 connection
+inFlight | detach -> idle/down : disconnect, stopAudio
+inFlight | sent clear own -> inFlight(tryit-1,r1)/up : drop
+inFlight | sent append own -> inFlight(tryit-1,r1)/up : drop
+inFlight | sent commit own -> inFlight(tryit-1,r1)/up : drop
+inFlight | sent clear foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | sent append foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | sent cancel -> inFlight(tryit-1,r1)/up : -
+inFlight | sent status -> inFlight(tryit-1,r1)/up : -
+inFlight | committed own -> inFlight(tryit-1,r1)/up : drop
+inFlight | committed foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | committed no-id -> inFlight(tryit-1,r1)/up : drop
+inFlight | cleared own -> inFlight(tryit-1,r1)/up : drop
+inFlight | cleared foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | created own -> inFlight(tryit-1,r1)/up : -
+inFlight | created foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | audio own -> inFlight(tryit-1,r1)/up : play
+inFlight | audio foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | done own -> done(tryit-1,completed)/up : finish tryit-1 completed
+inFlight | done foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | cancelled own -> done(tryit-1,stopped)/up : finish tryit-1 stopped
+inFlight | cancelled foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | failed own -> failed(tryit-1)/up : failed tryit-1 backend_error
+inFlight | failed foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | error commit own -> cancelling(tryit-1,r1,failed,next:-)/up : failed tryit-1 busy, send cancel
+inFlight | error append own -> cancelling(tryit-1,r1,failed,next:-)/up : failed tryit-1 payload_too_large, send cancel
+inFlight | error foreign -> inFlight(tryit-1,r1)/up : drop
+inFlight | error no-id -> cancelling(tryit-1,r1,failed,next:-)/up : failed tryit-1 internal_error, send cancel
+inFlight | status -> inFlight(tryit-1,r1)/up : voices
+inFlight | hello -> inFlight(tryit-1,r1)/up : drop
+inFlight | other -> inFlight(tryit-1,r1)/up : drop
+cancelling/uncommitted | userSpeak -> cancelling(tryit-1,-,stopped,next:tryit-2)/up : waiting
+cancelling/uncommitted | userStop -> cancelling(tryit-1,-,stopped,next:-)/up : stopAudio
+cancelling/uncommitted | userPrepare -> cancelling(tryit-1,-,stopped,next:-)/up : -
+cancelling/uncommitted | abort -> cancelling(tryit-1,-,stopped,next:-)/up : stopAudio
+cancelling/uncommitted | connected -> cancelling(tryit-1,-,stopped,next:-)/up : hello, send status
+cancelling/uncommitted | connectionLost -> done(tryit-1,stopped)/down : -
+cancelling/uncommitted | timeout -> done(tryit-1,stopped)/down : disconnect
+cancelling/uncommitted | detach -> idle/down : disconnect, stopAudio
+cancelling/uncommitted | sent clear own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | sent append own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | sent commit own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | sent clear foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | sent append foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | sent cancel -> cancelling(tryit-1,-,stopped,next:-)/up : -
+cancelling/uncommitted | sent status -> cancelling(tryit-1,-,stopped,next:-)/up : -
+cancelling/uncommitted | committed own -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/uncommitted | committed foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | committed no-id -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/uncommitted | cleared own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | cleared foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | created own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | created foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | audio own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | audio foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | done own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | done foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | cancelled own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | cancelled foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | failed own -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | failed foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | error commit own -> done(tryit-1,stopped)/up : -
+cancelling/uncommitted | error append own -> cancelling(tryit-1,-,stopped,next:-)/up : -
+cancelling/uncommitted | error foreign -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | error no-id -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | status -> cancelling(tryit-1,-,stopped,next:-)/up : voices
+cancelling/uncommitted | hello -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/uncommitted | other -> cancelling(tryit-1,-,stopped,next:-)/up : drop
+cancelling/committed | userSpeak -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : waiting
+cancelling/committed | userStop -> cancelling(tryit-1,r1,stopped,next:-)/up : stopAudio
+cancelling/committed | userPrepare -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/committed | abort -> cancelling(tryit-1,r1,stopped,next:-)/up : stopAudio
+cancelling/committed | connected -> cancelling(tryit-1,r1,stopped,next:-)/up : hello, send status
+cancelling/committed | connectionLost -> done(tryit-1,stopped)/down : -
+cancelling/committed | timeout -> done(tryit-1,stopped)/down : disconnect
+cancelling/committed | detach -> idle/down : disconnect, stopAudio
+cancelling/committed | sent clear own -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | sent append own -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | sent commit own -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | sent clear foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | sent append foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | sent cancel -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/committed | sent status -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/committed | committed own -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | committed foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | committed no-id -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | cleared own -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | cleared foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | created own -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/committed | created foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | audio own -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | audio foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | done own -> done(tryit-1,stopped)/up : -
+cancelling/committed | done foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | cancelled own -> done(tryit-1,stopped)/up : -
+cancelling/committed | cancelled foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | failed own -> done(tryit-1,stopped)/up : -
+cancelling/committed | failed foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | error commit own -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/committed | error append own -> cancelling(tryit-1,r1,stopped,next:-)/up : -
+cancelling/committed | error foreign -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | error no-id -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | status -> cancelling(tryit-1,r1,stopped,next:-)/up : voices
+cancelling/committed | hello -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/committed | other -> cancelling(tryit-1,r1,stopped,next:-)/up : drop
+cancelling/next | userSpeak -> cancelling(tryit-1,r1,stopped,next:tryit-3)/up : finish tryit-2 stopped, waiting
+cancelling/next | userStop -> cancelling(tryit-1,r1,stopped,next:-)/up : finish tryit-2 stopped
+cancelling/next | userPrepare -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : -
+cancelling/next | abort -> cancelling(tryit-1,r1,stopped,next:-)/up : failed tryit-2 playback
+cancelling/next | connected -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : hello, send status
+cancelling/next | connectionLost -> connecting(tryit-2)/opening : waiting, connect
+cancelling/next | timeout -> connecting(tryit-2)/opening : disconnect, waiting, connect
+cancelling/next | detach -> idle/down : disconnect, stopAudio
+cancelling/next | sent clear own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | sent append own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | sent commit own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | sent clear foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | sent append foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | sent cancel -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : -
+cancelling/next | sent status -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : -
+cancelling/next | committed own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | committed foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | committed no-id -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | cleared own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | cleared foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | created own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : -
+cancelling/next | created foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | audio own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | audio foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | done own -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+cancelling/next | done foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | cancelled own -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+cancelling/next | cancelled foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | failed own -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+cancelling/next | failed foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | error commit own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : -
+cancelling/next | error append own -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : -
+cancelling/next | error foreign -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | error no-id -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | status -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : voices
+cancelling/next | hello -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+cancelling/next | other -> cancelling(tryit-1,r1,stopped,next:tryit-2)/up : drop
+done/completed | userSpeak -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+done/completed | userStop -> done(tryit-1,completed)/up : stopAudio
+done/completed | userPrepare -> done(tryit-1,completed)/up : -
+done/completed | abort -> failed(tryit-1)/up : failed tryit-1 playback
+done/completed | connected -> done(tryit-1,completed)/up : hello, send status
+done/completed | connectionLost -> done(tryit-1,completed)/down : -
+done/completed | timeout -> done(tryit-1,completed)/up : drop
+done/completed | detach -> idle/down : disconnect, stopAudio
+done/completed | sent clear own -> done(tryit-1,completed)/up : drop
+done/completed | sent append own -> done(tryit-1,completed)/up : drop
+done/completed | sent commit own -> done(tryit-1,completed)/up : drop
+done/completed | sent clear foreign -> done(tryit-1,completed)/up : drop
+done/completed | sent append foreign -> done(tryit-1,completed)/up : drop
+done/completed | sent cancel -> done(tryit-1,completed)/up : -
+done/completed | sent status -> done(tryit-1,completed)/up : -
+done/completed | committed own -> done(tryit-1,completed)/up : drop
+done/completed | committed foreign -> done(tryit-1,completed)/up : drop
+done/completed | committed no-id -> done(tryit-1,completed)/up : drop
+done/completed | cleared own -> done(tryit-1,completed)/up : drop
+done/completed | cleared foreign -> done(tryit-1,completed)/up : drop
+done/completed | created own -> done(tryit-1,completed)/up : drop
+done/completed | created foreign -> done(tryit-1,completed)/up : drop
+done/completed | audio own -> done(tryit-1,completed)/up : drop
+done/completed | audio foreign -> done(tryit-1,completed)/up : drop
+done/completed | done own -> done(tryit-1,completed)/up : drop
+done/completed | done foreign -> done(tryit-1,completed)/up : drop
+done/completed | cancelled own -> done(tryit-1,completed)/up : drop
+done/completed | cancelled foreign -> done(tryit-1,completed)/up : drop
+done/completed | failed own -> done(tryit-1,completed)/up : drop
+done/completed | failed foreign -> done(tryit-1,completed)/up : drop
+done/completed | error commit own -> done(tryit-1,completed)/up : drop
+done/completed | error append own -> done(tryit-1,completed)/up : drop
+done/completed | error foreign -> done(tryit-1,completed)/up : drop
+done/completed | error no-id -> done(tryit-1,completed)/up : drop
+done/completed | status -> done(tryit-1,completed)/up : voices
+done/completed | hello -> done(tryit-1,completed)/up : drop
+done/completed | other -> done(tryit-1,completed)/up : drop
+done/stopped | userSpeak -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+done/stopped | userStop -> done(tryit-1,stopped)/up : stopAudio
+done/stopped | userPrepare -> done(tryit-1,stopped)/up : -
+done/stopped | abort -> done(tryit-1,stopped)/up : stopAudio
+done/stopped | connected -> done(tryit-1,stopped)/up : hello, send status
+done/stopped | connectionLost -> done(tryit-1,stopped)/down : -
+done/stopped | timeout -> done(tryit-1,stopped)/up : drop
+done/stopped | detach -> idle/down : disconnect, stopAudio
+done/stopped | sent clear own -> done(tryit-1,stopped)/up : drop
+done/stopped | sent append own -> done(tryit-1,stopped)/up : drop
+done/stopped | sent commit own -> done(tryit-1,stopped)/up : drop
+done/stopped | sent clear foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | sent append foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | sent cancel -> done(tryit-1,stopped)/up : -
+done/stopped | sent status -> done(tryit-1,stopped)/up : -
+done/stopped | committed own -> done(tryit-1,stopped)/up : drop
+done/stopped | committed foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | committed no-id -> done(tryit-1,stopped)/up : drop
+done/stopped | cleared own -> done(tryit-1,stopped)/up : drop
+done/stopped | cleared foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | created own -> done(tryit-1,stopped)/up : drop
+done/stopped | created foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | audio own -> done(tryit-1,stopped)/up : drop
+done/stopped | audio foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | done own -> done(tryit-1,stopped)/up : drop
+done/stopped | done foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | cancelled own -> done(tryit-1,stopped)/up : drop
+done/stopped | cancelled foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | failed own -> done(tryit-1,stopped)/up : drop
+done/stopped | failed foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | error commit own -> done(tryit-1,stopped)/up : drop
+done/stopped | error append own -> done(tryit-1,stopped)/up : drop
+done/stopped | error foreign -> done(tryit-1,stopped)/up : drop
+done/stopped | error no-id -> done(tryit-1,stopped)/up : drop
+done/stopped | status -> done(tryit-1,stopped)/up : voices
+done/stopped | hello -> done(tryit-1,stopped)/up : drop
+done/stopped | other -> done(tryit-1,stopped)/up : drop
+refused | userSpeak -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+refused | userStop -> refused(tryit-1)/up : stopAudio
+refused | userPrepare -> refused(tryit-1)/up : -
+refused | abort -> refused(tryit-1)/up : stopAudio
+refused | connected -> refused(tryit-1)/up : hello, send status
+refused | connectionLost -> refused(tryit-1)/down : -
+refused | timeout -> refused(tryit-1)/up : drop
+refused | detach -> idle/down : disconnect, stopAudio
+refused | sent clear own -> refused(tryit-1)/up : drop
+refused | sent append own -> refused(tryit-1)/up : drop
+refused | sent commit own -> refused(tryit-1)/up : drop
+refused | sent clear foreign -> refused(tryit-1)/up : drop
+refused | sent append foreign -> refused(tryit-1)/up : drop
+refused | sent cancel -> refused(tryit-1)/up : -
+refused | sent status -> refused(tryit-1)/up : -
+refused | committed own -> refused(tryit-1)/up : drop
+refused | committed foreign -> refused(tryit-1)/up : drop
+refused | committed no-id -> refused(tryit-1)/up : drop
+refused | cleared own -> refused(tryit-1)/up : drop
+refused | cleared foreign -> refused(tryit-1)/up : drop
+refused | created own -> refused(tryit-1)/up : drop
+refused | created foreign -> refused(tryit-1)/up : drop
+refused | audio own -> refused(tryit-1)/up : drop
+refused | audio foreign -> refused(tryit-1)/up : drop
+refused | done own -> refused(tryit-1)/up : drop
+refused | done foreign -> refused(tryit-1)/up : drop
+refused | cancelled own -> refused(tryit-1)/up : drop
+refused | cancelled foreign -> refused(tryit-1)/up : drop
+refused | failed own -> refused(tryit-1)/up : drop
+refused | failed foreign -> refused(tryit-1)/up : drop
+refused | error commit own -> refused(tryit-1)/up : drop
+refused | error append own -> refused(tryit-1)/up : drop
+refused | error foreign -> refused(tryit-1)/up : drop
+refused | error no-id -> refused(tryit-1)/up : drop
+refused | status -> refused(tryit-1)/up : voices
+refused | hello -> refused(tryit-1)/up : drop
+refused | other -> refused(tryit-1)/up : drop
+failed | userSpeak -> clearing(tryit-2)/up : begin, send clear tryit-2.clear
+failed | userStop -> failed(tryit-1)/up : stopAudio
+failed | userPrepare -> failed(tryit-1)/up : -
+failed | abort -> failed(tryit-1)/up : stopAudio
+failed | connected -> failed(tryit-1)/up : hello, send status
+failed | connectionLost -> failed(tryit-1)/down : -
+failed | timeout -> failed(tryit-1)/up : drop
+failed | detach -> idle/down : disconnect, stopAudio
+failed | sent clear own -> failed(tryit-1)/up : drop
+failed | sent append own -> failed(tryit-1)/up : drop
+failed | sent commit own -> failed(tryit-1)/up : drop
+failed | sent clear foreign -> failed(tryit-1)/up : drop
+failed | sent append foreign -> failed(tryit-1)/up : drop
+failed | sent cancel -> failed(tryit-1)/up : -
+failed | sent status -> failed(tryit-1)/up : -
+failed | committed own -> failed(tryit-1)/up : drop
+failed | committed foreign -> failed(tryit-1)/up : drop
+failed | committed no-id -> failed(tryit-1)/up : drop
+failed | cleared own -> failed(tryit-1)/up : drop
+failed | cleared foreign -> failed(tryit-1)/up : drop
+failed | created own -> failed(tryit-1)/up : drop
+failed | created foreign -> failed(tryit-1)/up : drop
+failed | audio own -> failed(tryit-1)/up : drop
+failed | audio foreign -> failed(tryit-1)/up : drop
+failed | done own -> failed(tryit-1)/up : drop
+failed | done foreign -> failed(tryit-1)/up : drop
+failed | cancelled own -> failed(tryit-1)/up : drop
+failed | cancelled foreign -> failed(tryit-1)/up : drop
+failed | failed own -> failed(tryit-1)/up : drop
+failed | failed foreign -> failed(tryit-1)/up : drop
+failed | error commit own -> failed(tryit-1)/up : drop
+failed | error append own -> failed(tryit-1)/up : drop
+failed | error foreign -> failed(tryit-1)/up : drop
+failed | error no-id -> failed(tryit-1)/up : drop
+failed | status -> failed(tryit-1)/up : voices
+failed | hello -> failed(tryit-1)/up : drop
+failed | other -> failed(tryit-1)/up : drop

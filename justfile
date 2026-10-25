@@ -432,3 +432,46 @@ smoke-multiconn-phonon *args:
 # Crash-restart-reconnect: SIGKILL the server, restart, client reconnects w/ backoff.
 smoke-reconnect *args:
     tests/smoke/run_reconnect.sh {{args}}
+
+# App-path smoke: drive one backend the way the macOS app does (prefetch --check
+# --json, serve --supervised on an ephemeral loopback port, ready line, TCP synth,
+# busy-port EADDRINUSE, stdin-EOF stop). Never downloads unless --download.
+# Uses the current .venv as-is (--no-sync keeps installed extras).
+smoke-supervised backend="tone" *args:
+    uv run --no-sync python tests/smoke/supervised_smoke.py --backend {{quote(backend)}} {{args}}
+
+# The app-path smoke for every backend in tts_server.backends.BACKENDS (SKIPs a
+# backend whose weights are not cached or whose extra is not installed).
+smoke-supervised-all *args:
+    uv run --no-sync python tests/smoke/supervised_smoke.py --all {{args}}
+
+# ---------------------------------------------------------------------------
+# macOS menu bar app ("Pipecat Service Toolbar", macos/). See macos/README.md.
+# ---------------------------------------------------------------------------
+
+# Build macos/build/Pipecat Service Toolbar.app (wheel + pinned uv + uv.lock pins + STT helper, ad-hoc signed).
+# Set SIGN_IDENTITY="Developer ID Application: …" to sign for distribution.
+app-build:
+    macos/scripts/build_app.sh
+
+# Build the app bundle, then launch it (quits a running copy first). The running
+# copy is found by the identifier the build wrote (BUNDLE_ID overrides it).
+app-open: app-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app="macos/build/Pipecat Service Toolbar.app"
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")"
+    osascript -e "quit app id \"$id\"" 2>/dev/null || true
+    open "$app"
+
+# Run the app unbundled from the checkout (builds the wheel from this repo; uses your uv).
+app-run *args:
+    swift run --package-path macos PipecatServiceToolbar {{args}}
+
+# Swift unit tests (+ a live tone-server test when .venv exists: `uv sync --extra client`).
+app-test:
+    swift test --package-path macos
+
+# Unattended UI smoke (no Accessibility grant): --snapshot render, bundle launch, quit + SIGTERM leave no children.
+app-smoke *args:
+    macos/scripts/ui_smoke.sh {{args}}

@@ -29,6 +29,8 @@ import pytest
 
 from tts_server.__main__ import build_parser
 
+from ._macos_catalog import macos_catalog
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
 JUSTFILE = REPO_ROOT / "justfile"
@@ -219,13 +221,42 @@ def test_smoke_scripts_enumerate_every_backend(script):
 def test_justfile_has_phonon_smoke_recipes():
     text = JUSTFILE.read_text()
     assert re.search(
-        r"^smoke-phonon \*args:\n\s+tests/smoke/run_smoke.sh --backend phonon", text, re.M
+        r"^smoke-phonon \*args:\n\s+tests/smoke/run_smoke.sh --backend phonon", text, re.MULTILINE
     )
     assert re.search(
         r"^smoke-multiconn-phonon \*args:\n\s+tests/smoke/run_multiconn.sh --backend phonon",
         text,
-        re.M,
+        re.MULTILINE,
     )
+
+
+def test_justfile_has_supervised_smoke_recipes():
+    """``smoke-supervised <backend>`` defaults to tone; ``-all`` takes its backend
+    list from the registry (``--all``), never a hand-written one."""
+    text = JUSTFILE.read_text()
+    assert re.search(
+        r'^smoke-supervised backend="tone" \*args:\n\s+uv run --no-sync python '
+        r"tests/smoke/supervised_smoke.py --backend \{\{quote\(backend\)\}\} \{\{args\}\}",
+        text,
+        re.MULTILINE,
+    )
+    body = _recipe_body("smoke-supervised-all")
+    assert "tests/smoke/supervised_smoke.py --all {{args}}" in body
+    named = {b for b in _argparse_backends() if re.search(rf"\b{b}\b", body)}
+    assert not named, f"smoke-supervised-all hand-lists backends: {sorted(named)}"
+
+
+@_skip_no_just
+def test_smoke_supervised_dry_run_passes_backend_and_args():
+    out = subprocess.run(
+        ["just", "--dry-run", "smoke-supervised", "phonon", "--download"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    # just shell-quotes the backend (`quote()`); args pass through verbatim.
+    assert re.search(r"supervised_smoke\.py --backend '?phonon'? --download", out.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -305,3 +336,52 @@ def test_plist_endpoint_extracts_auth_token_file(tmp_path):
     assert (host, port) == ("127.0.0.1", "8765")
     assert sock == ""
     assert authfile == token_path
+
+
+# ---------------------------------------------------------------------------
+# Drift invariant: the macOS menu bar app's catalog (a fourth copy of the map)
+# ---------------------------------------------------------------------------
+
+
+def _macos_catalog_ports(kind: str = "tts", *, variants: bool = False) -> dict[str, int]:
+    """``{server name: port}`` for one service kind, from the shared
+    ``Service.swift`` parser (family defaults only unless ``variants``)."""
+    return {
+        e.name: e.port
+        for e in macos_catalog().values()
+        if e.kind == kind and (variants or not e.is_variant)
+    }
+
+
+def test_macos_app_catalog_matches_readme_ports():
+    ports = _macos_catalog_ports("tts")
+    table = _readme_port_table()
+    assert set(ports) == _argparse_backends()
+    assert ports == {backend: port for backend, (_label, port) in table.items()}
+
+
+def test_macos_app_stt_ports_do_not_collide_with_tts():
+    stt = _macos_catalog_ports("stt", variants=True)
+    assert stt, "expected STT services in the macOS catalog"
+    assert not set(stt.values()) & set(_macos_catalog_ports("tts", variants=True).values())
+
+
+def _recipe_body(name: str) -> str:
+    """The indented body of justfile recipe ``name`` (up to the next blank line)."""
+    lines = JUSTFILE.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if re.match(rf"^{re.escape(name)}\b.*:", line))
+    body = []
+    for line in lines[start + 1 :]:
+        if not line.startswith((" ", "\t")):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def test_app_open_quits_the_bundle_id_the_build_used():
+    """``BUNDLE_ID`` overrides the built app's identifier, so ``app-open`` must quit
+    whatever id the build wrote, not a hardcoded default (else it misses the running
+    copy and ``open`` just re-activates it)."""
+    body = _recipe_body("app-open")
+    assert "CFBundleIdentifier" in body, body
+    assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body

@@ -103,7 +103,26 @@ uv sync --extra examples
 
 > Run every command through `uv run` (or activate the venv once per shell). A
 > bare `python -m tts_server …` uses the system interpreter and fails with
-> `ModuleNotFoundError: No module named 'websockets'`.
+> `ModuleNotFoundError: No module named 'websockets'`. Installing the package
+> also puts a `pipecat-tts` console script on the environment's `PATH`, the same
+> CLI as `python -m tts_server` (`pipecat-tts status`, `pipecat-tts serve …`).
+
+## macOS menu bar app
+
+[`macos/`](macos/) holds **Pipecat Service Toolbar**, a native SwiftUI menu bar
+app. It downloads speech models and serves them on fixed loopback ports. TTS
+covers every backend here. STT covers Apple Speech (SpeechAnalyzer), Whisper and
+Kyutai, using the [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server)
+protocol. It ships a pinned `uv` and this repo's wheel, and installs Python and
+the weights on demand. Python is never bundled.
+
+```sh
+just app-open    # build macos/build/Pipecat Service Toolbar.app and launch it
+```
+
+See [`macos/README.md`](macos/README.md). The app drives the
+[`prefetch`](#prefetching-models) and [`serve --supervised`](#supervised-mode)
+commands below.
 
 ## Running the server
 
@@ -194,6 +213,7 @@ Endpoint precedence (server and client both): **URI > socket > host+port**. The
 | `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `TTS_WS_PING_INTERVAL` | server | Keepalive ping period in seconds (default `20`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables pings. |
 | `TTS_WS_PING_TIMEOUT` | server | Seconds to wait for a pong before closing (default `120`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables the timeout (keeps pings, never closes on a slow pong — reintroduces the idle-leak below). |
+| `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |
 
 Keepalive notes: the `websockets` library default (`ping_interval=20`,
 `ping_timeout=20`) closes a live connection with `1011 keepalive ping timeout`
@@ -246,6 +266,70 @@ kokoro`) or a socket path to probe a specific socket (`just tts-status
 `just tts-uninstall <backend>`, `just tts-enable <backend>`,
 `just tts-disable <backend>`, `just tts-start <backend>`, `just tts-restart <backend>`,
 `just tts-stop <backend>`, `just tts-logs <backend>` (all operator-manual; not CI-verified).
+
+## Prefetching models
+
+`serve` downloads weights inside the backend's startup, silently, before it binds.
+`prefetch` does the same Hugging Face downloads up front so the first start is
+fast, and `--check` answers "is it cached?" without touching the network:
+
+```sh
+uv run python -m tts_server prefetch --backend kokoro            # download
+uv run python -m tts_server prefetch --backend kokoro --check    # offline probe
+uv run python -m tts_server prefetch --backend phonon --model phonon-q8 --json
+```
+
+It fetches exactly what `serve` would: the model repo with mlx-audio's file
+patterns, plus dia's DAC codec repo, pocket_tts's predefined voice embeddings,
+and phonon's pinned revision and `PIPECAT_TTS_PHONON_VOICES` files. For the
+`phonon-q8`/`phonon-q4` aliases it also runs the one-time quantization. Weights go
+to the standard Hugging Face cache (`HF_HOME` / `HF_HUB_CACHE`), shared with
+`serve`. `--check` exits 0 whenever the probe ran; the answer is the `cached`
+field. It needs `huggingface_hub`, which every model extra installs.
+
+`--json` prints one JSON object per stdout line:
+
+| Event | Fields |
+|---|---|
+| `start` | `repo`, `revision`, `kind` (`model` / `codec` / `voice`) |
+| `progress` | `repo`, `downloaded_bytes`, `total_bytes`, `files_done`, `files_total`. `total_bytes` counts only files still downloading and grows as they are found. |
+| `done` | `repo`, `path`, `size_bytes` |
+| `convert` | `repo`, `bits`, `state` (`start` / `done`), `path` (phonon aliases only) |
+| `warning` | `repo`, `message` (an optional voice snapshot failed; serve skips it too) |
+| `complete` | `backend`, `model`, `cached`, `size_bytes` |
+| `check` | `repo`, `revision`, `kind`, `required`, `cached`, `path`, `size_bytes` (with `--check`) |
+| `summary` | `backend`, `model`, `cached`, `size_bytes`, plus `quantized` for phonon aliases (with `--check`) |
+| `error` | `code`, `message`, `repo`; exit status 1 |
+
+Prefetch does not cover Metal kernel warmup, which `serve` still runs before it
+reports ready.
+
+## Supervised mode
+
+`serve --supervised` is for a parent process that manages the server, such as the
+[macOS menu bar app](#macos-menu-bar-app). Logging on stderr is unchanged. In
+addition:
+
+- **stdout carries only JSON lines.** Once the listener is bound and the model is
+  warm, the server prints one
+  `{"event":"ready","backend","model","host","port","socket_path","rate","pid"}`
+  line. With `--port 0` the `port` field is the real port.
+- **A fatal error prints `{"event":"error","code","message","exc_type"}`** and
+  exits 1. Codes: `EADDRINUSE` (reported before the model loads), `EACCES`,
+  `SocketPathConflict`, `ModuleNotFoundError` (backend extra missing),
+  `ModelDownloadError`, `ConfigError`, `BackendStartError`.
+- **stdin EOF stops the server** exactly like SIGTERM. The parent keeps a pipe
+  open and the server exits when the parent closes it or dies. If that happens
+  during the model load, the process exits at once; interrupted downloads resume.
+
+```sh
+# stdin is the subshell's pipe: it closes after 5 s, so the server exits then.
+( sleep 5 ) | uv run python -m tts_server serve --backend tone \
+    --host 127.0.0.1 --port 0 --supervised
+```
+
+Skip any stdout line that does not parse as JSON: native code writing straight to
+file descriptor 1 can bypass the redirect.
 
 ## Protocol
 
@@ -651,6 +735,10 @@ re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifa
 - `tts_server/` — protocol, backend abstraction, server, async client, CLI.
 - `tts_server/backends/` — lazy-imported per-model backends (Kokoro first).
 - `examples/` — the stdlib oracle and the Pipecat service adapter.
-- `justfile` — macOS operator recipes (`tts-list`, `tts-status`).
+- `tts_server/supervise.py` / `tts_server/prefetch.py` — the `serve --supervised`
+  JSON channel and the `prefetch` subcommand.
+- `justfile` — macOS operator recipes (`tts-list`, `tts-status`, …) and the menu
+  bar app's `app-build` / `app-open` / `app-run` / `app-test`.
+- `macos/` — Pipecat Service Toolbar, the native menu bar app (see `macos/README.md`).
 - `docs/protocol.md` — the wire protocol specification.
 - `docs/dev_plans/` — development plans.

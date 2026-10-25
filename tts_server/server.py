@@ -43,7 +43,7 @@ from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import websockets
 from websockets.asyncio.server import (
@@ -84,6 +84,14 @@ def _response_id() -> str:
     return f"resp_{uuid.uuid4().hex[:16]}"
 
 
+class SocketInUseError(RuntimeError):
+    """A live server already listens on the requested Unix socket path."""
+
+
+class SocketPathConflictError(RuntimeError):
+    """A non-socket file occupies the requested Unix socket path."""
+
+
 def _clear_stale_unix_socket(path: Path) -> None:
     """Make ``path`` bindable, handling a socket left behind by a crashed server.
 
@@ -108,7 +116,7 @@ def _clear_stale_unix_socket(path: Path) -> None:
     if not path.exists():
         return
     if not path.is_socket():
-        raise RuntimeError(
+        raise SocketPathConflictError(
             f"refusing to bind: {path} exists and is not a socket; "
             "remove it or choose a different --socket-path"
         )
@@ -128,7 +136,7 @@ def _clear_stale_unix_socket(path: Path) -> None:
     finally:
         probe.close()
     # connect() succeeded: a live server owns this socket.
-    raise RuntimeError(f"address already in use: a server is already listening on {path}")
+    raise SocketInUseError(f"address already in use: a server is already listening on {path}")
 
 
 def _assert_parent_dir_safe(path: Path) -> None:
@@ -542,6 +550,14 @@ class TTSServer:
             )
 
     @property
+    def backend(self) -> TTSBackend:
+        return self._backend
+
+    @property
+    def config(self) -> ServerConfig:
+        return self._config
+
+    @property
     def sockets_bound(self) -> list:
         if self._server is None:
             return []
@@ -550,9 +566,12 @@ class TTSServer:
     def listening_port(self) -> int | None:
         for s in self.sockets_bound:
             try:
-                return s.getsockname()[1]
+                name = s.getsockname()
             except OSError:
                 continue
+            # A Unix socket's name is a path string, not a (host, port) tuple.
+            if isinstance(name, tuple) and len(name) >= 2:
+                return name[1]
         return None
 
     async def wait_closed(self) -> None:
@@ -1624,6 +1643,25 @@ def _pending_write_bytes(ws: ServerConnection) -> int | None:
         return None
 
 
+class ServeLifecycle(Protocol):
+    """Hooks a supervising caller plugs into :func:`serve`.
+
+    ``serve()`` only provides the mechanism (a stop request, a race between the
+    backend start and that request); the policy (what stops it, whether an
+    abandoned startup ends the process) belongs to the caller, e.g.
+    ``tts_server.supervise.StdinEofLifecycle`` for ``serve --supervised``.
+    """
+
+    def attach(self, loop: asyncio.AbstractEventLoop, request_stop: Callable[[], None]) -> None:
+        """Called before the backend starts. Wire extra stop triggers here;
+        ``request_stop`` must be called on ``loop`` (e.g. via
+        ``loop.call_soon_threadsafe``) and is idempotent."""
+
+    def startup_abandoned(self) -> None:
+        """A stop was requested while the backend was still starting. Return to
+        let the start finish and the server drain normally; or end the process."""
+
+
 async def serve(
     backend: TTSBackend | None = None,
     *,
@@ -1635,8 +1673,15 @@ async def serve(
     ping_timeout_seconds: float | None = P.KEEPALIVE_PING_TIMEOUT_SECONDS,
     install_signal_handlers: bool = True,
     ready: Callable[[TTSServer], Awaitable[None]] | None = None,
+    lifecycle: ServeLifecycle | None = None,
 ) -> None:
-    """Start the server, wait for a shutdown signal, then drain and exit."""
+    """Start the server, wait for a shutdown signal, then drain and exit.
+
+    ``ready`` runs once the listener is bound. ``lifecycle`` lets a caller add
+    stop triggers and decide what happens when a stop is requested before the
+    backend finished starting (see :class:`ServeLifecycle`); the supervised-mode
+    policy (``serve --supervised``) lives in ``tts_server.supervise``, not here.
+    """
     cfg = ServerConfig(
         socket_path=socket_path,
         host=host,
@@ -1649,15 +1694,28 @@ async def serve(
     # backend (``make_backend``) so the server depends only on the abstract
     # protocol types, never on a concrete backend class.
     server = TTSServer(backend or make_backend("tone"), cfg)
-    await server.start()
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
+
+    def _request_stop() -> None:
+        if not stop.done():
+            stop.set_result(None)
+
+    if lifecycle is not None:
+        lifecycle.attach(loop, _request_stop)
+        start_task = asyncio.ensure_future(server.start())
+        await asyncio.wait({start_task, stop}, return_when=asyncio.FIRST_COMPLETED)
+        if not start_task.done():
+            lifecycle.startup_abandoned()
+            # The hook returned instead of ending the process: let the start
+            # finish, then drain and return as for any other stop.
+            await start_task
+            await server.shutdown()
+            return
+        await start_task
+    else:
+        await server.start()
     if install_signal_handlers:
-
-        def _request_stop() -> None:
-            if not stop.done():
-                stop.set_result(None)
-
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, _request_stop)

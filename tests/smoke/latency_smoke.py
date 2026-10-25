@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import sys
 
 from tts_server.client import TTSClient
@@ -39,6 +40,72 @@ from tts_server.client import TTSClient
 _DEFAULT_TEXT = (
     "The quick brown fox jumps over the lazy dog and then keeps on running for quite a while."
 )
+
+
+async def collect_response(
+    client: TTSClient, text: str, *, voice: str | None, timeout: float
+) -> dict:
+    """Append + commit ``text`` on a connected client and record the response.
+
+    Returns ``t_commit`` / ``delta_ts`` (monotonic loop time per delta),
+    ``seqs``, ``pcm`` (the decoded audio bytes concatenated) and ``done`` (the
+    ``response.audio.done`` event). Raises ``SystemExit`` on a server
+    ``response.failed`` / ``error`` and ``TimeoutError`` past ``timeout``.
+    Shared with ``supervised_smoke.py`` (the app-path smoke).
+    """
+    loop = asyncio.get_running_loop()
+    await client.append(text)
+    t_commit = loop.time()
+    # voice is a top-level commit field (not an extra); default sampling is used.
+    await client.commit(voice=voice or None)
+    rec: dict = {"t_commit": t_commit, "delta_ts": [], "seqs": [], "done": None, "done_ts": None}
+    pcm = bytearray()
+
+    async def _drive() -> None:
+        async for ev in client.events():
+            t = ev.get("type")
+            if t == "response.audio.delta":
+                rec["delta_ts"].append(loop.time())
+                rec["seqs"].append(ev.get("seq"))
+                pcm.extend(base64.b64decode(ev["audio"]))
+            elif t == "response.audio.done":
+                rec["done_ts"] = loop.time()
+                rec["done"] = ev
+                return
+            elif t in ("response.failed", "error"):
+                raise SystemExit(f"server returned {t}: {ev}")
+
+    await asyncio.wait_for(_drive(), timeout)
+    rec["pcm"] = bytes(pcm)
+    return rec
+
+
+def cadence_metrics(rec: dict, rate: int) -> dict:
+    """TTFB / span / total / max_gap / audio seconds / RTF of a ``collect_response``."""
+    delta_ts = rec["delta_ts"]
+    ttfb = delta_ts[0] - rec["t_commit"]
+    span = delta_ts[-1] - delta_ts[0]
+    total = rec["done_ts"] - rec["t_commit"]
+    max_gap = max((b - a for a, b in zip(delta_ts, delta_ts[1:], strict=False)), default=0.0)
+    audio_s = (len(rec["pcm"]) / 2) / rate  # int16 mono
+    rtf = total / audio_s if audio_s else float("nan")
+    return {
+        "deltas": len(delta_ts),
+        "ttfb": ttfb,
+        "span": span,
+        "total": total,
+        "audio_s": audio_s,
+        "rtf": rtf,
+        "max_gap": max_gap,
+    }
+
+
+def format_metrics(m: dict) -> str:
+    return (
+        f"measured: deltas={m['deltas']} ttfb={m['ttfb']:.3f}s span={m['span']:.3f}s "
+        f"total={m['total']:.3f}s audio={m['audio_s']:.2f}s rtf={m['rtf']:.3f} "
+        f"max_gap={m['max_gap']:.3f}s"
+    )
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -57,51 +124,19 @@ async def _run(args: argparse.Namespace) -> int:
         f"connected: backend={hello.get('backend')} rate={rate} streaming={caps.get('streaming')}"
     )
 
-    loop = asyncio.get_running_loop()
-    await client.append(args.text)
-    t_commit = loop.time()
-    # voice is a top-level commit field (not an extra); default sampling is used.
-    await client.commit(voice=args.voice or None)
-
-    delta_ts: list[float] = []
-    total_bytes = 0
-    done_ts = None
     rc = 0
-
-    async def _drive() -> None:
-        nonlocal total_bytes, done_ts
-        async for ev in client.events():
-            t = ev.get("type")
-            if t == "response.audio.delta":
-                delta_ts.append(loop.time())
-                import base64
-
-                total_bytes += len(base64.b64decode(ev["audio"]))
-            elif t == "response.audio.done":
-                done_ts = loop.time()
-                return
-            elif t in ("response.failed", "error"):
-                raise SystemExit(f"server returned {t}: {ev}")
-
     try:
-        await asyncio.wait_for(_drive(), args.timeout)
+        rec = await collect_response(client, args.text, voice=args.voice, timeout=args.timeout)
     finally:
         await client.close()
 
-    if not delta_ts or done_ts is None:
-        print(f"FAIL: no deltas/done (deltas={len(delta_ts)})")
+    if not rec["delta_ts"] or rec["done"] is None:
+        print(f"FAIL: no deltas/done (deltas={len(rec['delta_ts'])})")
         return 1
 
-    ttfb = delta_ts[0] - t_commit
-    span = delta_ts[-1] - delta_ts[0]
-    total = done_ts - t_commit
-    max_gap = max((b - a for a, b in zip(delta_ts, delta_ts[1:], strict=False)), default=0.0)
-    audio_s = (total_bytes / 2) / rate  # int16 mono
-    rtf = total / audio_s if audio_s else float("nan")
-    print(
-        f"measured: deltas={len(delta_ts)} ttfb={ttfb:.3f}s span={span:.3f}s "
-        f"total={total:.3f}s audio={audio_s:.2f}s rtf={rtf:.3f} max_gap={max_gap:.3f}s"
-    )
+    m = cadence_metrics(rec, rate)
+    delta_ts, ttfb, span, total = rec["delta_ts"], m["ttfb"], m["span"], m["total"]
+    print(format_metrics(m))
 
     # 1. streamed, not one shot.
     if len(delta_ts) < 2:

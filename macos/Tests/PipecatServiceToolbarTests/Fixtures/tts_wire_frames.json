@@ -1,0 +1,86 @@
+{
+  "audio": {
+    "audio": "AID/fw==",
+    "event_id": "evt_2cbe322eb3f6428f",
+    "response_id": "resp_8d81e112fb8c4e7a",
+    "seq": 0,
+    "type": "response.audio.delta"
+  },
+  "cancelled": {
+    "event_id": "evt_0ef810c53751475c",
+    "response_id": "resp_8d81e112fb8c4e7a",
+    "type": "response.cancelled"
+  },
+  "cleared": {
+    "event_id": "evt_ffe12d5a07554a32",
+    "previous_event_id": "tryit-1.clear",
+    "type": "input_text.cleared"
+  },
+  "committed": {
+    "event_id": "evt_057686da8f9d4530",
+    "previous_event_id": "tryit-1",
+    "response_id": "resp_8d81e112fb8c4e7a",
+    "type": "input_text.committed"
+  },
+  "created": {
+    "event_id": "evt_df458a1776634892",
+    "response_id": "resp_8d81e112fb8c4e7a",
+    "type": "response.created"
+  },
+  "done": {
+    "duration_ms": 300,
+    "event_id": "evt_b3dcd2e22df542aa",
+    "response_id": "resp_05c393a289ba43ef",
+    "type": "response.audio.done"
+  },
+  "error_append": {
+    "error": {
+      "code": "invalid_config",
+      "event_id": "tryit-3.append",
+      "message": "input_text.append missing text",
+      "type": "invalid_request_error"
+    },
+    "event_id": "evt_f0b2adeb560d4e1b",
+    "previous_event_id": "tryit-3.append",
+    "type": "error"
+  },
+  "error_busy": {
+    "error": {
+      "code": "busy",
+      "event_id": "tryit-2",
+      "message": "synthesis backlog full; retry after backoff",
+      "retry_after_ms": 250,
+      "type": "rate_limit_error"
+    },
+    "event_id": "evt_9440f5ea447a409e",
+    "previous_event_id": "tryit-2",
+    "retry_after_ms": 250,
+    "type": "error"
+  },
+  "error_voice": {
+    "error": {
+      "code": "invalid_config",
+      "event_id": "tryit-4",
+      "message": "unsupported voice 'nope'; query server.status for the advertised voices",
+      "type": "invalid_request_error"
+    },
+    "event_id": "evt_9bc726595e78487b",
+    "previous_event_id": "tryit-4",
+    "type": "error"
+  },
+  "request": [
+    {
+      "event_id": "tryit-1.clear",
+      "type": "input_text.clear"
+    },
+    {
+      "event_id": "tryit-1.append",
+      "text": "Hello",
+      "type": "input_text.append"
+    },
+    {
+      "event_id": "tryit-1",
+      "type": "input_text.commit"
+    }
+  ]
+}

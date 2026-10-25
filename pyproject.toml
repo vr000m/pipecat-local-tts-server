@@ -1,6 +1,6 @@
 [project]
 name = "pipecat-local-tts-server"
-version = "0.6.1"
+version = "0.7.0"
 description = "Standalone local WebSocket text-to-speech (TTS) server, client, and pluggable mlx-audio backends for the Pipecat ecosystem"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,8 +21,9 @@ classifiers = [
 dependencies = [
     # The wire transport. The client (TTSClient) and the server runtime both
     # depend on websockets; it is the only hard runtime dependency of the base
-    # package. Backend TTS engines live behind the [kokoro] (and later
-    # [voxtral_tts] / [pocket_tts] / [dia]) extras so a client-only consumer
+    # package. Backend TTS engines live behind the [kokoro] / [voxtral_tts] /
+    # [pocket_tts] / [dia] / [qwen3_tts] / [fish_tts] / [phonon] extras (the
+    # install list is in AGENTS.md) so a client-only consumer
     # (e.g. a bot that just talks to a running server) does not pull mlx-audio
     # or its heavy transitive deps (torch, spacy, ...). numpy is dev-only and
     # is NEVER a runtime dependency — ToneBackend and the shared float->pcm16
@@ -182,6 +183,11 @@ dev = [
     # stdlib-only so the lean base never requires a dev-only dependency.
     "numpy>=1.26",
 ]
+
+[project.scripts]
+# Same CLI as ``python -m tts_server``; gives a per-backend venv (the macOS menu
+# bar app creates one per backend) a stable executable to point at.
+pipecat-tts = "tts_server.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/vr000m/pipecat-local-tts-server"

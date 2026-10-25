@@ -98,6 +98,17 @@ def _alias_for(model_id: str) -> tuple[str, int | None] | None:
     return _MODEL_ALIASES.get(model_id.strip().casefold())
 
 
+def _resolve_pin(model_id: str) -> tuple[tuple[str, str] | None, int | None]:
+    """``(pin, bits)`` for ``model_id``: an alias maps to its repo's pin plus its
+    quantization bits; anything else is looked up directly. Shared by ``start()``
+    and ``prefetch`` so both fetch exactly the same revision."""
+    alias = _alias_for(model_id)
+    if alias is not None:
+        repo_id, bits = alias
+        return _pin_for(repo_id), bits
+    return _pin_for(model_id), None
+
+
 def _cache_root() -> Path:
     xdg = os.environ.get("XDG_CACHE_HOME")
     return Path(xdg) if xdg else Path.home() / ".cache"
@@ -457,13 +468,7 @@ class PhononBackend:
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
 
-        alias = _alias_for(self._model_id)
-        bits: int | None = None
-        if alias is not None:
-            repo_id, bits = alias
-            pin = _pin_for(repo_id)
-        else:
-            pin = _pin_for(self._model_id)
+        pin, bits = _resolve_pin(self._model_id)
         if pin is not None:
             repo, sha = pin
             # An unreachable/unknown pinned sha raises here: startup error, no HEAD fallback.
@@ -661,3 +666,61 @@ class PhononBackend:
 
     async def close(self) -> None:
         self._loaded_model = None
+
+
+# --- prefetch hooks (``python -m tts_server prefetch --backend phonon``) -----------
+
+
+def prefetch_specs(model: str | None) -> list:
+    """The pinned model snapshot (same resolution as ``start()``) plus the voice files
+    enabled via ``PIPECAT_TTS_PHONON_VOICES`` (optional, as at startup)."""
+    from ..prefetch import SnapshotSpec, model_specs
+
+    model_id = model or DEFAULT_PHONON_MODEL
+    pin, _bits = _resolve_pin(model_id)
+    if pin is not None:
+        repo, sha = pin
+        specs = [SnapshotSpec(repo, revision=sha, allow_patterns=tuple(ALLOW_PATTERNS))]
+    else:
+        # Unpinned: ``start()`` hands the id straight to mlx-audio's ``load()``.
+        specs = model_specs(model_id, DEFAULT_PHONON_MODEL)
+    resolved, _unknown = phonon_voices.resolve_enabled(_enabled_from_env())
+    if resolved:
+        specs.append(
+            SnapshotSpec(
+                phonon_voices.VOICES_REPO,
+                revision=phonon_voices.VOICES_REPO_SHA,
+                allow_patterns=tuple(phonon_voices.voice_filename(s) for s in resolved),
+                kind="voice",
+                required=False,
+            )
+        )
+    return specs
+
+
+def prefetch_finalize(model: str | None, emit) -> None:
+    """For the ``phonon-q8``/``phonon-q4`` aliases, build the quantized cache now so
+    the first ``serve`` does not pay for the one-time conversion (imports mlx)."""
+    from .. import prefetch
+
+    pin, bits = _resolve_pin(model or DEFAULT_PHONON_MODEL)
+    if pin is None or bits is None:
+        return
+    repo, sha = pin
+    if emit is not None:
+        emit({"event": "convert", "repo": repo, "bits": bits, "state": "start", "path": None})
+    snapshot = prefetch.cached_snapshot(
+        prefetch.SnapshotSpec(repo, revision=sha, allow_patterns=tuple(ALLOW_PATTERNS))
+    )
+    path = _ensure_quantized(snapshot, sha, bits)
+    if emit is not None:
+        emit({"event": "convert", "repo": repo, "bits": bits, "state": "done", "path": path})
+
+
+def prefetch_check_extra(model: str | None) -> dict:
+    """``--check`` summary fields: whether a quantized alias is already converted."""
+    pin, bits = _resolve_pin(model or DEFAULT_PHONON_MODEL)
+    if pin is None or bits is None:
+        return {}
+    qdir = _quantized_dir(pin[1], bits)
+    return {"quantized": qdir.is_dir(), "quantized_path": str(qdir)}

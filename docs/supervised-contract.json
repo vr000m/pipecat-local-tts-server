@@ -1,0 +1,131 @@
+{
+  "_comment": [
+    "The JSON-lines contract between a supervising app (macos/, the Pipecat Service Toolbar) and the processes it runs:",
+    "`python -m tts_server serve --supervised` / `prefetch --json` (tts_server/supervise.py, tts_server/prefetch.py) and",
+    "the STT helper `pipecat_app_helper.py serve-stt` / `prefetch --json` (macos/Helper/). Both emitters are independent",
+    "implementations; tests/test_supervised_contract.py runs both on stub inputs and checks every line against this file,",
+    "and checks the Swift consumer (PrefetchEvent.swift, PCMStreamConverter.swift) against it.",
+    "Field types: string | integer | boolean | null. `fields` are always present; `optional` may be present.",
+    "One object per stdout line; consumers skip lines that are not JSON objects."
+  ],
+  "version": 1,
+  "error_codes": [
+    "ModuleNotFoundError",
+    "EADDRINUSE",
+    "EACCES",
+    "SocketPathConflict",
+    "ModelDownloadError",
+    "ConfigError",
+    "BackendStartError"
+  ],
+  "download_error_module_prefixes": ["huggingface_hub", "requests", "urllib3", "hf_xet", "httpx"],
+  "stt_wire_rate": 16000,
+  "serve": {
+    "ready": {
+      "fields": {
+        "event": ["string"],
+        "backend": ["string"],
+        "model": ["string", "null"],
+        "host": ["string", "null"],
+        "port": ["integer", "null"],
+        "socket_path": ["string", "null"],
+        "rate": ["integer"],
+        "pid": ["integer"]
+      }
+    },
+    "error": {
+      "fields": {
+        "event": ["string"],
+        "code": ["string"],
+        "message": ["string"],
+        "exc_type": ["string"]
+      }
+    }
+  },
+  "prefetch": {
+    "start": {
+      "fields": {
+        "event": ["string"],
+        "repo": ["string"],
+        "revision": ["string", "null"],
+        "kind": ["string"]
+      }
+    },
+    "progress": {
+      "fields": {
+        "event": ["string"],
+        "repo": ["string"],
+        "downloaded_bytes": ["integer"],
+        "total_bytes": ["integer"],
+        "files_done": ["integer"],
+        "files_total": ["integer"]
+      }
+    },
+    "done": {
+      "fields": {
+        "event": ["string"],
+        "repo": ["string"],
+        "path": ["string"],
+        "size_bytes": ["integer"]
+      }
+    },
+    "complete": {
+      "fields": {
+        "event": ["string"],
+        "backend": ["string", "null"],
+        "model": ["string", "null"],
+        "cached": ["boolean"],
+        "size_bytes": ["integer"]
+      }
+    },
+    "check": {
+      "fields": {
+        "event": ["string"],
+        "repo": ["string"],
+        "revision": ["string", "null"],
+        "kind": ["string"],
+        "required": ["boolean"],
+        "cached": ["boolean"],
+        "path": ["string", "null"],
+        "size_bytes": ["integer"]
+      }
+    },
+    "summary": {
+      "fields": {
+        "event": ["string"],
+        "backend": ["string", "null"],
+        "model": ["string", "null"],
+        "cached": ["boolean"],
+        "size_bytes": ["integer"]
+      },
+      "optional": {
+        "quantized": ["boolean"],
+        "quantized_path": ["string"]
+      }
+    },
+    "warning": {
+      "fields": {
+        "event": ["string"],
+        "repo": ["string"],
+        "message": ["string"]
+      }
+    },
+    "convert": {
+      "fields": {
+        "event": ["string"],
+        "repo": ["string"],
+        "bits": ["integer"],
+        "state": ["string"],
+        "path": ["string", "null"]
+      }
+    },
+    "error": {
+      "fields": {
+        "event": ["string"],
+        "code": ["string"],
+        "message": ["string"],
+        "repo": ["string", "null"]
+      }
+    }
+  }
+}
