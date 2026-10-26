@@ -53,6 +53,10 @@ enum HelloFixtures {
         Reported(service: .whisperTiny, name: "mlx", model: "mlx-community/whisper-tiny-mlx", rate: 16000),
         Reported(service: .kyutai, name: "kyutai", model: "kyutai/stt-1b-en_fr-mlx", rate: 16000),
         Reported(service: .kyutai2B, name: "kyutai", model: "kyutai/stt-2.6b-en-mlx", rate: 16000),
+        Reported(service: .parakeet, name: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3", rate: 16000),
+        Reported(
+            service: .nemotron, name: "nemotron", model: "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+            rate: 16000),
     ]
 
     static func reported(_ service: Service) -> Reported {

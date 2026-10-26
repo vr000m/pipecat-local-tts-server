@@ -19,15 +19,18 @@ import Python, so these tests parse the Swift source (one parser,
   * each variant ``modelArgument`` is an alias its backend resolves to the
     family's repo;
   * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
-    TTS service's ``prefetch_specs(model)`` and the STT helper's file filter,
-    at the helper's ``MODEL_REVISIONS`` pins (``sttModelRevisions``);
-  * ``SupervisedErrorCode`` raw values equal ``tts_server.supervise``'s ``CODE_*``;
+    TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
+    repo with no revision pin (the upstream ``stt_server prefetch`` pins none);
+  * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
+    repo's LaunchAgent labels, ports, backend names and default model repos
+    (written out here: the lean job never imports ``stt_server``);
+  * ``SupervisedErrorCode`` raw values equal the union of the contract's per-emitter
+    lists, and ``tts_server.supervise``'s ``CODE_*`` equal the ``tts`` list;
   * the Try it wire fixture is what the server sends.
 """
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 from pathlib import Path
@@ -39,7 +42,6 @@ from ._macos_catalog import (
     Snapshot,
     macos_catalog,
     macos_snapshots,
-    macos_stt_model_revisions,
     mlx_audio_default_patterns,
 )
 
@@ -228,9 +230,6 @@ async def test_swift_try_it_fixture_is_what_the_server_sends():
     assert fixture["request"] == _TRY_IT_REQUEST
 
 
-HELPER = REPO / "macos" / "Helper" / "pipecat_app_helper.py"
-
-
 def test_swift_snapshots_match_prefetch_specs(monkeypatch):
     """``ServiceCatalog.snapshots(for:)`` (what Add Models sizes before an install)
     is, per TTS service, exactly ``prefetch_specs(model)`` for the ``--model`` the
@@ -254,44 +253,32 @@ def test_swift_snapshots_match_prefetch_specs(monkeypatch):
     assert snapshots["phonon_q8"][0].revision, "the parser sees the Phonon pin"
 
 
-def _helper_model_revisions() -> dict[str, str]:
-    """The helper's ``MODEL_REVISIONS`` literal, read without importing it."""
-    for node in ast.parse(HELPER.read_text()).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "MODEL_REVISIONS" for t in node.targets
-        ):
-            return ast.literal_eval(node.value)
-    raise AssertionError("MODEL_REVISIONS not found in the helper")
+def test_swift_stt_snapshots_are_the_model_repo_unpinned():
+    """An STT service downloads its one model repo through the upstream
+    ``stt_server prefetch --backend <b> --model <repo>``, which takes no revision pin
+    (the helper's ``MODEL_REVISIONS`` is gone): one required model snapshot of the
+    entry's ``modelRepo``, ``revision`` nil. Whisper and Kyutai take everything but docs."""
+    stt = {n: e for n, e in macos_catalog().items() if e.kind == "stt"}
+    assert {"parakeet", "nemotron", "whisper", "kyutai"} <= set(stt)
+    snapshots = macos_snapshots()
+    for name, entry in stt.items():
+        if entry.model_repo is None:
+            assert snapshots[name] == [], name
+            continue
+        assert len(snapshots[name]) == 1, name
+        (snap,) = snapshots[name]
+        assert (snap.repo, snap.revision, snap.kind, snap.required) == (
+            entry.model_repo,
+            None,
+            "model",
+            True,
+        ), name
+        assert snap.files, f"{name}: nothing to download"
+        if entry.family in ("whisper", "kyutai"):
+            assert snap.files == "allButDocs", name
 
 
-def test_swift_stt_pins_match_the_helper():
-    """``ServiceCatalog.sttModelRevisions`` is the helper's ``MODEL_REVISIONS``:
-    the app sizes the very commit ``prefetch --repo`` downloads."""
-    assert macos_stt_model_revisions() == _helper_model_revisions()
-
-
-def test_swift_stt_snapshots_match_the_helper_filter():
-    """An STT service downloads its one model repo at its pinned commit
-    (``MODEL_REVISIONS``) through the helper's ``prefetch --repo`` (no
-    ``--revision``), which takes every file but top-level dotfiles, ``*.md`` and
-    ``.gitattributes``: ``HubSnapshot.Files.allButDocs``."""
-    source = HELPER.read_text()
-    assert 'not f.path.startswith(".")' in source
-    assert 'endswith((".md", ".gitattributes"))' in source
-    assert "args.revision or MODEL_REVISIONS.get(repo)" in source
-    pins = _helper_model_revisions()
-    for name, entry in macos_catalog().items():
-        if entry.kind == "stt":
-            if entry.model_repo is None:
-                assert macos_snapshots()[name] == [], name
-                continue
-            expected = [
-                Snapshot(entry.model_repo, pins[entry.model_repo], "allButDocs", "model", True)
-            ]
-            assert macos_snapshots()[name] == expected, name
-
-
-def test_swift_supervised_error_codes_match_supervise():
+def test_swift_supervised_error_codes_match_the_contract():
     swift = set(
         re.findall(
             r'case \w+ = "(\w+)"',
@@ -301,8 +288,11 @@ def test_swift_supervised_error_codes_match_supervise():
             .split("}", 1)[0],
         )
     )
+    codes = json.loads((REPO / "docs" / "supervised-contract.json").read_text())["error_codes"]
     python = {v for k, v in vars(supervise).items() if k.startswith("CODE_")}
-    assert swift == python
+    assert set(codes["tts"]) == python
+    assert swift == set(codes["tts"]) | set(codes["stt"])
+    assert swift - python == {"ModelInvalidError"}, "the STT-only code"
 
 
 _BACKEND_NAME = re.compile(r'^\s+backend_name = "(\w+)"', re.MULTILINE)
@@ -365,9 +355,33 @@ def test_swift_expected_models_match_what_the_backends_report():
             assert expected == entry.model_argument != entry.model_repo, entry.name
 
 
-# Upstream (pipecat-local-stt-server, STT 0.4.0): ``backend.name`` per catalog family.
-# Whisper is the ``mlx`` backend; the engine name in ``.sttHelper`` is the app's own.
-_STT_BACKEND_NAMES = {"whisper": "mlx", "kyutai": "kyutai"}
+# The STT repo's (pipecat-local-stt-server 0.4.0) LaunchAgents, which the app's STT entries
+# agree with: ``backend.name`` the server reports, port, launchd label and default model repo
+# per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper`` engine name is the
+# app's own (it names the environment and the constraints file).
+_STT_FAMILIES = {
+    "whisper": ("mlx", 9565, "pipecat.stt-server", "mlx-community/whisper-large-v3-turbo"),
+    "kyutai": ("kyutai", 9665, "pipecat.stt-server.kyutai", "kyutai/stt-1b-en_fr-mlx"),
+    "parakeet": (
+        "parakeet",
+        9765,
+        "pipecat.stt-server.parakeet",
+        "mlx-community/parakeet-tdt-0.6b-v3",
+    ),
+    "nemotron": (
+        "nemotron",
+        9865,
+        "pipecat.stt-server.nemotron",
+        "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+    ),
+}
+
+
+def _swift_launchd_labels() -> dict[str, str]:
+    """``{service raw name: label}`` of the STT cases in ``ServiceInfo.launchdLabel``."""
+    text = (CORE / "Service.swift").read_text()
+    body = text.split("var launchdLabel", 1)[1].split("\n        }\n", 1)[0]
+    return dict(re.findall(r'case \.(\w+): "(pipecat\.stt-server[\w.\-]*)"', body))
 
 
 def test_swift_stt_expected_backend_names():
@@ -377,18 +391,46 @@ def test_swift_stt_expected_backend_names():
     for entry in macos_catalog().values():
         if entry.kind != "stt" or entry.family == "apple_speech":
             continue
-        assert entry.expected_backend_name == _STT_BACKEND_NAMES[entry.family], entry.name
+        assert entry.expected_backend_name == _STT_FAMILIES[entry.family][0], entry.name
         seen.add(entry.family)
-    assert seen == set(_STT_BACKEND_NAMES)
+    assert seen == set(_STT_FAMILIES)
 
 
-def test_swift_stt_model_repos_are_the_helpers_pinned_repos():
-    """Where the catalog already carries an STT ``modelRepo`` (Whisper and Kyutai), it is
-    exactly one of the helper's ``MODEL_REVISIONS`` repos, and every pinned repo has an
-    entry. (Parakeet and Nemotron arrive with the upstream CLI in a later phase.)"""
-    repos = {
-        entry.model_repo
-        for entry in macos_catalog().values()
-        if entry.kind == "stt" and entry.model_repo is not None
-    }
-    assert repos == set(_helper_model_revisions())
+def test_swift_stt_ports_and_labels_match_the_stt_launchagents():
+    catalog = macos_catalog()
+    labels = _swift_launchd_labels()
+    for family, (_, port, label, _) in _STT_FAMILIES.items():
+        assert catalog[family].port == port, family
+        assert labels.get(family) == label, family
+    # A label belongs to the family default only: variants are not LaunchAgents.
+    assert set(labels) == set(_STT_FAMILIES)
+    # Variants continue the family's port series (+1, +2, ...) and stay unique (checked above).
+    for entry in catalog.values():
+        if entry.kind == "stt" and entry.is_variant:
+            assert entry.port > catalog[entry.family].port, entry.name
+
+
+def test_swift_stt_model_repos_match_the_launchagents_and_defaults():
+    """The family entries' ``modelRepo``: Parakeet and Nemotron the models their
+    LaunchAgents serve, Whisper and Kyutai the upstream defaults. Each STT entry has
+    its own repo (variants differ from their family's)."""
+    catalog = macos_catalog()
+    for family, (_, _, _, repo) in _STT_FAMILIES.items():
+        assert catalog[family].model_repo == repo, family
+    repos = [e.model_repo for e in catalog.values() if e.kind == "stt" and e.model_repo]
+    assert len(repos) == len(set(repos)), "each STT service has its own repo"
+    assert catalog["apple_speech"].model_repo is None
+
+
+def test_swift_stt_server_requirement_is_one_release():
+    """Every STT environment installs the one release ``sttServerRequirement`` names."""
+    version = re.search(
+        r'static let sttServerRequirement = "pipecat-local-stt-server==([^"]+)"',
+        (CORE / "Service.swift").read_text(),
+    ).group(1)
+    for entry in macos_catalog().values():
+        if entry.engine:
+            assert any(
+                re.fullmatch(rf"pipecat-local-stt-server(\[[^\]]+\])?=={re.escape(version)}", r)
+                for r in entry.requirements
+            ), entry.name

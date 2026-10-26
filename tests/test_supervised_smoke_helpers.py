@@ -165,3 +165,10 @@ def test_canonical_ports_cover_the_operator_map():
     assert not sc.usable_smoke_port(9365, ports)
     assert not sc.usable_smoke_port(8080, ports)
     assert sc.usable_smoke_port(51234, ports)
+
+
+def test_error_codes_are_checked_against_the_named_emitter():
+    only_stt = {"event": "error", "code": "ModelInvalidError", "message": "x", "exc_type": "E"}
+    assert sc.event_errors("serve", only_stt) == []  # either emitter's code
+    assert sc.event_errors("serve", only_stt, emitter="stt") == []
+    assert any("code" in e for e in sc.event_errors("serve", only_stt, emitter="tts"))

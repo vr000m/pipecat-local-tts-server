@@ -1,0 +1,2 @@
+{"event":"ready","backend":"echo","model":null,"host":"127.0.0.1","port":18770,"socket_path":null,"rate":16000,"pid":42342}
+{"event":"error","code":"EADDRINUSE","message":"address already in use: [Errno 48] Address already in use","exc_type":"OSError"}

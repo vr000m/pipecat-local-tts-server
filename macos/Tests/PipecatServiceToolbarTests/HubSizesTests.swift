@@ -46,13 +46,11 @@ import Testing
         #expect(HubSizes.treeURL(phonon[0])?.absoluteString.contains("/tree/52433c46975bfa13144c56204c9f4ee1c5b148aa?") == true)
         let kokoro = ServiceCatalog.snapshots(for: .kokoro)
         #expect(HubSizes.treeURL(kokoro[0])?.absoluteString.hasSuffix("/tree/main?recursive=true") == true)
-        // STT sizes the helper's pinned commit (`MODEL_REVISIONS`), never `main`.
+        // STT runs the upstream `prefetch`, which pins nothing: it sizes `main`.
         for service in Service.allCases where service.kind == .stt {
-            guard let repo = service.info.modelRepo else { continue }
-            let pin = ServiceCatalog.sttModelRevisions[repo]
-            #expect(pin != nil, "\(service)")
-            #expect(ServiceCatalog.snapshots(for: service).first?.revision == pin, "\(service)")
-            #expect(HubSizes.treeURL(ServiceCatalog.snapshots(for: service)[0])?.absoluteString.contains("/tree/main") == false)
+            guard service.info.modelRepo != nil else { continue }
+            #expect(ServiceCatalog.snapshots(for: service).first?.revision == nil, "\(service)")
+            #expect(HubSizes.treeURL(ServiceCatalog.snapshots(for: service)[0])?.absoluteString.hasSuffix("/tree/main?recursive=true") == true)
         }
     }
 

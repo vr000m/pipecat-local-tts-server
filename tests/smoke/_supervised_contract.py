@@ -42,8 +42,21 @@ def load_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def event_errors(scope: str, event: Any, contract: dict[str, Any] | None = None) -> list[str]:
-    """Every way ``event`` departs from its ``contract[scope]`` entry ([] = conforms)."""
+def known_error_codes(contract: dict[str, Any], emitter: str | None = None) -> set[str]:
+    """The ``error.code`` values of one emitter (``tts`` / ``stt``), or of either by default."""
+    by_emitter = contract["error_codes"]
+    if emitter is not None:
+        return set(by_emitter[emitter])
+    return {code for codes in by_emitter.values() for code in codes}
+
+
+def event_errors(
+    scope: str, event: Any, contract: dict[str, Any] | None = None, emitter: str | None = None
+) -> list[str]:
+    """Every way ``event`` departs from its ``contract[scope]`` entry ([] = conforms).
+
+    An ``error`` line's ``code`` must be one of ``emitter``'s codes (either emitter's when
+    ``emitter`` is None: the app-path smoke runs both)."""
     contract = contract if contract is not None else load_contract()
     if not isinstance(event, dict):
         return [f"{scope}: not a JSON object: {event!r}"]
@@ -65,7 +78,11 @@ def event_errors(scope: str, event: Any, contract: dict[str, Any] | None = None)
         allowed = allowed_types.get(key)
         if allowed is not None and not any(_JSON_TYPES[t](value) for t in allowed):
             errors.append(f"{name}.{key} = {value!r} is not {allowed}")
-    if name == "error" and "code" in event and event["code"] not in contract["error_codes"]:
+    if (
+        name == "error"
+        and "code" in event
+        and event["code"] not in known_error_codes(contract, emitter)
+    ):
         errors.append(f"error.code {event['code']!r} is not a contract error code")
     return errors
 

@@ -40,6 +40,8 @@ public enum Service: String, CaseIterable, Identifiable, Sendable, Codable {
     case whisperTiny = "whisper_tiny"
     case kyutai
     case kyutai2B = "kyutai_2_6b"
+    case parakeet
+    case nemotron
 
     public var id: String { rawValue }
     public var info: ServiceInfo { ServiceCatalog.info(for: self) }
@@ -65,7 +67,9 @@ public enum ServiceRuntime: Sendable, Equatable {
     /// `python -m tts_server serve --supervised`.
     case ttsServer(extra: String?)
     /// Pinned PyPI requirements (built on `pipecat-local-stt-server`), run with the
-    /// bundled helper's `serve-stt --engine <engine>`.
+    /// upstream CLI: `python -m stt_server serve --supervised --backend <b>`, where
+    /// `<b>` is the entry's `expectedBackendName`. `engine` names the environment's
+    /// hash-pinned constraints file (`macos/constraints/stt-<engine>.txt`).
     case sttHelper(engine: String, requirements: [String])
     /// Apple's on-device SpeechAnalyzer, served by the app itself (macOS 26+).
     case appleSpeech
@@ -75,7 +79,7 @@ public enum ServiceRuntime: Sendable, Equatable {
 
 /// The licence the model weights are published under (no weights are bundled).
 public enum WeightsLicence: Sendable, Equatable {
-    case none, system, apache2, mit, ccBy4, ccByNC, researchOnly
+    case none, system, apache2, mit, ccBy4, ccByNC, researchOnly, other
 
     public var label: String {
         switch self {
@@ -86,6 +90,7 @@ public enum WeightsLicence: Sendable, Equatable {
         case .ccBy4: "CC-BY-4.0"
         case .ccByNC: "CC-BY-NC"
         case .researchOnly: "Research only"
+        case .other: "Custom licence"
         }
     }
 
@@ -100,6 +105,7 @@ public enum WeightsLicence: Sendable, Equatable {
         case .ccBy4: "Commercial use allowed with attribution."
         case .ccByNC: "Non-commercial use only."
         case .researchOnly: "Fish Audio Research License: non-commercial; commercial use needs a separate agreement."
+        case .other: "Published under a custom licence; read the model card before commercial use."
         }
     }
 }
@@ -143,6 +149,8 @@ public struct ServiceInfo: Sendable, Equatable {
             switch service {
             case .whisper: "pipecat.stt-server"
             case .kyutai: "pipecat.stt-server.kyutai"
+            case .parakeet: "pipecat.stt-server.parakeet"
+            case .nemotron: "pipecat.stt-server.nemotron"
             default: nil
             }
         }
@@ -203,7 +211,7 @@ public enum ServiceCatalog {
     public static let host = "127.0.0.1"
 
     /// Pins for the STT engines' environments (verified together).
-    public static let sttServerRequirement = "pipecat-local-stt-server==0.3.3"
+    public static let sttServerRequirement = "pipecat-local-stt-server==0.4.0"
 
     public static let all: [ServiceInfo] = Service.allCases.map(info(for:))
 
@@ -211,24 +219,9 @@ public enum ServiceCatalog {
         Service.allCases.filter { $0.kind == kind }
     }
 
-    /// The commit each STT model repo is pinned to: the helper's `MODEL_REVISIONS`
-    /// (`macos/Helper/pipecat_app_helper.py`), which `prefetch --repo` downloads and
-    /// `serve-stt` loads, so the download size is measured at the same commit.
-    /// `tests/test_macos_catalog_drift.py` checks the two tables are equal.
-    public static let sttModelRevisions: [String: String] = [
-        "mlx-community/whisper-large-v3-turbo": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
-        "mlx-community/whisper-large-v3-mlx": "49e6aa286ad60c14352c404340ded53710378a11",
-        "mlx-community/whisper-medium-mlx": "7fc08c4eac4c316526498f147dfdee6f6303f975",
-        "mlx-community/whisper-small-mlx": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e",
-        "mlx-community/whisper-base-mlx": "1e3e249fb8d01c655324bd6841b1deadffd6d04c",
-        "mlx-community/whisper-tiny-mlx": "6caf9c55601caafbe6508a8b0d216bdf4783c4e8",
-        "kyutai/stt-1b-en_fr-mlx": "2b995724eef1e964b7ccb6a762b35a665c4abe0d",
-        "kyutai/stt-2.6b-en-mlx": "5ccfc8f844ab8abaf591c7954f70c07e72325554",
-    ]
-
     /// Every Hugging Face snapshot the install's model step downloads for `service`:
     /// TTS mirrors `prefetch_specs(model)` in the backend module (run with the app's
-    /// `--model`, no `PIPECAT_TTS_PHONON_VOICES`), STT the helper's `prefetch --repo`.
+    /// `--model`, no `PIPECAT_TTS_PHONON_VOICES`), STT the upstream `python -m stt_server prefetch --backend <b> --model <repo>`.
     /// `tests/test_macos_catalog_drift.py` compares this table with both.
     /// Kept above `info(for:)`: the drift tests' parser reads that switch to the end.
     public static func snapshots(for service: Service) -> [HubSnapshot] {
@@ -251,7 +244,9 @@ public enum ServiceCatalog {
                     kind: .codec),
             ]
         case .whisper, .kyutai:
-            return [HubSnapshot(repo: repo, revision: sttModelRevisions[repo], files: .allButDocs)]
+            return [HubSnapshot(repo: repo, files: .allButDocs)]
+        case .parakeet:
+            return [HubSnapshot(repo: repo, files: .patterns(["config.json", "model.safetensors"]))]
         default:
             return [HubSnapshot(repo: repo)]
         }
@@ -320,7 +315,7 @@ public enum ServiceCatalog {
             ServiceInfo(
                 service: .whisper, kind: .stt, expectedBackendName: "mlx", displayName: "Whisper", tagline: "OpenAI's speech recognition on MLX",
                 runtime: .sttHelper(
-                    engine: "whisper", requirements: ["pipecat-local-stt-server[mlx]==0.3.3", "mlx-whisper==0.4.3"]),
+                    engine: "whisper", requirements: ["pipecat-local-stt-server[mlx]==0.4.0", "mlx-whisper==0.4.3"]),
                 port: 9565, modelRepo: "mlx-community/whisper-large-v3-turbo", licence: .mit,
                 streaming: false, symbol: "waveform.and.mic",
                 variantLabel: "Large v3 Turbo", variantDetail: "Fast and accurate")
@@ -355,6 +350,20 @@ public enum ServiceCatalog {
             info(for: .kyutai).variant(
                 .kyutai2B, name: "Kyutai STT 2.6B", label: "2.6B", detail: "English only, more accurate",
                 port: 9666, modelRepo: "kyutai/stt-2.6b-en-mlx", tagline: "Streaming, English, larger model")
+        case .parakeet:
+            ServiceInfo(
+                service: .parakeet, kind: .stt, expectedBackendName: "parakeet", displayName: "Parakeet",
+                tagline: "NVIDIA's fast multilingual recognition",
+                runtime: .sttHelper(engine: "parakeet", requirements: ["pipecat-local-stt-server[parakeet]==0.4.0"]),
+                port: 9765, modelRepo: "mlx-community/parakeet-tdt-0.6b-v3", licence: .ccBy4,
+                streaming: false, symbol: "hare")
+        case .nemotron:
+            ServiceInfo(
+                service: .nemotron, kind: .stt, expectedBackendName: "nemotron", displayName: "Nemotron",
+                tagline: "NVIDIA's multilingual streaming model",
+                runtime: .sttHelper(engine: "nemotron", requirements: ["pipecat-local-stt-server[nemotron]==0.4.0"]),
+                port: 9865, modelRepo: "mlx-community/nemotron-3.5-asr-streaming-0.6b", licence: .other,
+                streaming: false, symbol: "brain")
         }
     }
 }

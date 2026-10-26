@@ -73,7 +73,6 @@ jobs:
             tests/test_justfile_recipes.py \
             tests/test_status_port.py \
             tests/test_supervised_cli.py \
-            tests/test_app_helper_cancel.py \
             tests/test_prefetch_cli.py \
             tests/test_macos_catalog_drift.py \
             tests/test_backend_registry.py \

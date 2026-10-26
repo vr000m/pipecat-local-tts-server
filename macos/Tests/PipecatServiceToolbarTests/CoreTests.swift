@@ -29,6 +29,7 @@ import Testing
             .tone: 8665, .kokoro: 8765, .voxtralTTS: 8865, .pocketTTS: 8965,
             .dia: 9065, .qwen3TTS: 9165, .fishTTS: 9265, .phonon: 9365,
             .appleSpeech: 9465, .whisper: 9565, .kyutai: 9665,
+            .parakeet: 9765, .nemotron: 9865,
             // Variants: the family's port + 1, 2, ...
             .phononQ8: 9366, .phononQ4: 9367,
             .whisperLargeV3: 9566, .whisperMedium: 9567, .whisperSmall: 9568, .whisperBase: 9569, .whisperTiny: 9570,
@@ -45,7 +46,7 @@ import Testing
         #expect(families.map(\.rawValue).sorted() == [
             "dia", "fish_tts", "kokoro", "phonon", "pocket_tts", "qwen3_tts", "tone", "voxtral_tts",
         ])
-        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai])
+        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai, .parakeet, .nemotron])
     }
 
     @Test func runtimes() {
@@ -76,6 +77,80 @@ import Testing
         #expect(Service.fishTTS.info.licence.isRestrictive)
         #expect(!Service.kokoro.info.licence.isRestrictive)
         #expect(!Service.kyutai.info.licence.isRestrictive)
+    }
+
+    @Test func parakeetAndNemotronEntries() {
+        let parakeet = Service.parakeet.info, nemotron = Service.nemotron.info
+        #expect(parakeet.kind == .stt && nemotron.kind == .stt)
+        #expect(parakeet.port == 9765 && nemotron.port == 9865)
+        #expect(parakeet.modelRepo == "mlx-community/parakeet-tdt-0.6b-v3")
+        #expect(nemotron.modelRepo == "mlx-community/nemotron-3.5-asr-streaming-0.6b")
+        #expect(Service.parakeet.family == .parakeet && Service.nemotron.family == .nemotron)
+        #expect(Service.parakeet.variants == [.parakeet] && Service.nemotron.variants == [.nemotron])
+        #expect(parakeet.needsModelDownload && nemotron.needsModelDownload)
+        #expect(parakeet.pipecatService() == #"LocalWebSocketSTTService(host="127.0.0.1", port=9765)"#)
+        // Each engine has its own environment and its own constraints file.
+        guard case .sttHelper(let pEngine, let pReqs) = parakeet.runtime,
+              case .sttHelper(let nEngine, let nReqs) = nemotron.runtime
+        else {
+            Issue.record("parakeet and nemotron run the STT server")
+            return
+        }
+        #expect(pEngine == "parakeet" && nEngine == "nemotron")
+        #expect(pReqs.contains("pipecat-local-stt-server[parakeet]==0.4.0"))
+        #expect(nReqs.contains("pipecat-local-stt-server[nemotron]==0.4.0"))
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-envs-\(UUID().uuidString.prefix(8))")
+        let paths = AppPaths(
+            supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
+            hubDir: root.appending(path: "hub"), derivedModelsDir: root.appending(path: "derived"))
+        let envs = Set([Service.whisper, .kyutai, .parakeet, .nemotron].map { paths.envDir($0).path })
+        #expect(envs.count == 4)
+    }
+
+    @Test func everySTTEnvironmentPinsTheSameServerRelease() {
+        #expect(ServiceCatalog.sttServerRequirement == "pipecat-local-stt-server==0.4.0")
+        for service in ServiceCatalog.services(of: .stt) {
+            guard case .sttHelper(_, let reqs) = service.info.runtime else { continue }
+            #expect(reqs.contains { $0.hasPrefix("pipecat-local-stt-server") && $0.hasSuffix("==0.4.0") }, "\(service)")
+        }
+    }
+
+    /// Two real lines from the released 0.4.0 `stt_server` (the Python test checks them
+    /// against the contract): the app's decoder reads them.
+    @Test func recordedUpstreamLinesDecode() throws {
+        let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appending(path: "tests/fixtures/stt_supervised_lines.jsonl")
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(lines.count == 2)
+        let ready = try #require(ServerCLIEvent.parse(lines[0]))
+        #expect(ready.event == "ready" && ready.backend == "echo" && ready.model == nil)
+        #expect(ready.host == "127.0.0.1" && ready.port == 18770 && ready.rate == 16000 && ready.pid == 42342)
+        let error = try #require(ServerCLIEvent.parse(lines[1]))
+        #expect(error.event == "error" && error.errorCode == .addressInUse)
+    }
+
+    @Test func supervisedErrorCodesIncludeModelInvalid() {
+        #expect(SupervisedErrorCode(rawValue: "ModelInvalidError") == .modelInvalid)
+        #expect(SupervisedErrorCode.allCases.count == 8)
+    }
+
+    @Test func otherLicenceLabel() {
+        #expect(WeightsLicence.other.label == "Custom licence")
+        #expect(!WeightsLicence.other.detail.isEmpty)
+        #expect(Service.nemotron.info.licence == .other)
+        #expect(Service.parakeet.info.licence == .ccBy4)
+        #expect(!Service.nemotron.info.licence.isRestrictive)
+    }
+
+    @Test func sttSnapshotsCarryNoRevisionPins() {
+        for service in ServiceCatalog.services(of: .stt) {
+            guard let repo = service.info.modelRepo else { continue }
+            let snapshots = ServiceCatalog.snapshots(for: service)
+            #expect(snapshots.map(\.repo) == [repo], "\(service)")
+            #expect(snapshots.allSatisfy { $0.revision == nil && $0.kind == .model && $0.required }, "\(service)")
+        }
+        #expect(ServiceCatalog.snapshots(for: .kyutai2B).first?.files == .allButDocs)
+        #expect(ServiceCatalog.snapshots(for: .whisper).first?.files == .allButDocs)
     }
 }
 
@@ -111,7 +186,7 @@ import Testing
         try paths.prepare()
         let tools = Tools(
             uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"),
-            constraints: nil, helper: URL(filePath: "/tmp/helper.py"), source: .override)
+            constraints: nil, source: .override)
         return (EnvironmentManager(paths: paths, tools: tools), paths)
     }
 
@@ -123,11 +198,39 @@ import Testing
         let prefetch = try #require(manager.prefetchArguments(for: Service.phononQ4.info, check: true))
         #expect(prefetch == ["-m", "tts_server", "prefetch", "--backend", "phonon", "--json", "--model", "phonon-q4", "--check"])
 
+        // STT launches the upstream CLI, the one entry point a LaunchAgent also runs.
         let stt = try #require(manager.serveArguments(for: Service.whisperSmall.info, port: 9568))
-        #expect(stt.suffix(2) == ["--model", "mlx-community/whisper-small-mlx"])
+        #expect(stt == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "mlx",
+            "--model", "mlx-community/whisper-small-mlx", "--host", "127.0.0.1", "--port", "9568",
+        ])
+        let parakeet = try #require(manager.serveArguments(for: Service.parakeet.info, port: 9765))
+        #expect(parakeet == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "parakeet",
+            "--model", "mlx-community/parakeet-tdt-0.6b-v3", "--host", "127.0.0.1", "--port", "9765",
+        ])
+        let nemotron = try #require(manager.serveArguments(for: Service.nemotron.info, port: 9865))
+        #expect(nemotron == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "nemotron",
+            "--model", "mlx-community/nemotron-3.5-asr-streaming-0.6b", "--host", "127.0.0.1", "--port", "9865",
+        ])
+        let kyutai = try #require(manager.serveArguments(for: Service.kyutai2B.info, port: 9666))
+        #expect(Array(kyutai.prefix(6)) == ["-m", "stt_server", "serve", "--supervised", "--backend", "kyutai"])
+        #expect(kyutai.contains("kyutai/stt-2.6b-en-mlx"))
         let sttPrefetch = try #require(manager.prefetchArguments(for: Service.whisperSmall.info, check: false))
-        #expect(sttPrefetch.contains("mlx-community/whisper-small-mlx"))
-        #expect(sttPrefetch.contains(paths.envDir(.whisper).path))
+        #expect(sttPrefetch == [
+            "-m", "stt_server", "prefetch", "--backend", "mlx",
+            "--model", "mlx-community/whisper-small-mlx", "--json",
+        ])
+        let sttCheck = try #require(manager.prefetchArguments(for: Service.nemotron.info, check: true))
+        #expect(sttCheck == [
+            "-m", "stt_server", "prefetch", "--backend", "nemotron",
+            "--model", "mlx-community/nemotron-3.5-asr-streaming-0.6b", "--json", "--check",
+        ])
+        // No pins, no helper script, no state dir: the upstream CLI owns all three.
+        #expect(!(stt + sttPrefetch).contains { $0.hasSuffix(".py") || $0 == "--state-dir" || $0 == "--revision" })
+        #expect(manager.serveArguments(for: Service.appleSpeech.info, port: 9465) == nil)
+        #expect(manager.prefetchArguments(for: Service.appleSpeech.info, check: false) == nil)
 
         // One environment per family; logs per variant.
         #expect(paths.envDir(.whisperTiny) == paths.envDir(.whisper))
@@ -137,7 +240,7 @@ import Testing
 
     /// STT environments install against their engine's hash-pinned constraints
     /// (`--require-hashes`); TTS against the `uv.lock` export, without hashes.
-    @Test(arguments: [Service.kyutai, .whisperSmall, .phonon])
+    @Test(arguments: [Service.kyutai, .whisperSmall, .parakeet, .nemotron, .phonon])
     func packagesInstallWithTheirConstraints(_ service: Service) async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-pins-\(UUID().uuidString.prefix(8))")
         let paths = AppPaths(
@@ -146,7 +249,7 @@ import Testing
         try paths.prepare()
         let pins = root.appending(path: "constraints")
         try FileManager.default.createDirectory(at: pins, withIntermediateDirectories: true)
-        for engine in ["whisper", "kyutai"] {
+        for engine in ["whisper", "kyutai", "parakeet", "nemotron"] {
             FileManager.default.createFile(atPath: pins.appending(path: "stt-\(engine).txt").path, contents: Data())
         }
         let lock = root.appending(path: "constraints.txt")
@@ -157,7 +260,7 @@ import Testing
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let tools = Tools(
             uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: lock,
-            helper: URL(filePath: "/tmp/helper.py"), sttConstraints: pins, source: .override)
+            sttConstraints: pins, source: .override)
         let manager = EnvironmentManager(paths: paths, tools: tools)
         try await Self.fakeEnvironment(service, manager, paths)
 
@@ -186,7 +289,7 @@ import Testing
     @Test(arguments: [Tools.Source.override, .repository, .bundle])
     func sttConstraintsAreOptionalOnlyOutsideTheBundle(source: Tools.Source) throws {
         let tools = Tools(
-            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil,
             sttConstraints: URL(filePath: "/nonexistent"), source: source)
         if source == .bundle {
             #expect(throws: ToolLocatorError.self) { try tools.constraints(for: Service.kyutai.info) }
@@ -198,7 +301,7 @@ import Testing
         try FileManager.default.createDirectory(at: present, withIntermediateDirectories: true)
         try "x==1 --hash=sha256:00\n".write(to: present.appending(path: "stt-kyutai.txt"), atomically: true, encoding: .utf8)
         let found = Tools(
-            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil,
             sttConstraints: present, source: source)
         #expect(try found.constraints(for: Service.kyutai.info)?.lastPathComponent == "stt-kyutai.txt")
     }
@@ -213,7 +316,7 @@ import Testing
         let manager = EnvironmentManager(
             paths: paths,
             tools: Tools(
-                uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+                uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil,
                 sttConstraints: paths.supportDir.appending(path: "missing"), source: .bundle))
         do {
             try await manager.install(.kyutai).consume { _ in }
@@ -803,7 +906,7 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try paths.prepare()
         let (uv, pidFile) = try Self.slowUV(in: root)
         let tools = Tools(
-            uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil, helper: nil,
+            uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
             source: .override)
         let manager = EnvironmentManager(paths: paths, tools: tools)
 
@@ -1100,7 +1203,7 @@ final class Lines: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
             paths: paths,
-            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override),
+            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override),
             cancelGrace: .milliseconds(500))
 
         let ended = Flag()
@@ -1143,7 +1246,7 @@ final class Lines: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
             paths: paths,
-            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override),
+            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override),
             cancelGrace: .milliseconds(500))
         let ended = Flag()
         let install = Task {
@@ -1336,7 +1439,7 @@ extension VariantTests {
         let manager = EnvironmentManager(
             paths: paths,
             tools: Tools(uv: uvPath, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
-                         helper: nil, source: .override),
+                         source: .override),
             cancelGrace: .milliseconds(300))
         try await VariantTests.fakeEnvironment(.phonon, manager, paths)
         if outdated {
@@ -1386,7 +1489,7 @@ extension VariantTests {
         """.write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
-            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override))
         let install = Task { try await manager.install(.tone).consume { _ in } }
         // Generous: the whole suite runs in parallel and spawns many processes.
         let deadline = ContinuousClock.now + .seconds(30)
@@ -1430,7 +1533,7 @@ extension VariantTests {
         try "#!/bin/sh\nexit 0\n".write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
-            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override))
         return (manager, paths, started)
     }
 
@@ -1508,7 +1611,7 @@ extension VariantTests {
         try "#!/bin/sh\ntouch '\(started.path)'\n\(Self.leaky)".write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
-            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override))
         let ended = Flag()
         let install = Task {
             defer { ended.raise() }
@@ -1561,7 +1664,7 @@ extension VariantTests {
             paths: paths,
             tools: Tools(
                 uv: inPrefetch ? URL(filePath: "/usr/bin/true") : script,
-                wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil, helper: nil,
+                wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
                 source: .override),
             cancelGrace: .milliseconds(300), drainLimit: .milliseconds(300))
         let service: Service = inPrefetch ? .phonon : .tone
@@ -1690,6 +1793,16 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(ProcessEnvironment.base()["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.huggingFace()["HF_TOKEN"] == "hf_test_secret")
     }
+
+    /// Parakeet's `serve` child sees Homebrew's `ffmpeg`; nothing else gets a wider `PATH`.
+    @Test func onlyParakeetServeGetsTheHomebrewPath() {
+        let base = ProcessEnvironment.base()["PATH"]
+        let parakeet = ProcessEnvironment.serve(.parakeet)["PATH"] ?? ""
+        #expect(parakeet == (base ?? "") + ":/opt/homebrew/bin:/usr/local/bin")
+        for service in Service.allCases where service != .parakeet {
+            #expect(ProcessEnvironment.serve(service)["PATH"] == base, "\(service)")
+        }
+    }
 }
 
 @Suite struct PCMStreamConverterTests {
@@ -1759,7 +1872,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         let clock = ContinuousClock()
         let begin = clock.now
         let build = Task {
-            try await ToolLocator.buildFromRepository(paths.supportDir, uv: uv, helper: nil, paths: paths, processes: processes)
+            try await ToolLocator.buildFromRepository(paths.supportDir, uv: uv, paths: paths, processes: processes)
         }
         let deadline = clock.now + .seconds(30)
         while !FileManager.default.fileExists(atPath: started.path), clock.now < deadline {
@@ -1843,6 +1956,8 @@ final class ConcurrencyGauge: @unchecked Sendable {
         // Whisper's variants are all the `mlx` backend; Kyutai's both `kyutai`.
         for service in Service.whisper.variants { #expect(service.info.expectedBackendName == "mlx", "\(service)") }
         for service in Service.kyutai.variants { #expect(service.info.expectedBackendName == "kyutai", "\(service)") }
+        #expect(Service.parakeet.info.expectedBackendName == "parakeet")
+        #expect(Service.nemotron.info.expectedBackendName == "nemotron")
     }
 
     @Test func launchdLabelsExistPerFamilyOnly() {
@@ -1853,6 +1968,8 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(Service.tone.info.launchdLabel == "pipecat.tts-server.tone")
         #expect(Service.whisper.info.launchdLabel == "pipecat.stt-server")
         #expect(Service.kyutai.info.launchdLabel == "pipecat.stt-server.kyutai")
+        #expect(Service.parakeet.info.launchdLabel == "pipecat.stt-server.parakeet")
+        #expect(Service.nemotron.info.launchdLabel == "pipecat.stt-server.nemotron")
         for service in Service.whisper.variants.dropFirst() + Service.kyutai.variants.dropFirst() {
             #expect(service.info.launchdLabel == nil, "\(service)")
         }

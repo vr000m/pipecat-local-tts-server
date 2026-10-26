@@ -16,6 +16,8 @@ extension Service {
         case .appleSpeech: Color(white: 0.35)
         case .whisper, .whisperLargeV3, .whisperMedium, .whisperSmall, .whisperBase, .whisperTiny: .cyan
         case .kyutai, .kyutai2B: .mint
+        case .parakeet: .yellow
+        case .nemotron: .brown
         }
     }
 }

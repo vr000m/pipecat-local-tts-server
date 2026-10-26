@@ -172,25 +172,11 @@ def _snapshot(args: str, model_repo: str | None) -> Snapshot:
         files = mlx_audio_default_patterns()
     return Snapshot(
         repo=model_repo if repo.group(1) == "repo" else repo.group(2),
-        revision=(
-            macos_stt_model_revisions()[model_repo]
-            if "revision: sttModelRevisions[repo]" in args
-            else _optional_string(args, "revision")
-        ),
+        revision=_optional_string(args, "revision"),
         files=files,
         kind=_field(args, r"kind: \.(\w+)") or "model",
         required=_field(args, r"required: (true|false)") != "false",
     )
-
-
-def macos_stt_model_revisions() -> dict[str, str]:
-    """``ServiceCatalog.sttModelRevisions``: ``{STT model repo: pinned commit}``."""
-    text = SERVICE_SWIFT.read_text()
-    text = text.split("static let sttModelRevisions: [String: String] = [", 1)[1]
-    pairs = re.findall(r'"([^"]+)":\s*"([^"]+)"', text.split("\n    ]", 1)[0])
-    out = dict(pairs)
-    assert len(out) == len(pairs), "duplicate repo in sttModelRevisions"
-    return out
 
 
 def macos_snapshots() -> dict[str, list[Snapshot]]:

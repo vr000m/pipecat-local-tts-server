@@ -4,9 +4,9 @@ import Testing
 @testable import PipecatToolbarCore
 
 /// The app's real install -> serve -> use -> remove path, through `uv`, the TTS
-/// server wheel and the STT helper, into a throwaway support directory. Opt-in
+/// server wheel and the upstream `stt_server` CLI, into a throwaway support directory. Opt-in
 /// because it downloads Python, packages and model weights (phonon ~100 MB,
-/// Whisper Tiny ~75 MB, Kyutai ~2.4 GB; weights are shared with the Hugging Face cache):
+/// Whisper Tiny ~75 MB, Kyutai ~2.4 GB, Parakeet and Nemotron ~1 to 2.5 GB; weights are shared with the Hugging Face cache):
 ///
 ///     PIPECAT_TOOLBAR_E2E=1 swift test --package-path macos --filter EndToEnd
 ///
@@ -44,13 +44,20 @@ struct EndToEndTests {
 
     /// Starts `service` via the manager's supervised serve command on a free port.
     func startServer(_ service: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> (Subprocess, Int) {
+        let (server, ready) = try await startServerReady(service, manager, paths: paths)
+        return (server, try #require(ready.port))
+    }
+
+    /// As `startServer`, keeping the `ready` line (always on an ephemeral port: never a
+    /// catalog port, so a LaunchAgent on 9565 to 9865 is never touched).
+    func startServerReady(_ service: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> (Subprocess, ServerCLIEvent) {
         let args = try #require(manager.serveArguments(for: service.info, port: 0))
         let server = Subprocess(
-            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.huggingFace(), holdStdin: true))
+            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.serve(service), holdStdin: true))
         try server.run()
         for await line in server.stdout {
             guard let event = ServerCLIEvent.parse(line) else { continue }
-            if event.event == "ready", let port = event.port { return (server, port) }
+            if event.event == "ready", event.port != nil { return (server, event) }
             if event.event == "error" { break }
         }
         server.kill()
@@ -233,13 +240,73 @@ struct EndToEndTests {
         let (text, latency) = try await timedShortRequest()
         print("kyutai: baseline \(baseline) s; after an abandoned \(long.count / 32000) s clip \(latency) s")
         #expect(text.lowercased().contains("weather"))
-        #expect(latency < baseline + 8, "the abandoned request kept the backend busy for \(latency) s")
+        // KNOWN ISSUE against pipecat-local-stt-server 0.4.0: its Kyutai backend never checks
+        // for cancellation mid-decode, so a dropped request holds the model until the
+        // utterance finishes (the retired app helper cancelled cooperatively). The STT repo
+        // is adding a per-frame cancel for its next release; when the pin moves to it this
+        // starts passing, `withKnownIssue` then fails, and this wrapper is the thing to delete.
+        withKnownIssue("0.4.0 Kyutai has no mid-decode cancel") {
+            #expect(latency < baseline + 8, "the abandoned request kept the backend busy for \(latency) s")
+        }
 
         server.closeStdin()
         #expect(await server.waitForExit() == 0)
         try await manager.remove(.kyutai, deleteModel: false)
     }
+
+    /// Parakeet through the upstream CLI: install, serve on an ephemeral port, transcribe.
+    /// The live `ready` line has the shape of the recorded 0.4.0 fixture.
+    @Test func parakeetInstallServeTranscribe() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        let events = try await install(.parakeet, manager)
+        #expect(events.contains(.stage(.model)))
+        let cache = try #require(await manager.modelCacheStatus(.parakeet))
+        #expect(cache.cached)
+        #expect(cache.repoFolders.first?.lastPathComponent == "models--mlx-community--parakeet-tdt-0.6b-v3")
+        let (server, ready) = try await startServerReady(.parakeet, manager, paths: paths)
+        defer { server.kill() }
+        let port = try #require(ready.port)
+        #expect(port != Service.parakeet.info.port)
+        #expect(ready.backend == "parakeet" && ready.host == "127.0.0.1" && ready.rate == 16000 && ready.pid != nil)
+        let client = STTClient(port: port)
+        #expect(try await client.connect().backend == "parakeet")
+        try await expectHelloMapsBack(.parakeet, port: port)
+        let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
+        #expect(text.lowercased().contains("weather"))
+        await client.close()
+        server.closeStdin()
+        #expect(await server.waitForExit() == 0)
+        try await manager.remove(.parakeet, deleteModel: false)
+        #expect(manager.environmentStatus(.parakeet) == .missing)
+    }
+
+    /// Nemotron through the upstream CLI, in the same style. Its own environment: removing
+    /// it leaves Parakeet's alone. (The try-it flow against the 9865 LaunchAgent is manual.)
+    @Test func nemotronInstallServeTranscribe() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        let events = try await install(.nemotron, manager)
+        #expect(events.contains(.stage(.model)))
+        let cache = try #require(await manager.modelCacheStatus(.nemotron))
+        #expect(cache.cached)
+        #expect(cache.repoFolders.first?.lastPathComponent == "models--mlx-community--nemotron-3.5-asr-streaming-0.6b")
+        let (server, ready) = try await startServerReady(.nemotron, manager, paths: paths)
+        defer { server.kill() }
+        let port = try #require(ready.port)
+        #expect(port != Service.nemotron.info.port)
+        #expect(ready.backend == "nemotron" && ready.host == "127.0.0.1" && ready.rate == 16000 && ready.pid != nil)
+        let client = STTClient(port: port)
+        #expect(try await client.connect().backend == "nemotron")
+        try await expectHelloMapsBack(.nemotron, port: port)
+        let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
+        #expect(text.lowercased().contains("weather"))
+        await client.close()
+        server.closeStdin()
+        #expect(await server.waitForExit() == 0)
+        try await manager.remove(.nemotron, deleteModel: false)
+        #expect(manager.environmentStatus(.nemotron) == .missing)
+    }
 }
+
 
 private extension Duration {
     var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }

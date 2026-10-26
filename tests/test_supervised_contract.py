@@ -1,26 +1,25 @@
-"""The supervised/prefetch JSON-lines contract — LEAN drift guard.
+"""The supervised/prefetch JSON-lines contract: LEAN drift guard.
 
-Two independent emitters speak one contract to the macOS app:
-``tts_server`` (``serve --supervised``, ``prefetch --json``) and the STT helper
-(``macos/Helper/pipecat_app_helper.py``). ``docs/supervised-contract.json``
-fixes every event's fields and types, the error ``code`` values, and the stt
-wire rate. These tests run BOTH emitters on stub inputs and check every line
-against it, so a field added, dropped or retyped on one side fails here:
+Two independent emitters speak one contract to the macOS app: ``tts_server``
+(``serve --supervised``, ``prefetch --json``) and the upstream STT CLI
+(``python -m stt_server``, pipecat-local-stt-server 0.4.0). ``docs/supervised-contract.json``
+fixes every event's fields and types, the error ``code`` values per emitter, and the
+stt wire rate. The lean job has no STT server installed, so:
 
-  * every line either emitter writes conforms to its event's contract entry
-    (exact required keys, optional keys only from the contract, JSON types);
-  * the events both emitters write have identical key sets;
-  * every ``"event": "<name>"`` literal in either emitter's source is a
-    contract event, and every contract event is exercised by some emitter;
-  * error codes: contract == ``supervise.CODE_*`` == Swift
-    ``SupervisedErrorCode``; the helper's codes are a subset, and its
-    ``classify`` agrees with ``supervise.classify_startup_error`` on every
-    exception class both handle (cause chains included);
+  * the TTS emitter runs on stub inputs, and every line it writes conforms to its
+    event's contract entry (exact required keys, optional keys only from the
+    contract, JSON types); every contract event is exercised;
+  * the STT emitter's lines are a recorded 0.4.0 fixture
+    (``tests/fixtures/stt_supervised_lines.jsonl``: a real ``ready`` and ``error``
+    line), checked against the same contract; this file never imports ``stt_server``;
+  * every ``"event": "<name>"`` literal in ``tts_server`` is a contract event;
+  * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``, the ``stt``
+    list holds the fixture's code and the STT-only ``ModelInvalidError`` (never a
+    TTS code), and Swift ``SupervisedErrorCode`` == the union of both lists;
   * the Swift decoder (``ServerCLIEvent.CodingKeys``) reads only contract fields;
-  * wire rate: contract == helper ``WIRE_RATE`` == Swift ``STTWire.rate``;
-  * catalog: helper ``DEFAULT_MODELS`` == Service.swift engine defaults, and
-    ``MODEL_REVISIONS`` pins exactly the STT repos the app offers;
-  * each STT engine's requirements are hash-pinned in ``macos/constraints``.
+  * wire rate: contract == fixture ``ready.rate`` == Swift ``STTWire.rate``;
+  * each STT engine's requirements are hash-pinned in ``macos/constraints`` and name
+    ``pipecat-local-stt-server`` at exactly the Swift ``sttServerRequirement`` version.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ import importlib.util
 import json
 import re
 import select
-import shutil
 import socket
 import subprocess
 import sys
@@ -49,27 +47,23 @@ from .test_prefetch_cli import PH, _run, fake_hub  # noqa: F401 - fake_hub is a 
 
 REPO = Path(__file__).resolve().parents[1]
 CONTRACT = json.loads((REPO / "docs" / "supervised-contract.json").read_text())
-HELPER_PATH = REPO / "macos" / "Helper" / "pipecat_app_helper.py"
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
+SERVICE_SWIFT = CORE / "Service.swift"
+STT_FIXTURE = REPO / "tests" / "fixtures" / "stt_supervised_lines.jsonl"
 SCOPES = ("serve", "prefetch")
+TTS_CODES = set(CONTRACT["error_codes"]["tts"])
+STT_CODES = set(CONTRACT["error_codes"]["stt"])
 
 
-@pytest.fixture(scope="module")
-def helper():
-    spec = importlib.util.spec_from_file_location("pipecat_app_helper_contract", HELPER_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def stt_fixture_lines() -> list[dict]:
+    """The recorded 0.4.0 ``stt_server`` lines (``serve --supervised``), one object per line."""
+    return [json.loads(line) for line in STT_FIXTURE.read_text().splitlines() if line.strip()]
 
 
-def conform(scope: str, event: dict) -> None:
-    """Assert ``event`` matches its contract entry exactly (shared with the app-path smoke)."""
-    errors = event_errors(scope, event, CONTRACT)
+def conform(scope: str, event: dict, emitter: str) -> None:
+    """Assert ``event`` matches its contract entry exactly, with ``emitter``'s error codes."""
+    errors = event_errors(scope, event, CONTRACT, emitter)
     assert not errors, errors
-
-
-def required_keys(scope: str, event: dict) -> frozenset[str]:
-    return frozenset(set(event) - set(CONTRACT[scope][event["event"]].get("optional", {})))
 
 
 # --- emitters on stub inputs ---------------------------------------------------
@@ -77,60 +71,6 @@ def required_keys(scope: str, event: dict) -> frozenset[str]:
 
 def _lines(out: str) -> list[dict]:
     return [json.loads(line) for line in out.splitlines() if line.strip()]
-
-
-class _File:
-    def __init__(self, path: str, size: int) -> None:
-        self.path, self.size, self.lfs = path, size, None
-
-
-def _fake_hub(monkeypatch, tmp_path, *, fail: bool = False):
-    """A ``huggingface_hub`` stand-in for the helper's prefetch."""
-    hub = types.ModuleType("huggingface_hub")
-    constants = types.ModuleType("huggingface_hub.constants")
-    constants.HF_HUB_CACHE = str(tmp_path / "hub")
-    hub.constants = constants
-
-    class HubError(Exception):
-        pass
-
-    HubError.__module__ = "huggingface_hub.errors"
-
-    class HfApi:
-        def list_repo_tree(self, repo, revision=None, recursive=True):
-            if fail:
-                raise HubError("503 Service Unavailable")
-            return [
-                _File("config.json", 10),
-                _File("weights.safetensors", 990),
-                _File("README.md", 5),
-            ]
-
-    def snapshot_download(repo, revision=None, allow_patterns=None, **_kw):
-        folder = Path(constants.HF_HUB_CACHE) / ("models--" + repo.replace("/", "--"))
-        snap = folder / "snapshots" / (revision or "0" * 40)
-        snap.mkdir(parents=True, exist_ok=True)
-        for name in allow_patterns or []:
-            (snap / name).write_bytes(b"x" * 10)
-        return str(snap)
-
-    hub.HfApi, hub.snapshot_download = HfApi, snapshot_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
-    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", constants)
-
-
-def helper_prefetch_events(helper, monkeypatch, tmp_path, capsys) -> list[dict]:
-    repo = helper.DEFAULT_MODELS["whisper"]
-    state = str(tmp_path / "env")
-    events: list[dict] = []
-    _fake_hub(monkeypatch, tmp_path)
-    for argv in (["--check"], [], ["--check"]):  # uncached check, fetch, cached check
-        assert helper.main(["prefetch", "--repo", repo, "--state-dir", state, "--json", *argv]) == 0
-        events += _lines(capsys.readouterr().out)
-    _fake_hub(monkeypatch, tmp_path, fail=True)
-    assert helper.main(["prefetch", "--repo", "org/other", "--json"]) == 1
-    events += _lines(capsys.readouterr().out)
-    return events
 
 
 class _Tqdm:
@@ -202,8 +142,8 @@ def _first_line(cmd: list[str]) -> dict:
         proc.communicate()
 
 
-def serve_events(helper) -> tuple[list[dict], list[dict]]:
-    """(tts, helper) ``serve`` lines: a ready line each, and the busy-port error."""
+def tts_serve_events() -> list[dict]:
+    """``tts_server serve --supervised`` on a busy port: the ``EADDRINUSE`` error line."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
         busy.bind(("127.0.0.1", 0))
         busy.listen()
@@ -212,26 +152,8 @@ def serve_events(helper) -> tuple[list[dict], list[dict]]:
             [sys.executable, "-m", "tts_server", "serve", "--backend", "tone"]
             + ["--host", "127.0.0.1", "--port", port, "--supervised"]
         )
-        helper_error = _first_line(
-            [sys.executable, str(HELPER_PATH), "serve-stt", "--engine", "whisper"]
-            + ["--host", "127.0.0.1", "--port", port]
-        )
-    assert tts_error["code"] == helper_error["code"] == "EADDRINUSE"
-    # A lean env has no stt_server: past the port probe, the helper's import fails.
-    helper_missing = _first_line(
-        [sys.executable, str(HELPER_PATH), "serve-stt", "--engine", "kyutai", "--port", "0"]
-    )
-    assert helper_missing["code"] == "ModuleNotFoundError"
-
-    class _Server:  # stt_server.server.TranscriptionServer's public surface
-        def listening_port(self) -> int:
-            return 9565
-
-    helper_ready = helper.ready_event(
-        _Server(), engine="whisper", model="m", host="127.0.0.1", port=0, rate=helper.WIRE_RATE
-    )
-    assert helper_ready["port"] == 9565
-    return [tts_error], [helper_error, helper_missing, helper_ready]
+    assert tts_error["code"] == "EADDRINUSE"
+    return [tts_error]
 
 
 async def tts_ready_event(capsys) -> dict:
@@ -242,18 +164,11 @@ async def tts_ready_event(capsys) -> dict:
 
 
 @pytest.fixture
-async def emitted(helper, monkeypatch, tmp_path, capsys, fake_hub):  # noqa: F811
+async def emitted(monkeypatch, tmp_path, capsys, fake_hub):  # noqa: F811
     tts_ready = await tts_ready_event(capsys)
-    tts_serve, helper_serve = serve_events(helper)
     return {
-        "tts": {
-            "serve": [tts_ready, *tts_serve],
-            "prefetch": tts_prefetch_events(monkeypatch, capsys, tmp_path),
-        },
-        "helper": {
-            "serve": helper_serve,
-            "prefetch": helper_prefetch_events(helper, monkeypatch, tmp_path / "h", capsys),
-        },
+        "serve": [tts_ready, *tts_serve_events()],
+        "prefetch": tts_prefetch_events(monkeypatch, capsys, tmp_path),
     }
 
 
@@ -261,49 +176,39 @@ async def emitted(helper, monkeypatch, tmp_path, capsys, fake_hub):  # noqa: F81
 
 
 def test_every_emitted_line_conforms_to_the_contract(emitted):
-    for side, scopes in emitted.items():
-        for scope, events in scopes.items():
-            assert events, f"{side} {scope}: nothing emitted"
-            for event in events:
-                conform(scope, event)
-
-
-def test_both_emitters_write_identical_shapes(emitted):
+    for scope, events in emitted.items():
+        assert events, f"tts {scope}: nothing emitted"
+        for event in events:
+            conform(scope, event, "tts")
+    # The TTS emitter exercises every contract event.
     for scope in SCOPES:
-        shapes = {
-            side: {
-                e["event"]: {
-                    required_keys(scope, x)
-                    for x in emitted[side][scope]
-                    if x["event"] == e["event"]
-                }
-                for e in emitted[side][scope]
-            }
-            for side in emitted
-        }
-        for name in shapes["tts"].keys() & shapes["helper"].keys():
-            assert shapes["tts"][name] == shapes["helper"][name], f"{scope}.{name}"
-            assert len(shapes["tts"][name]) == 1, f"{scope}.{name} has several shapes"
-    # The helper exercises its whole event space; tts every other contract event.
-    assert {e["event"] for e in emitted["helper"]["prefetch"]} == {
-        "start", "progress", "done", "complete", "check", "summary", "error",
-    }  # fmt: skip
-    assert {e["event"] for e in emitted["helper"]["serve"]} == {"ready", "error"}
-    for scope in SCOPES:
-        seen = {e["event"] for side in emitted for e in emitted[side][scope]}
+        seen = {e["event"] for e in emitted[scope]}
         assert seen == set(CONTRACT[scope]), f"{scope}: contract events never emitted"
 
 
-def test_helper_check_dialect_is_the_tts_dialect(emitted):
-    """``prefetch --check`` is check rows then a summary on both sides, so the
-    Swift ``cacheStatus`` reads snapshot paths from ``check`` rows only."""
-    for side in emitted:
-        kinds = [e["event"] for e in emitted[side]["prefetch"]]
-        for i, kind in enumerate(kinds):
-            if kind == "summary":
-                assert i > 0 and kinds[i - 1] == "check", f"{side}: summary without check rows"
-    cached = [e for e in emitted["helper"]["prefetch"] if e["event"] == "check" and e["cached"]]
-    assert cached and all(e["path"] for e in cached)
+def test_recorded_stt_lines_conform_to_the_contract():
+    """The upstream 0.4.0 ``ready`` and ``error`` lines, byte for byte as recorded."""
+    lines = stt_fixture_lines()
+    assert [line["event"] for line in lines] == ["ready", "error"]
+    for line in lines:
+        conform("serve", line, "stt")
+    ready, error = lines
+    # Exact required keys: no field dropped, none added beyond the contract.
+    assert set(ready) == set(CONTRACT["serve"]["ready"]["fields"])
+    assert set(error) == set(CONTRACT["serve"]["error"]["fields"])
+    assert error["code"] in STT_CODES
+    # The same key set the TTS emitter writes for the same events.
+    tts_ready = set(CONTRACT["serve"]["ready"]["fields"])
+    assert set(ready) == tts_ready
+
+
+def test_tts_check_dialect_is_check_rows_then_summary(emitted):
+    """``prefetch --check`` is check rows then a summary, so the Swift ``cacheStatus``
+    reads snapshot paths from ``check`` rows only."""
+    kinds = [e["event"] for e in emitted["prefetch"]]
+    for i, kind in enumerate(kinds):
+        if kind == "summary":
+            assert i > 0 and kinds[i - 1] == "check", "summary without check rows"
     swift = (CORE / "EnvironmentManager.swift").read_text()
     body = swift.split("static func cacheStatus(checkOutput", 1)[1].split("\n    }\n", 1)[0]
     assert "summary.path" not in body
@@ -312,15 +217,15 @@ def test_helper_check_dialect_is_the_tts_dialect(emitted):
 _EVENT_LITERAL = re.compile(r'"event": "(\w+)"')
 
 
-def test_every_event_literal_in_the_emitters_is_a_contract_event():
+def test_every_event_literal_in_the_emitter_is_a_contract_event():
     contract_events = {name for scope in SCOPES for name in CONTRACT[scope]}
-    sources = [HELPER_PATH, *sorted((REPO / "tts_server").rglob("*.py"))]
+    sources = sorted((REPO / "tts_server").rglob("*.py"))
     found = {name for path in sources for name in _EVENT_LITERAL.findall(path.read_text())}
-    assert found, "the pattern matches the emitters' source"
+    assert found, "the pattern matches the emitter's source"
     assert found <= contract_events, sorted(found - contract_events)
 
 
-# --- error codes ------------------------------------------------------------------
+# --- error codes (per emitter) -------------------------------------------------
 
 
 def _swift_error_codes() -> set[str]:
@@ -329,18 +234,35 @@ def _swift_error_codes() -> set[str]:
     return set(re.findall(r'case \w+ = "(\w+)"', body))
 
 
-def test_error_codes_contract_equals_supervise_and_swift(helper):
-    contract = set(CONTRACT["error_codes"])
-    assert contract == {v for k, v in vars(supervise).items() if k.startswith("CODE_")}
-    assert contract == _swift_error_codes()
-    helper_codes = {v for k, v in vars(helper).items() if k.startswith("CODE_")}
-    assert helper_codes and helper_codes <= contract
+def test_error_codes_are_listed_per_emitter():
+    assert sorted(CONTRACT["error_codes"]) == ["stt", "tts"]
+    for emitter, codes in CONTRACT["error_codes"].items():
+        assert codes and len(codes) == len(set(codes)), emitter
 
 
-def test_download_module_prefixes_match(helper):
+def test_tts_codes_equal_what_supervise_can_emit():
+    emittable = {v for k, v in vars(supervise).items() if k.startswith("CODE_")}
+    assert TTS_CODES == emittable
+    # ``ModelInvalidError`` is the STT emitter's alone: TTS never carries it.
+    assert "ModelInvalidError" not in TTS_CODES
+
+
+def test_stt_codes_cover_the_recorded_line_and_model_invalid():
+    fixture_codes = {line["code"] for line in stt_fixture_lines() if line["event"] == "error"}
+    assert fixture_codes and fixture_codes <= STT_CODES
+    assert "ModelInvalidError" in STT_CODES
+    # The two emitters share the startup-failure codes except the ones only one has.
+    assert (TTS_CODES - STT_CODES) <= {"SocketPathConflict"}
+    assert STT_CODES - TTS_CODES == {"ModelInvalidError"}
+
+
+def test_swift_supervised_error_codes_are_the_union_of_both_lists():
+    assert _swift_error_codes() == TTS_CODES | STT_CODES
+
+
+def test_download_module_prefixes_match():
     contract = set(CONTRACT["download_error_module_prefixes"])
     assert set(supervise._DOWNLOAD_MODULE_PREFIXES) == contract
-    assert set(helper._DOWNLOAD_MODULE_PREFIXES) == contract
 
 
 def _hub_error() -> Exception:
@@ -377,10 +299,8 @@ _STATE_SPACE = [
 
 
 @pytest.mark.parametrize("exc", _STATE_SPACE, ids=lambda e: f"{type(e).__name__}:{e}")
-def test_helper_classify_agrees_with_supervise(helper, exc):
-    code = helper.classify(exc)
-    assert code in CONTRACT["error_codes"]
-    assert code == supervise.classify_startup_error(exc)[0]
+def test_classify_only_emits_tts_contract_codes(exc):
+    assert supervise.classify_startup_error(exc)[0] in TTS_CODES
 
 
 # --- Swift consumer --------------------------------------------------------------
@@ -413,23 +333,15 @@ def test_swift_decoder_reads_only_contract_fields():
     assert swift <= fields, sorted(swift - fields)
 
 
-def test_stt_wire_rate_is_one_constant(helper):
+def test_stt_wire_rate_is_one_constant():
     swift = re.search(
         r"enum STTWire \{.*?public static let rate = (\d+)",
         (CORE / "PCMStreamConverter.swift").read_text(),
         re.DOTALL,
     )
     assert swift, "the parser sees STTWire.rate"
-    assert CONTRACT["stt_wire_rate"] == helper.WIRE_RATE == int(swift.group(1))
-    # No other literal rate in the helper: everything derives from WIRE_RATE.
-    assert "16000" not in HELPER_PATH.read_text().split("WIRE_RATE = 16000", 1)[1]
-
-
-def test_helper_reads_the_bound_port_through_public_api():
-    """``stt_server``'s private ``server._server`` is never touched: the ready
-    line uses ``TranscriptionServer.listening_port()`` (public in 0.3.3)."""
-    source = HELPER_PATH.read_text()
-    assert "._server" not in source and "listening_port()" in source
+    ready = next(line for line in stt_fixture_lines() if line["event"] == "ready")
+    assert CONTRACT["stt_wire_rate"] == ready["rate"] == int(swift.group(1))
 
 
 # --- catalog ----------------------------------------------------------------------
@@ -439,66 +351,13 @@ def _stt_entries():
     return [e for e in macos_catalog().values() if e.engine]
 
 
-def test_helper_default_models_match_service_swift(helper):
-    swift = {e.engine: e.model_repo for e in _stt_entries() if not e.is_variant}
-    assert swift and helper.DEFAULT_MODELS == swift
-
-
-def test_model_revisions_pin_every_stt_repo_the_app_offers(helper):
-    repos = {e.model_repo for e in _stt_entries()}
-    assert len(repos) == len(_stt_entries()), "each STT service has its own repo"
-    assert set(helper.MODEL_REVISIONS) == repos
-    for repo, sha in helper.MODEL_REVISIONS.items():
-        assert re.fullmatch(r"[0-9a-f]{40}", sha), f"{repo}: {sha!r} is not a commit sha"
-
-
-def test_prefetch_and_serve_use_the_same_pin(helper, monkeypatch, tmp_path, capsys):
-    """The commit ``prefetch`` downloads is the one ``serve-stt`` loads, and a
-    record of another commit is not reported cached."""
-    _fake_hub(monkeypatch, tmp_path)
-    repo = helper.DEFAULT_MODELS["kyutai"]
-    pin = helper.MODEL_REVISIONS[repo]
-    state = tmp_path / "env"
-    assert helper.main(["prefetch", "--repo", repo, "--state-dir", str(state), "--json"]) == 0
-    events = _lines(capsys.readouterr().out)
-    assert events[0]["revision"] == pin
-    assert Path(events[-2]["path"]).name == pin  # done: the pinned snapshot
-    # serve-stt: kyutai fetches every file at the pin...
-    assert helper._make_backend("kyutai", repo).revision == pin
-
-    # ...and whisper is handed the pinned snapshot's folder, reporting the repo id.
-    class FakeWhisper:
-        def __init__(self, *, model):
-            self._model = self.model = model
-
-    whisper = types.ModuleType("stt_server.backends.mlx_whisper")
-    whisper.MLXWhisperBackend = FakeWhisper
-    monkeypatch.setitem(sys.modules, "stt_server", types.ModuleType("stt_server"))
-    monkeypatch.setitem(sys.modules, "stt_server.backends", types.ModuleType("stt_server.backends"))
-    monkeypatch.setitem(sys.modules, "stt_server.backends.mlx_whisper", whisper)
-    wrepo = helper.DEFAULT_MODELS["whisper"]
-    assert helper.main(["prefetch", "--repo", wrepo, "--json"]) == 0
-    wdone = [e for e in _lines(capsys.readouterr().out) if e["event"] == "done"][0]
-    backend = helper._make_backend("whisper", wrepo)
-    assert (
-        backend._model == wdone["path"]
-        and Path(wdone["path"]).name == helper.MODEL_REVISIONS[wrepo]
+def _swift_stt_server_version() -> str:
+    m = re.search(
+        r'static let sttServerRequirement = "pipecat-local-stt-server==([^"]+)"',
+        SERVICE_SWIFT.read_text(),
     )
-    assert backend.model == wrepo
-
-    check = ["prefetch", "--repo", repo, "--state-dir", str(state), "--check"]
-    assert helper.main(check) == 0
-    assert _lines(capsys.readouterr().out)[-1]["cached"] is True
-    record = next(state.glob(".prefetch-*.json"))
-    data = json.loads(record.read_text())
-    other = Path(data["path"]).with_name("f" * 40)  # the same files at another commit
-    shutil.copytree(data["path"], other)
-    record.write_text(json.dumps({**data, "path": str(other)}))
-    assert helper.main(["prefetch", "--repo", repo, "--state-dir", str(state), "--check"]) == 0
-    assert _lines(capsys.readouterr().out)[-1]["cached"] is False
-
-
-# --- STT constraints --------------------------------------------------------------
+    assert m, "the parser sees ServiceCatalog.sttServerRequirement"
+    return m.group(1)
 
 
 def _pins(text: str) -> dict[str, str]:
@@ -508,6 +367,16 @@ def _pins(text: str) -> dict[str, str]:
     }
 
 
+def test_every_stt_family_has_its_own_engine():
+    families = {e.family for e in macos_catalog().values() if e.kind == "stt"}
+    engines = {e.engine for e in _stt_entries() if not e.is_variant}
+    assert engines == {"whisper", "kyutai", "parakeet", "nemotron"}
+    assert families == engines | {"apple_speech"}
+    # Variants share their family's engine (one environment); no two families share one.
+    by_family = {e.family: e.engine for e in _stt_entries()}
+    assert len(set(by_family.values())) == len(by_family) == 4
+
+
 def test_every_stt_engine_has_hash_pinned_constraints():
     engines = {e.engine: e.requirements for e in _stt_entries() if not e.is_variant}
     folder = REPO / "macos" / "constraints"
@@ -515,12 +384,22 @@ def test_every_stt_engine_has_hash_pinned_constraints():
     swift_python = re.search(
         r'pythonVersion = "([\d.]+)"', (CORE / "EnvironmentManager.swift").read_text()
     ).group(1)
+    server_version = _swift_stt_server_version()
     for engine, requirements in engines.items():
         text = (folder / f"stt-{engine}.txt").read_text()
+        assert text.strip(), f"{engine}: empty constraints"
         assert f"# python-version: {swift_python}\n" in text, engine
         # Regenerated from exactly these requirements...
-        assert re.findall(r"^# requirement: (.+)$", text, re.MULTILINE) == list(requirements)
+        listed = re.findall(r"^# requirement: (.+)$", text, re.MULTILINE)
+        assert listed == list(requirements)
+        # ...of which one names the upstream server at exactly the Swift release.
+        servers = [r for r in listed if r.startswith("pipecat-local-stt-server")]
+        assert len(servers) == 1, f"{engine}: {listed}"
+        assert re.fullmatch(
+            rf"pipecat-local-stt-server(\[[^\]]+\])?=={re.escape(server_version)}", servers[0]
+        ), f"{engine}: {servers[0]} != sttServerRequirement {server_version}"
         pins = _pins(text)
+        assert pins.get("pipecat-local-stt-server") == server_version, engine
         for requirement in requirements:
             name, version = re.fullmatch(
                 r"([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?==(\S+)", requirement

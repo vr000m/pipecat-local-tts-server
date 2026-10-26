@@ -484,11 +484,11 @@ public final class ServiceDriver {
 
     private func launch(port: Int) {
         guard let paths = host?.servicePaths, let args = environment?.serveArguments(for: info, port: port) else {
-            send(.launchFailed("This build is missing the STT helper."))
+            send(.launchFailed("This service cannot be started by the app."))
             return
         }
         let sub = dependencies.makeProcess(
-            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.huggingFace(), holdStdin: true))
+            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.serve(service), holdStdin: true))
         let sink = LogSink(url: paths.appLog(service))
         sink.write("---- \(Date().formatted(.iso8601)) starting \(service.rawValue) on \(ServiceCatalog.host):\(port)")
         do {

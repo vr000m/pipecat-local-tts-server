@@ -2,22 +2,35 @@
   "_comment": [
     "The JSON-lines contract between a supervising app (macos/, the Pipecat Service Toolbar) and the processes it runs:",
     "`python -m tts_server serve --supervised` / `prefetch --json` (tts_server/supervise.py, tts_server/prefetch.py) and",
-    "the STT helper `pipecat_app_helper.py serve-stt` / `prefetch --json` (macos/Helper/). Both emitters are independent",
-    "implementations; tests/test_supervised_contract.py runs both on stub inputs and checks every line against this file,",
-    "and checks the Swift consumer (PrefetchEvent.swift, PCMStreamConverter.swift) against it.",
+    "the upstream STT CLI `python -m stt_server serve --supervised` / `prefetch --json` (pipecat-local-stt-server 0.4.0,",
+    "stt_server/supervise.py, stt_server/prefetch.py). Both emitters are independent implementations;",
+    "tests/test_supervised_contract.py checks the TTS emitter on stub inputs, the STT emitter against a recorded 0.4.0 fixture",
+    "(tests/fixtures/stt_supervised_lines.jsonl), and the Swift consumer (PrefetchEvent.swift, PCMStreamConverter.swift) against this file.",
+    "`error_codes` is listed per emitter: each emitter's codes are exactly its own list, and the Swift SupervisedErrorCode is their union.",
     "Field types: string | integer | boolean | null. `fields` are always present; `optional` may be present.",
     "One object per stdout line; consumers skip lines that are not JSON objects."
   ],
   "version": 1,
-  "error_codes": [
-    "ModuleNotFoundError",
-    "EADDRINUSE",
-    "EACCES",
-    "SocketPathConflict",
-    "ModelDownloadError",
-    "ConfigError",
-    "BackendStartError"
-  ],
+  "error_codes": {
+    "tts": [
+      "ModuleNotFoundError",
+      "EADDRINUSE",
+      "EACCES",
+      "SocketPathConflict",
+      "ModelDownloadError",
+      "ConfigError",
+      "BackendStartError"
+    ],
+    "stt": [
+      "ModuleNotFoundError",
+      "EADDRINUSE",
+      "EACCES",
+      "ModelDownloadError",
+      "ConfigError",
+      "BackendStartError",
+      "ModelInvalidError"
+    ]
+  },
   "download_error_module_prefixes": ["huggingface_hub", "requests", "urllib3", "hf_xet", "httpx"],
   "stt_wire_rate": 16000,
   "serve": {
