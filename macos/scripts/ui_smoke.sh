@@ -36,7 +36,6 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/toolbar-ui-smoke.XXXXXX")"
 LOG_PID=""
 APP_PID=""
 EXT_PID=""        # the out-of-process server this script started (step 5), nothing else
-EXT_JOB=""        # its job number in this shell's job table: every signal to it goes to "%$EXT_JOB"
 EXT_LISTEN_PID="" # whatever pid listens on its port once it is up
 EXT_PORT=8665     # tone's canonical port (ServiceCatalog / justfile _resolve); not a real agent's
 EXT_MATCH=""      # the command line EXT_PID must still be running (set when it starts)
@@ -63,9 +62,17 @@ job_of() {
     jobs -l | awk -v pid="$1" '$2 == pid { gsub(/[^0-9]/, "", $1); print $1 }'
 }
 
-# Send signal $1 to this shell's background job whose pid is $2, by job spec (see stop_ext):
-# a no-op once the shell has reaped it, so a reused pid is never hit. Every signal this script
-# sends to a process it started goes through here or stop_ext.
+# True while this shell's background job whose pid is $1 is still running.
+job_running() {
+    jobs -l | awk -v pid="$1" '$2 == pid && $3 == "Running" { found = 1 } END { exit !found }'
+}
+
+# Send signal $1 to this shell's background job whose pid is $2, by job spec: the shell resolves
+# "%N" from its own job table and skips a process it has already reaped, so a pid the kernel has
+# since reused is never hit (a check-then-`kill $pid` can race that reuse). The job number is
+# looked up from the pid here, at signal time, never cached: the shell hands a reaped job's
+# number to the next job (bash 3.2 does), so a number saved earlier can name another job. Every
+# signal this script sends to a process it started goes through here.
 signal_job() {
     local job
     job="$(job_of "$2")"
@@ -73,24 +80,31 @@ signal_job() {
     kill "-$1" "%$job" 2>/dev/null || true
 }
 
-# Stop the server this script started: SIGTERM, then SIGKILL if it ignored SIGTERM, then reap
-# it. Signals go to the job spec, never to a pid: the shell resolves "%$EXT_JOB" from its own
-# job table and skips a process it has already reaped, so a pid the kernel has since reused
-# is never signalled (a check-then-`kill $pid` can race that reuse). Nothing after `wait`
-# (EXT_PID and EXT_JOB are cleared with it).
+# Stop this shell's background job whose pid is $1 and reap it before returning, so it cannot
+# outlive the step that started it: SIGTERM, up to 5s to exit, SIGKILL if it ignored SIGTERM,
+# then `wait` (bounded: the job has exited by then, and a pid that is not this shell's child
+# returns at once). Signals only through signal_job; nothing after `wait`.
+stop_job() {
+    signal_job TERM "$1"
+    for _ in $(seq 1 20); do job_running "$1" || break; sleep 0.25; done
+    signal_job KILL "$1"
+    wait "$1" 2>/dev/null || true
+}
+
+# Stop the server this script started (stop_job) and forget it.
 stop_ext() {
-    [[ -n "$EXT_JOB" ]] || return 0
-    kill -TERM "%$EXT_JOB" 2>/dev/null || true
-    for _ in $(seq 1 20); do ext_is_ours || break; sleep 0.25; done
-    kill -KILL "%$EXT_JOB" 2>/dev/null || true
-    wait "$EXT_PID" 2>/dev/null || true
-    EXT_PID=""; EXT_JOB=""; EXT_LISTEN_PID=""
+    [[ -n "$EXT_PID" ]] || return 0
+    stop_job "$EXT_PID"
+    EXT_PID=""; EXT_LISTEN_PID=""
 }
 
 cleanup() {
-    [[ -z "$LOG_PID" ]] || signal_job TERM "$LOG_PID"
-    [[ -z "$APP_PID" ]] || signal_job KILL "$APP_PID"
-    # Only the job this script started, by its job spec (never the lsof listener, never a
+    [[ -z "$LOG_PID" ]] || stop_job "$LOG_PID"
+    if [[ -n "$APP_PID" ]]; then
+        signal_job KILL "$APP_PID"
+        wait "$APP_PID" 2>/dev/null || true
+    fi
+    # Only the job this script started, through signal_job (never the lsof listener, never a
     # pid, never a pattern kill).
     stop_ext
     rm -rf "$WORK"
@@ -177,7 +191,7 @@ assert_clean_exit() {
     local stray
     stray="$(pgrep -fl "$APP/Contents" || true)"
     [[ -z "$stray" ]] || fail "$how left processes from the bundle: $stray"
-    signal_job TERM "$LOG_PID"
+    stop_job "$LOG_PID"
     LOG_PID=""
     local n
     n="$(echo "$SEEN" | tr ' ' '\n' | sort -u | grep -c . || true)"
@@ -196,7 +210,7 @@ step "Quit (Apple Event, as the menu's Quit does)"
 osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
 quitter=$!
 assert_clean_exit "quit"
-signal_job TERM "$quitter"
+stop_job "$quitter"
 
 # --- 4. SIGTERM ---------------------------------------------------------------
 step "Launch again, then SIGTERM"
@@ -220,8 +234,8 @@ else
     EXT_MATCH="-m tts_server serve --backend tone --host 127.0.0.1 --port $EXT_PORT"
     "$EXT_PY" -m tts_server serve --backend tone --host 127.0.0.1 --port "$EXT_PORT" >"$WORK/external.log" 2>&1 &
     EXT_PID=$!
-    EXT_JOB="$(job_of "$EXT_PID")"
-    [[ -n "$EXT_JOB" ]] || fail "the external tone server (pid $EXT_PID) is not in this shell's job table"
+    # Fail fast if the shell cannot see its own job (signal_job would then be a no-op).
+    [[ -n "$(job_of "$EXT_PID")" ]] || fail "the external tone server (pid $EXT_PID) is not in this shell's job table"
     deadline=$((SECONDS + 20))
     while ((SECONDS < deadline)); do
         # Liveness only (no signal): until the child has exec'd python its command line is still bash's.
@@ -243,7 +257,7 @@ else
     osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
     quitter=$!
     assert_clean_exit "quit with an external server"
-    signal_job TERM "$quitter"
+    stop_job "$quitter"
     ext_is_ours || fail "Quit stopped the external server (pid $EXT_PID)"
     [[ "$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)" == "$EXT_PID" ]] \
         || fail "the server we started no longer listens on $EXT_PORT after Quit"

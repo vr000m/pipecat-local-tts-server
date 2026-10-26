@@ -48,7 +48,8 @@ from tts_server.backend import ToneBackend
 
 from ._helpers import running_server
 from ._macos_catalog import macos_catalog
-from ._stt_upstream import excerpt_lines_missing_from, upstream_stt
+from ._stt_upstream import FIXTURE as STT_EXCERPT
+from ._stt_upstream import excerpt_drift, upstream_stt
 from .smoke._supervised_contract import event_errors
 from .test_prefetch_cli import PH, _run, fake_hub  # noqa: F401 - fake_hub is a fixture
 
@@ -305,7 +306,9 @@ def test_stt_codes_equal_what_the_recorded_upstream_release_can_emit():
     fails here once the excerpt is re-recorded for a new pin."""
     upstream = upstream_stt()
     assert upstream.version == _swift_stt_server_version(), (
-        "re-record the STT excerpt for the new pin"
+        "re-record the STT excerpt for the new pin, then check it against that release's source:"
+        " PIPECAT_STT_SERVER_SITE=<dir with stt_server/ and its dist-info> uv run pytest"
+        " tests/test_supervised_contract.py -k verbatim"
     )
     assert STT_CODES == upstream.error_codes
     fixture_codes = {line["code"] for line in stt_fixture_lines() if line["event"] == "error"}
@@ -332,7 +335,37 @@ def test_recorded_stt_excerpt_is_verbatim_upstream_source():
     assert (site / f"pipecat_local_stt_server-{version}.dist-info").is_dir(), (
         f"{site} does not hold pipecat-local-stt-server {version}"
     )
-    assert excerpt_lines_missing_from(site) == []
+    assert excerpt_drift(site) == []
+
+
+def _fake_stt_site(tmp_path: Path, *, extra_code: str = "", extra_backend: str = "") -> Path:
+    """A site whose ``## <path>`` files hold the excerpt's lines, plus anything extra."""
+    files: dict[str, list[str]] = {}
+    current: list[str] = []
+    for line in STT_EXCERPT.read_text().splitlines():
+        if line.startswith("## "):
+            current = files.setdefault(line[3:], [])
+        elif not line.startswith("#"):
+            current.append(line)
+    files["stt_server/supervise.py"].append(extra_code)
+    backends = files["stt_server/backends/__init__.py"]
+    backends.insert(backends.index("}"), extra_backend)
+    for rel, lines in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("\n".join(lines) + "\n")
+    return tmp_path
+
+
+def test_excerpt_drift_catches_what_the_excerpt_leaves_out(tmp_path):
+    """The opt-in check compares the ``CODE_*`` set and the ``BACKENDS`` registry, not only
+    that each excerpt line exists upstream: a code or backend the excerpt omits is drift."""
+    assert excerpt_drift(_fake_stt_site(tmp_path / "same")) == []
+    code = _fake_stt_site(tmp_path / "code", extra_code='CODE_NEW = "NewError"')
+    assert [d for d in excerpt_drift(code) if d.startswith("CODE_*")], excerpt_drift(code)
+    backend = _fake_stt_site(
+        tmp_path / "backend", extra_backend='    "new": BackendEntry("m", "C", None),'
+    )
+    assert [d for d in excerpt_drift(backend) if d.startswith("BACKENDS")], excerpt_drift(backend)
 
 
 def test_swift_supervised_error_codes_are_the_union_of_both_lists():

@@ -225,8 +225,10 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
 - **Ownership invariant.** The app only signals, stops or deletes processes it
   started. `.external` carries no pid and holds `server == nil && native == nil`;
   the reducer issues no stop, launch, install or remove effect for it (the effects
-  allowed in `.external` are `.cancelProbe`, `.openTryIt`, `.tearDown` and the
-  read-only `.probePortOwner`, plus a state re-read), and the views do not offer
+  allowed in `.external` are `.cancelProbe`, `.openTryIt` and `.tearDown`, plus a
+  state re-read; the read-only owner lookup that confirms an agent's label is not a
+  reducer effect: `ServiceModel.refreshExternalOwner` calls `PortProbe.owner` on each
+  discovery pass), and the views do not offer
   Stop, Delete, Get, Install or Reset (each External row reads its buttons from
   `ExternalPresentation.Actions`). STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
@@ -288,9 +290,12 @@ Every Python server, and the native server, follows one contract.
    file and the in-app log tail.
 2. **Startup errors.** A fatal startup error prints
    `{"event":"error","code",...}` and exits 1. The codes are `EADDRINUSE`,
-   `EACCES`, `SocketPathConflict`, `ModuleNotFoundError`, `ModelDownloadError`,
-   `ConfigError` and `BackendStartError` (`SupervisedErrorCode` in Core; a lean
-   test keeps it equal to `tts_server/supervise.py`). A busy port is reported
+   `EACCES`, `SocketPathConflict` (TTS only), `ModuleNotFoundError`,
+   `ModelDownloadError`, `ConfigError`, `BackendStartError` and `ModelInvalidError`
+   (STT only). `docs/supervised-contract.json` lists them per emitter, and
+   `SupervisedErrorCode` in Core is their union (lean tests keep the `tts` list equal
+   to `tts_server/supervise.py`, the `stt` list to the recorded upstream release, and
+   the enum to both). A busy port is reported
    before any model loads. The app judges an exit only after stdout is drained
    (`Subprocess.waitForExit(after:)`), so the final error line is never lost to
    the exit, and it ignores a `ready` that arrives once Stop or Delete began.

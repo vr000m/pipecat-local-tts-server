@@ -55,7 +55,7 @@ public struct ServerCLIEvent: Decodable, Sendable, Equatable {
 /// The stable `code` values of a supervised server's `{"event":"error"}` line:
 /// `tts_server/supervise.py`'s `CODE_*` constants plus `ModelInvalidError`, which only the
 /// STT emitter (upstream `stt_server.supervise`) has. `docs/supervised-contract.json` lists
-/// the codes per emitter; `tests/test_macos_catalog_drift.py` keeps them equal to this enum.
+/// the codes per emitter; `tests/test_supervised_contract.py` keeps their union equal to this enum.
 public enum SupervisedErrorCode: String, Sendable, CaseIterable {
     case moduleNotFound = "ModuleNotFoundError"
     case addressInUse = "EADDRINUSE"

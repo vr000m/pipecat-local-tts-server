@@ -422,7 +422,7 @@ def test_no_helper_era_mentions(path: Path) -> None:
 
 def test_app_smoke_recipe_points_at_ui_smoke() -> None:
     text = JUSTFILE.read_text()
-    m = re.search(r"^app-smoke\b[^\n]*\n((?:[ \t]+[^\n]*\n?)+)", text, re.M)
+    m = re.search(r"^app-smoke\b[^\n]*\n((?:[ \t]+[^\n]*\n?)+)", text, re.MULTILINE)
     assert m is not None, "app-smoke recipe missing from justfile"
     assert "ui_smoke.sh" in m.group(1)
     assert _UI_SMOKE.is_file()
@@ -447,7 +447,7 @@ def test_ui_smoke_skips_when_canonical_port_held() -> None:
     code = "\n".join(
         ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")
     )
-    assert re.search(r"^EXT_PORT=8665\b", code, re.M), (
+    assert re.search(r"^EXT_PORT=8665\b", code, re.MULTILINE), (
         "the external step must use tone's canonical port"
     )
     held = re.search(r'lsof -nP -iTCP:"\$EXT_PORT" -sTCP:LISTEN', code)
@@ -467,7 +467,7 @@ def test_ui_smoke_never_names_real_agent_ports() -> None:
 
 def test_architecture_known_followups_lists_deferred_discovery() -> None:
     text = _ARCH_DOC.read_text()
-    m = re.search(r"^## Known follow-ups\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    m = re.search(r"^## Known follow-ups\n(.*?)(?=^## |\Z)", text, re.DOTALL | re.MULTILINE)
     assert m is not None, "Known follow-ups section missing"
     body = m.group(1)
     assert re.search(r"Unix-socket discovery", body)
@@ -480,7 +480,7 @@ def _ui_smoke_functions(*names: str) -> str:
     text = _UI_SMOKE.read_text()
     out = []
     for name in names:
-        m = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.S | re.M)
+        m = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.DOTALL | re.MULTILINE)
         assert m is not None, f"{name}() not found in ui_smoke.sh"
         out.append(m.group(0))
     return "\n".join(out)
@@ -489,7 +489,9 @@ def _ui_smoke_functions(*names: str) -> str:
 def test_ui_smoke_signals_its_children_only_by_job_spec() -> None:
     """Every signal the script sends to a process it started names a job spec (``%N``), never a
     pid: the shell resolves a job spec from its own job table and skips a child it has already
-    reaped, while a check-then-``kill $pid`` can hit a pid the kernel reused in between."""
+    reaped, while a check-then-``kill $pid`` can hit a pid the kernel reused in between. The one
+    ``kill`` is in ``signal_job``, which looks the job number up from the pid when it signals
+    (no cached ``%N``: the shell reuses job numbers)."""
     code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
     signals = [ln for ln in code if re.search(r"\bkill\b(?! -0)", ln)]
     assert signals, "the pattern sees the script's signals"
@@ -497,48 +499,124 @@ def test_ui_smoke_signals_its_children_only_by_job_spec() -> None:
         assert re.search(r'\bkill "?-\$?\w+"? "%\$\w+"', ln), (
             f"signal not by job spec: {ln.strip()}"
         )
-    body = _ui_smoke_functions("stop_ext")
-    after_wait = body.split('wait "$EXT_PID"', 1)[1]
-    assert "kill" not in after_wait and 'EXT_JOB=""' in after_wait, "no signal after the reap"
+    assert len(signals) == 1 and signals[0] in _ui_smoke_functions("signal_job"), signals
+    assert "EXT_JOB" not in _UI_SMOKE.read_text(), "a cached job number"
+    body = _ui_smoke_functions("stop_job")
+    assert "kill" not in body.split('wait "$1"', 1)[1], "no signal after the reap"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
-def test_ui_smoke_never_signals_a_pid_that_is_no_longer_its_child() -> None:
+def _bash_candidates() -> list:
+    """The PATH ``bash``, and the stock macOS ``/bin/bash`` when it is bash 3.x (it reuses a
+    reaped job's number, which the PATH bash 5 may not); missing ones are skipped."""
+    params = []
+    path_bash = shutil.which("bash")
+    params.append(
+        pytest.param(path_bash, id="path-bash")
+        if path_bash
+        else pytest.param(None, id="path-bash", marks=pytest.mark.skip(reason="bash not on PATH"))
+    )
+    stock = Path("/bin/bash")
+    major = None
+    if stock.exists():
+        r = subprocess.run(
+            [str(stock), "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True
+        )
+        major = r.stdout.strip()
+    params.append(
+        pytest.param(str(stock), id="bin-bash-3")
+        if major == "3"
+        else pytest.param(
+            None, id="bin-bash-3", marks=pytest.mark.skip(reason="/bin/bash is not bash 3.x")
+        )
+    )
+    return params
+
+
+_SIGNAL_FUNCTIONS = ("ext_is_ours", "job_of", "job_running", "signal_job", "stop_job", "stop_ext")
+
+
+def _run_signal_script(bash: str, body: str) -> subprocess.CompletedProcess:
+    script = f"set -euo pipefail\n{_ui_smoke_functions(*_SIGNAL_FUNCTIONS)}\n{body}\necho done\n"
+    return subprocess.run([bash, "-c", script], capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize("bash", _bash_candidates())
+def test_ui_smoke_never_signals_a_pid_that_is_no_longer_its_child(bash: str) -> None:
     """``stop_ext`` and ``signal_job`` against (a) the script's own child, which they stop and
     reap, and (b) the race the identity check alone cannot close: the child has exited and been
     reaped and its pid now names an unrelated process that even passes ``ext_is_ours`` (the
     check ran before the pid changed hands). Neither may signal that process."""
-    functions = _ui_smoke_functions("ext_is_ours", "job_of", "signal_job", "stop_ext")
     stranger = subprocess.Popen(["sleep", "30"])
     try:
-        script = f"""set -euo pipefail
-{functions}
-EXT_MATCH="sleep 30"
+        r = _run_signal_script(
+            bash,
+            f"""EXT_MATCH="sleep 30"
 sleep 30 &
 EXT_PID=$!
-EXT_JOB="$(job_of "$EXT_PID")"
-[[ -n "$EXT_JOB" ]] || {{ echo "job_of found no job"; exit 2; }}
+[[ -n "$(job_of "$EXT_PID")" ]] || {{ echo "job_of found no job"; exit 2; }}
 sleep 0.2
 ext_is_ours || {{ echo "own child not recognised"; exit 3; }}
 stop_ext
-[[ -z "$EXT_PID" && -z "$EXT_JOB" ]] || {{ echo "EXT_PID/EXT_JOB not cleared"; exit 4; }}
+[[ -z "$EXT_PID" ]] || {{ echo "EXT_PID not cleared"; exit 4; }}
 sleep 30 &
 own=$!
 signal_job TERM "$own"
 wait "$own" && {{ echo "signal_job did not stop its own child"; exit 5; }}
 sleep 0.1 &
 EXT_PID=$!
-EXT_JOB="$(job_of "$EXT_PID")"
 sleep 0.5
 EXT_PID={stranger.pid}
 ext_is_ours() {{ return 0; }}
 stop_ext
-signal_job KILL {stranger.pid}
-echo done
-"""
-        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+signal_job KILL {stranger.pid}""",
+        )
         assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)
         assert stranger.poll() is None, "a signal reached a process that was not the shell's child"
     finally:
         stranger.kill()
         stranger.wait()
+
+
+@pytest.mark.parametrize("bash", _bash_candidates())
+def test_ui_smoke_stop_ext_never_signals_a_job_that_took_its_number(bash: str) -> None:
+    """The server exits on its own and is reaped; the next job may get its job number (bash 3.2
+    reuses it). ``stop_ext`` resolves the job from the pid when it signals, so it leaves the new
+    job alone (a job number cached at start would name the new job)."""
+    r = _run_signal_script(
+        bash,
+        """sleep 0.1 &
+EXT_PID=$!
+first="$(job_of "$EXT_PID")"
+sleep 0.5
+sleep 30 &
+other=$!
+echo "ext was %$first, the next job is %$(job_of "$other")"
+stop_ext
+sleep 0.5  # a signal it sent has landed and the shell has reaped the job by now
+job_running "$other" || { echo "stop_ext signalled another job"; exit 6; }
+stop_job "$other"
+""",
+    )
+    assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)
+
+
+@pytest.mark.parametrize("bash", _bash_candidates())
+def test_ui_smoke_stop_job_reaps_a_child_that_ignores_sigterm(bash: str) -> None:
+    """A helper job (``log stream``, the ``osascript`` quitter) is stopped AND reaped before the
+    script moves on: ``stop_job`` escalates to SIGKILL after its bounded wait and returns only once
+    the job has exited, so it cannot outlive the step that started it."""
+    r = _run_signal_script(
+        bash,
+        """( trap '' TERM; exec sleep 30 ) &
+helper=$!
+sleep 0.2
+stop_job "$helper"
+job_running "$helper" && { echo "still a running job"; exit 7; }
+ps -p "$helper" >/dev/null 2>&1 && { echo "still alive after stop_job"; exit 8; }
+sleep 30 &
+quick=$!
+stop_job "$quick"
+ps -p "$quick" >/dev/null 2>&1 && { echo "quick child still alive"; exit 9; }
+""",
+    )
+    assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)

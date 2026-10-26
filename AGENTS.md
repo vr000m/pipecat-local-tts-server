@@ -75,6 +75,8 @@ traffic. The UDS (default mode `0o600`, parent-dir guarded) is the trust boundar
 ```sh
 uv run pytest                              # full suite (needs an env with extras)
 uv run pytest tests/test_kokoro_backend.py # mlx-gated synthesis (Apple Silicon only)
+# opt-in: the recorded STT excerpt vs that release's real source (after re-recording it)
+PIPECAT_STT_SERVER_SITE=<dir with stt_server/ + its dist-info> uv run pytest tests/test_supervised_contract.py -k verbatim
 ```
 
 CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
@@ -83,7 +85,8 @@ explicit allow-list of lean test files — extend it when adding a lean test), a
 verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
 / pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis), and a
 **macOS app** job (`test-macos-app`, macos-15: `swift build` + `swift test --package-path
-macos`, with the lean env synced for the live tone-server test). See
+macos`, with the lean env synced for the live tone-server test; it also runs the
+`ui_smoke.sh` job-signal tests under the stock `/bin/bash` 3.2). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a

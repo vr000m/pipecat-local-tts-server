@@ -12,7 +12,9 @@ app installs. Its content is checked against real source only where one is prese
 importable-package tests, and ``test_recorded_stt_excerpt_is_verbatim_upstream_source``
 when ``PIPECAT_STT_SERVER_SITE`` names a directory holding that release's ``stt_server/``
 and ``pipecat_local_stt_server-<version>.dist-info`` (e.g. the app's uv cache entry, or a
-``site-packages``). Run it locally whenever the excerpt is re-recorded.
+``site-packages``). That check (``excerpt_drift``) also parses the real files' whole
+``CODE_*`` set and ``BACKENDS`` registry, so an excerpt that leaves one out fails. Run it
+locally whenever the excerpt is re-recorded.
 """
 
 from __future__ import annotations
@@ -34,6 +36,25 @@ class UpstreamSTT:
     default_models: dict[str, str | None]
 
 
+def _parse(text: str, name: str) -> tuple[frozenset[str], dict[str, str | None]]:
+    """``CODE_*`` values and ``BACKENDS`` (name -> default model) from an excerpt or the real
+    source files, by one parser, so the two can be compared as sets. Fails on a ``CODE_`` line
+    or a ``BACKENDS`` entry the parser cannot read (it would otherwise drop out of the set)."""
+    codes = re.findall(r'^CODE_[A-Z_]+ = "(\w+)"$', text, re.MULTILINE)
+    assert len(codes) == len(re.findall(r"^CODE_", text, re.MULTILINE)), f"{name}: unparsed CODE_"
+    constants = dict(re.findall(r'^(DEFAULT_[A-Z_]+_MODEL) = "([^"]+)"$', text, re.MULTILINE))
+    body = text.split("BACKENDS: dict", 1)[1].split("\n}\n", 1)[0]
+    parts = re.split(r'^    "(\w+)": BackendEntry\(', body, flags=re.MULTILINE)
+    keys = re.findall(r'^    "(\w+)":', body, re.MULTILINE)
+    assert keys == parts[1::2], f"{name}: unparsed BACKENDS entries {keys}"
+    models: dict[str, str | None] = {}
+    for backend, segment in zip(parts[1::2], parts[2::2], strict=True):
+        constant = re.search(r"\b(DEFAULT_[A-Z_]+_MODEL)\b", segment)
+        models[backend] = constants[constant.group(1)] if constant else None
+    assert codes and models, f"{name}: the parser sees the source"
+    return frozenset(codes), models
+
+
 def upstream_stt(path: Path = FIXTURE) -> UpstreamSTT:
     text = path.read_text()
     release = re.search(
@@ -42,28 +63,37 @@ def upstream_stt(path: Path = FIXTURE) -> UpstreamSTT:
         re.MULTILINE,
     )
     assert release, f"{path.name}: no release/commit header"
-    codes = frozenset(re.findall(r'^CODE_[A-Z_]+ = "(\w+)"$', text, re.MULTILINE))
-    constants = dict(re.findall(r'^(DEFAULT_[A-Z_]+_MODEL) = "([^"]+)"$', text, re.MULTILINE))
-    body = text.split("BACKENDS: dict", 1)[1]
-    parts = re.split(r'^    "(\w+)": BackendEntry\(', body, flags=re.MULTILINE)
-    models: dict[str, str | None] = {}
-    for name, segment in zip(parts[1::2], parts[2::2], strict=True):
-        constant = re.search(r"\b(DEFAULT_[A-Z_]+_MODEL)\b", segment)
-        models[name] = constants[constant.group(1)] if constant else None
-    assert codes and models, f"{path.name}: the parser sees the excerpt"
+    codes, models = _parse(text, path.name)
     return UpstreamSTT(version=release.group(1), error_codes=codes, default_models=models)
 
 
-def excerpt_lines_missing_from(site: Path, path: Path = FIXTURE) -> list[str]:
-    """The excerpt's code lines that are not, verbatim, a line of the file their ``## <path>``
-    section names under ``site`` (empty: the excerpt is a faithful copy of that source)."""
-    missing: list[str] = []
+def _sections(path: Path) -> list[str]:
+    """The source files the excerpt's ``## <path>`` sections name, in order."""
+    sections = [line[3:] for line in path.read_text().splitlines() if line.startswith("## ")]
+    assert sections, f"{path.name}: no ## <path> section"
+    return sections
+
+
+def excerpt_drift(site: Path, path: Path = FIXTURE) -> list[str]:
+    """How the excerpt differs from the real source under ``site`` (empty: none). Two checks:
+    every excerpt code line is, verbatim, a line of the file its ``## <path>`` section names;
+    and the ``CODE_*`` set and the ``BACKENDS`` registry parsed from those whole files equal
+    the excerpt's, so a code or backend the excerpt leaves out is drift too."""
+    drift: list[str] = []
     source: list[str] | None = None
     for line in path.read_text().splitlines():
         if line.startswith("## "):
             source = (site / line[3:]).read_text().splitlines()
         elif source is not None and line.strip() and not line.startswith("#"):
             if line not in source:
-                missing.append(line)
-    assert source is not None, f"{path.name}: no ## <path> section"
-    return missing
+                drift.append(f"not in the source: {line}")
+    real = "\n".join((site / section).read_text() for section in _sections(path))
+    codes, models = _parse(real, str(site))
+    excerpt = upstream_stt(path)
+    if codes != excerpt.error_codes:
+        drift.append(
+            f"CODE_* values: source {sorted(codes)} != excerpt {sorted(excerpt.error_codes)}"
+        )
+    if models != excerpt.default_models:
+        drift.append(f"BACKENDS: source {models} != excerpt {excerpt.default_models}")
+    return drift
