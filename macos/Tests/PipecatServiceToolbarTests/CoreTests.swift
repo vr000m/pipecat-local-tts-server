@@ -1967,3 +1967,62 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(first == Service.phononQ8.info)
     }
 }
+
+/// `PortProbe.owner`: the source line names a LaunchAgent only when that agent holds the port, i.e.
+/// the pid in `launchctl print` is the pid `lsof` reports for the port.
+@Suite struct PortProbeOwnerTests {
+    /// The shape of `launchctl print gui/<uid>/<label>` for a running agent: the service's own
+    /// `pid = N` sits one tab in; nested blocks indent further.
+    static func printOutput(pid: Int?, nestedPid: Int? = nil) -> [String] {
+        var lines = [
+            "gui/501/pipecat.tts-server.tone = {",
+            "\tactive count = 1",
+            "\tpath = /Users/x/Library/LaunchAgents/pipecat.tts-server.tone.plist",
+            "\tstate = \(pid == nil ? "waiting" : "running")",
+            "",
+        ]
+        if let nestedPid {
+            lines += ["\tdomain = {", "\t\tpid = \(nestedPid)", "\t}"]
+        }
+        lines += ["\tprogram = /usr/bin/python3", "\targuments = {", "\t\t/usr/bin/python3", "\t}"]
+        if let pid { lines.append("\tpid = \(pid)") }
+        lines += ["\timmediate reason = inefficient", "}"]
+        return lines
+    }
+
+    @Test func launchctlPidReadsTheServicesOwnPid() {
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: 4242)) == 4242)
+    }
+
+    @Test func aNestedPidDoesNotStandInForTheServicesPid() {
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: 4242, nestedPid: 1)) == 4242)
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil, nestedPid: nil)) == nil)
+    }
+
+    @Test func aLoadedButNotRunningAgentHasNoPid() {
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil)) == nil)
+        #expect(PortProbe.launchctlPid([]) == nil)
+        #expect(PortProbe.launchctlPid(["\tpid = soon"]) == nil)
+    }
+
+    /// The label is set only on a pid match: a loaded agent whose pid is not the port's holder (a
+    /// second server on the port, or an agent that is down) does not own the row.
+    @Test func theLabelNeedsThePidToMatchTheLsofHolder() {
+        let output = Self.printOutput(pid: 4242)
+        let lsof: Int32 = 4242
+        #expect(PortProbe.launchctlPid(output) == lsof)
+        let otherHolder: Int32 = 99
+        #expect(PortProbe.launchctlPid(output) != otherHolder)
+    }
+
+    /// Against a real listener (this process, on an ephemeral port) for a service with no LaunchAgent
+    /// label, so no `launchctl` runs: the holder's pid is found and no label is set.
+    @Test func aServiceWithoutALaunchAgentNeverGetsALabel() async throws {
+        #expect(Service.phononQ8.info.launchdLabel == nil)
+        let server = try await FakeHelloServer.start(.upgradeAndStaySilent)
+        defer { server.stop() }
+        let owner = await PortProbe.owner(of: server.port, backend: .phononQ8)
+        #expect(owner.pid == getpid())
+        #expect(owner.launchdLabel == nil)
+    }
+}

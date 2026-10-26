@@ -49,6 +49,10 @@ public protocol ServiceHost: AnyObject {
     /// Lets the service's siblings re-read the environment it changed.
     func familyChanged() async
     func openTryIt(port: Int)
+    /// One hello probe of a loopback catalog port (`ExternalProbe`), for the Start path
+    /// and the `EADDRINUSE` chain. A cancelled probe's outcome is not to be trusted
+    /// (the driver drops it by tag).
+    func probeExternal(port: Int) async -> ExternalProbe.Outcome
     /// Stops Try it's audio (the server is going down).
     func detachTryIt()
     /// Drops the Try it session.
@@ -210,6 +214,33 @@ public final class ServiceDriver {
 
     public func stop() { execute(send(.stopRequested)) }
 
+    // MARK: - External discovery
+
+    /// Discovery found this service's server on its port. `epoch` is the `state.externalEpoch`
+    /// read when the probe started; the reducer drops it if that moved.
+    public func externalFound(epoch: Int, info: ExternalInfo) {
+        guard !quitting else { return }
+        execute(send(.externalFound(epoch: epoch, info: info)))
+    }
+
+    /// A discovery re-probe lost (or replaced) the External server.
+    public func externalLost(epoch: Int, reason: ExternalLostReason) {
+        guard !quitting else { return }
+        execute(send(.externalLost(epoch: epoch, reason: reason)))
+    }
+
+    /// The Start-path probe `tag` finished (the `.probeExternal` effect calls this).
+    public func startProbeResult(tag: Int, outcome: ExternalProbe.Outcome) {
+        guard !quitting else { return }
+        execute(send(.startProbeResult(tag: tag, outcome: outcome)))
+    }
+
+    /// Opens Try it on an External row (a no-op in every other phase).
+    public func tryItRequested() {
+        guard !quitting else { return }
+        execute(send(.tryItRequested))
+    }
+
     /// Before removal, and for app quit (through `quit()`): stop and wait. It also cancels an
     /// Apple Speech model install and waits (at most `installDrain`) for it to
     /// unwind; a Python install is the environment manager's to stop. A port
@@ -255,6 +286,14 @@ public final class ServiceDriver {
                 // A cancelled probe (Stop, quit) reports nothing.
                 guard !Task.isCancelled else { return }
                 self.send(.portOwnerFound(owner, probe: probe))
+            }
+        case .probeExternal(let port, let probe):
+            probes[probe] = Task {
+                let outcome = await self.host?.probeExternal(port: port)
+                self.probes[probe] = nil
+                // A cancelled probe (Stop, quit) reports `.silent`/`.timeout`: drop it, never trust it.
+                guard let outcome, !Task.isCancelled else { return }
+                self.startProbeResult(tag: probe, outcome: outcome)
             }
         case .cancelProbe(let probe):
             probes[probe]?.cancel()

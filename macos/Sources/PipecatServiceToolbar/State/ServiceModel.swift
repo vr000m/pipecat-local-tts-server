@@ -63,7 +63,10 @@ final class ServiceModel: Identifiable {
 
     // MARK: - Derived
 
-    var isRunning: Bool { phase == .running }
+    /// A server answers: the app's own, or an External one (`ServiceCounts`).
+    var isRunning: Bool { ServiceCounts.isRunning(driver.state) }
+    /// Consecutive failed re-probes of an External server ("not responding" while below the threshold).
+    var externalFailures: Int { driver.state.externalFailures }
     // The lifecycle's own reading of its state (Core, tested with the reducer).
     /// Started by the user: shown in the main menu.
     var isActive: Bool { driver.state.isActive }
@@ -130,12 +133,24 @@ extension ServiceModel: ServiceHost {
 
     func detachTryIt() { ttsTryIt?.detach() }
 
+    /// Opens Try it on an External row on demand (it opens at adoption for no one).
+    /// A no-op while a session exists or the service is not External.
+    func requestTryIt() {
+        guard phase.isExternal, ttsTryIt == nil, sttTryIt == nil else { return }
+        driver.tryItRequested()
+    }
+
     /// The menu's "Test Voice" / "Test Transcription": runs the Try it check on this service.
     func runTest() async {
+        requestTryIt()
         switch kind {
         case .tts: await ttsTryIt?.speakTest(TryItSession.testLine(for: info))
         case .stt: await sttTryIt?.transcribeSample()
         }
+    }
+
+    func probeExternal(port: Int) async -> ExternalProbe.Outcome {
+        await ExternalProbe().probe(port: port)
     }
 
     func closeTryIt() {

@@ -91,6 +91,21 @@ struct ServiceDetailView: View {
             wideButton("Start Server", systemImage: "play.fill", tint: .green) { model.start() }
         case .running:
             wideButton("Stop Server", systemImage: "stop.fill", tint: .secondary) { model.stop() }
+        case .external(let port, _):
+            // No Stop, Delete, Get or Install: the app did not start this server and leaves it running.
+            Label(
+                model.externalFailures > 0
+                    ? "Not responding" : "Running outside the app on 127.0.0.1:\(port). Quit leaves it running.",
+                systemImage: "network"
+            )
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            if model.ttsTryIt == nil, model.sttTryIt == nil {
+                wideButton("Open Try It", systemImage: "play.circle", tint: .accentColor) { model.requestTryIt() }
+            }
         case .starting:
             busyRow(model.startDetail.isEmpty ? "Starting…" : model.startDetail) {
                 Button("Cancel") { model.stop() }.buttonStyle(.borderless).font(.system(size: 12))
@@ -164,6 +179,7 @@ struct StatusBadge: View {
         case .installed: ("Ready", .secondary)
         case .starting: ("Starting", .orange)
         case .running: ("Running", .green)
+        case .external: ("External", .blue)
         case .stopping: ("Stopping", .orange)
         case .removing: ("Deleting", .orange)
         case .failed: ("Error", .red)
@@ -258,7 +274,7 @@ struct FailureCard: View {
                 .font(.system(size: 12))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-            if case .portBusy(let owner) = failure.kind, let label = owner.launchdLabel {
+            if case .portBusy(let owner, _) = failure.kind, let label = owner.launchdLabel {
                 HStack {
                     Text(verbatim: "launchctl bootout gui/$UID/\(label)")
                         .font(.system(size: 11, design: .monospaced))
@@ -459,6 +475,10 @@ struct DetailsCard: View {
             InfoRow(label: "Streaming") { Text(model.info.streaming ? "Yes" : "No") }
             if model.info.runtime == .appleSpeech {
                 InfoRow(label: "Language") { Text(AppleSpeech.localeDescription) }
+            }
+            if case .external(_, let info) = model.phase {
+                InfoRow(label: "Reports") { Text(info.model.map { "\(info.backendName) · \($0)" } ?? info.backendName).lineLimit(1).truncationMode(.middle) }
+                if let rate = info.rate { InfoRow(label: "Sample rate") { Text("\(rate) Hz").monospacedDigit() } }
             }
             if let running = model.running {
                 InfoRow(label: "Sample rate") { Text("\(running.rate) Hz").monospacedDigit() }

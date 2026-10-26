@@ -22,11 +22,65 @@ public enum ServicePhase: Equatable, Sendable {
     case stopping
     case removing
     case failed(ServiceFailure)
+    /// A server the app did not start answers on `port` (adopted from its `server.hello`).
+    /// The app never signals, stops or deletes it; `ServiceLifecycle` issues no effect that could.
+    case external(Int, ExternalInfo)
+
+    public var isExternal: Bool {
+        if case .external = self { return true }
+        return false
+    }
+}
+
+/// What the `server.hello` of an adopted (External) server reported. Unlike
+/// `ServiceRunningInfo` it has no pid: the app did not start the process.
+public struct ExternalInfo: Equatable, Sendable {
+    public var backendName: String
+    public var model: String?
+    public var rate: Int?
+    public var protocolVersion: String?
+
+    public init(backendName: String, model: String? = nil, rate: Int? = nil, protocolVersion: String? = nil) {
+        self.backendName = backendName
+        self.model = model
+        self.rate = rate
+        self.protocolVersion = protocolVersion
+    }
+
+    public init(hello: ServerHelloFrame) {
+        self.init(
+            backendName: hello.backendName, model: hello.model, rate: hello.rate, protocolVersion: hello.protocolVersion)
+    }
+}
+
+/// Why a discovery re-probe says an External server is gone.
+public enum ExternalLostReason: Equatable, Sendable {
+    /// Connection refused: one failed probe (a KeepAlive restart may be under way).
+    case refused
+    /// Accepted but no hello in time: one failed probe.
+    case timeout
+    /// Something else holds the port now (another backend, a silent listener, a token
+    /// wall): the service moves to checking at once, without counting.
+    case mismatch
+}
+
+/// What answered on a busy port, for the busy failure's message.
+public enum PortFound: Equatable, Sendable {
+    /// Only the owner lookup (`lsof`) is known.
+    case unknown
+    /// A hello from a server that is not this entry.
+    case server(backend: String, model: String?)
+    /// The handshake got HTTP 401 or 403.
+    case needsToken
+    /// Accepted, then closed without a hello.
+    case silent
+    /// Accepted, no hello before the deadline.
+    case noAnswer
 }
 
 public struct ServiceFailure: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
-        case install, download, portBusy(PortProbe.Owner), startup(code: String?), crashed(status: Int32)
+        case install, download, portBusy(PortProbe.Owner, found: PortFound = .unknown), startup(code: String?), crashed(status: Int32)
     }
     public var kind: Kind
     public var title: String
@@ -48,12 +102,29 @@ public struct ServiceFailure: Equatable, Sendable {
         }
     }
 
-    static func portBusy(port: Int, owner: PortProbe.Owner) -> ServiceFailure {
-        var message = "Port \(port) is already in use by \(owner.summary)."
+    static func portBusy(
+        port: Int, owner: PortProbe.Owner, found: PortFound = .unknown, displayName: String = "this service"
+    ) -> ServiceFailure {
+        var message: String
+        switch found {
+        case .unknown:
+            message = "Port \(port) is already in use by \(owner.summary)."
+        case .server(let backend, let model):
+            let what = model.map { "\(backend) (\($0))" } ?? backend
+            message = "Port \(port) is held by a server that identified itself as \(what), not \(displayName)."
+            if owner.pid != nil || owner.command != nil { message += " Held by \(owner.summary)." }
+        case .needsToken:
+            message =
+                "Port \(port) is in use: the connection was refused with HTTP 401 or 403, so whatever listens there wants a token."
+        case .silent:
+            message = "Port \(port) is in use, but nothing identified itself: it closed the connection without a server.hello."
+        case .noAnswer:
+            message = "Port \(port) is in use, but nothing answered within \(Int(ExternalProbe.helloTimeout)) seconds."
+        }
         if let label = owner.launchdLabel {
             message += " A launchd agent (\(label)) is loaded; stop it before starting here."
         }
-        return ServiceFailure(kind: .portBusy(owner), title: "Port \(port) is busy", message: message)
+        return ServiceFailure(kind: .portBusy(owner, found: found), title: "Port \(port) is busy", message: message)
     }
 }
 
@@ -150,6 +221,15 @@ public enum LifecycleEvent: Equatable, Sendable {
     case removalFailed(String, removal: Int)
     case removalFinished(removal: Int)
     case dismissFailure
+    /// Discovery found a server for this service on its port. `epoch` is the
+    /// `LifecycleState.externalEpoch` read when the probe started.
+    case externalFound(epoch: Int, info: ExternalInfo)
+    /// A discovery re-probe lost (or replaced) the External server; `epoch` as for `externalFound`.
+    case externalLost(epoch: Int, reason: ExternalLostReason)
+    /// The outcome of the Start-path probe `tag` (`LifecycleState.probe`), issued by `.probeExternal`.
+    case startProbeResult(tag: Int, outcome: ExternalProbe.Outcome)
+    /// The user wants Try it on an External row (the session opens on demand, not at adoption).
+    case tryItRequested
 
     /// The event's case, for the classification tables (`owner`, `isNonOwning`).
     public enum Kind: CaseIterable, Sendable {
@@ -157,13 +237,15 @@ public enum LifecycleEvent: Equatable, Sendable {
         case installStage, installEnded, appleSpeechInstallEnded, startRequested, portOwnerFound, launched, launchFailed
         case nativeLaunched, nativeBound, nativeFailed, ready, supervisedError, readyTimedOut, exited, stopRequested
         case shutdownRequested, shutdownServers, removeRequested, removalResumed, removalFailed, removalFinished
-        case dismissFailure
+        case dismissFailure, externalFound, externalLost, startProbeResult, tryItRequested
     }
 
     /// Which owner a result must name to be applied (`.none`: a user intent or
     /// a synchronous effect result, always current).
     public enum Owner: Sendable {
         case none, epoch, install, probe, removal, server, native
+        /// Gated by `LifecycleState.externalEpoch` (discovery results).
+        case external
     }
 
     public var kind: Kind {
@@ -196,6 +278,10 @@ public enum LifecycleEvent: Equatable, Sendable {
         case .removalFailed: .removalFailed
         case .removalFinished: .removalFinished
         case .dismissFailure: .dismissFailure
+        case .externalFound: .externalFound
+        case .externalLost: .externalLost
+        case .startProbeResult: .startProbeResult
+        case .tryItRequested: .tryItRequested
         }
     }
 }
@@ -206,11 +292,14 @@ extension LifecycleEvent.Kind {
     /// `requested`, and issues no tagged work (`ServiceLifecycleTests.everyKindIsClassified`).
     public var isNonOwning: Bool {
         switch self {
-        case .cancelInstallRequested, .environmentRead, .supervisedError: true
+        // `externalLost` is classified owning: its Nth failure changes the phase. A count-only
+        // loss changes no phase or slot and `reduce` leaves the epoch alone for it.
+        case .cancelInstallRequested, .environmentRead, .supervisedError, .tryItRequested: true
         case .refreshRequested, .refreshed, .environmentChanged, .installRequested, .installStage, .installEnded,
             .appleSpeechInstallEnded, .startRequested, .portOwnerFound, .launched, .launchFailed, .nativeLaunched,
             .nativeBound, .nativeFailed, .ready, .readyTimedOut, .exited, .stopRequested, .shutdownRequested,
-            .shutdownServers, .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure:
+            .shutdownServers, .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure,
+            .externalFound, .externalLost, .startProbeResult:
             false
         }
     }
@@ -219,13 +308,14 @@ extension LifecycleEvent.Kind {
         switch self {
         case .environmentRead, .refreshed: .epoch
         case .installStage, .installEnded, .appleSpeechInstallEnded: .install
-        case .portOwnerFound: .probe
+        case .portOwnerFound, .startProbeResult: .probe
+        case .externalFound, .externalLost: .external
         case .removalResumed, .removalFailed, .removalFinished: .removal
         case .ready, .supervisedError, .readyTimedOut, .exited: .server
         case .nativeBound, .nativeFailed: .native
         case .refreshRequested, .environmentChanged, .installRequested, .cancelInstallRequested, .startRequested,
             .launched, .launchFailed, .nativeLaunched, .stopRequested, .shutdownRequested, .shutdownServers,
-            .removeRequested, .dismissFailure:
+            .removeRequested, .dismissFailure, .tryItRequested:
             .none
         }
     }
@@ -244,7 +334,10 @@ public enum LifecycleEffect: Equatable, Sendable {
     /// Waits for the cancelled install to unwind; `bounded` caps it at the quit drain.
     case awaitInstall(bounded: Bool)
     case probePortOwner(port: Int, probe: Int)
-    /// Stops the port-owner probe `probe` (its `lsof`): the probe ended some
+    /// The Start-path hello probe (`ServiceHost.probeExternal`); its outcome returns as
+    /// `startProbeResult(tag: probe, ...)`. The only prober the reducer asks for.
+    case probeExternal(port: Int, probe: Int)
+    /// Stops the probe `probe` (a port-owner `lsof` or the hello probe): the probe ended some
     /// other way than its own answer (Stop, a launch, a removal).
     case cancelProbe(probe: Int)
     case launch(port: Int)
@@ -296,6 +389,12 @@ public struct LifecycleState: Equatable, Sendable {
     /// The port-owner probe in flight: the epoch it was issued under. It lives
     /// only while the phase is `.starting` with no server.
     public var probe: Int?
+    /// What answered the Start-path hello probe, held while the port-owner lookup
+    /// that follows runs (it ends in the busy failure).
+    public var busyFound: PortFound?
+    /// The probe in flight follows a launch that lost the bind race (`EADDRINUSE`):
+    /// only an `adopt` ends it well, every other outcome stays the busy failure.
+    public var probeAfterBind = false
     public var supervisedError: SupervisedError?
     /// Advanced by every event outside the non-owning set; a read (refresh)
     /// issued under an older epoch is dropped.
@@ -307,6 +406,15 @@ public struct LifecycleState: Equatable, Sendable {
     /// The user cancelled an Apple Speech download: a refresh that still sees
     /// the system downloading does not attach to it again.
     public var declinedSystemDownload = false
+    /// Gates discovery events (`externalFound`, `externalLost`): `reduce` bumps it on every
+    /// transition into or out of `.external` and when Stop, Delete or quit changes anything,
+    /// so a probe that started earlier can not resurrect or demote a service. No other event
+    /// touches it. `ExternalDiscovery` reads it when it starts a probe and the outcome
+    /// carries it back.
+    public var externalEpoch = 0
+    /// Consecutive failed re-probes (refused or timeout) of the External server; reset by a
+    /// found. The `externalFailureThreshold`th moves the service to checking.
+    public var externalFailures = 0
 
     public init(info: ServiceInfo) {
         runtime = info.runtime
@@ -328,7 +436,7 @@ extension LifecycleState {
             return true
         }
         switch phase {
-        case .starting, .running, .stopping, .removing: return true
+        case .starting, .running, .stopping, .removing, .external: return true
         default: return false
         }
     }
@@ -347,7 +455,7 @@ extension LifecycleState {
     /// down, or failed at runtime).
     public var isActive: Bool {
         switch phase {
-        case .starting, .running, .stopping: true
+        case .starting, .running, .stopping, .external: true
         case .failed(let failure): failure.isRuntime
         default: false
         }
@@ -358,6 +466,8 @@ extension LifecycleState {
         case .installed, .needsModel, .starting, .running, .stopping: true
         case .unavailable, .notInstalled, .checking: false
         case .installing, .removing: requested
+        // The app's own environment, not the external server: the row is installed here only if it is.
+        case .external: environment != .missing
         case .failed(let failure): failure.isRuntime || requested
         }
     }
@@ -376,6 +486,11 @@ extension LifecycleState {
 }
 
 public enum ServiceLifecycle {
+    /// Failed re-probes (refused or timeout) in a row before an External service is
+    /// re-read. 3 x the 15 s period (45 s) is meant to outlast a KeepAlive restart; the
+    /// cold-start measurement that confirms it is still open (plan Findings, Phase 1 (b)).
+    public static let externalFailureThreshold = 3
+
     /// The install a user's Install runs, from the environment and the phase.
     public static func installMode(environment: EnvironmentStatus, phase: ServicePhase) -> InstallMode {
         switch (environment, phase) {
@@ -414,6 +529,8 @@ public enum ServiceLifecycle {
         case .installStage(_, let install), .installEnded(_, _, let install), .appleSpeechInstallEnded(_, let install):
             install == s.install
         case .portOwnerFound(_, let probe): probe == s.probe
+        case .startProbeResult(let tag, _): tag == s.probe
+        case .externalFound(let epoch, _), .externalLost(let epoch, _): epoch == s.externalEpoch
         case .removalResumed(_, let removal), .removalFailed(_, let removal), .removalFinished(let removal):
             removal == s.removal
         case .ready(let id, _, _, _, _, _), .supervisedError(let id, _), .readyTimedOut(let id), .exited(let id, _, _):
@@ -421,7 +538,7 @@ public enum ServiceLifecycle {
         case .nativeBound(let id, _, _, _), .nativeFailed(let id, _): id == s.native
         case .refreshRequested, .environmentChanged, .installRequested, .cancelInstallRequested, .startRequested,
             .launched, .launchFailed, .nativeLaunched, .stopRequested, .shutdownRequested, .shutdownServers,
-            .removeRequested, .dismissFailure:
+            .removeRequested, .dismissFailure, .tryItRequested:
             true
         }
     }
@@ -439,6 +556,10 @@ public enum ServiceLifecycle {
     /// 4. A read the advance orphaned is issued again when nothing owns the
     ///    phase (otherwise the owner's own end re-reads it); it never carries a
     ///    start with it.
+    /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
+    ///    transition into or out of `.external`, and when Stop, Delete or quit changed anything.
+    ///    A count-only `externalLost` leaves `epoch` alone (it is the one owning kind that can
+    ///    be non-owning).
     public static func reduce(_ s: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect] {
         guard isCurrent(event, in: s) else {
             if case .nativeBound(let id, _, _, _) = event { return [.discardNative(id)] }
@@ -453,10 +574,16 @@ public enum ServiceLifecycle {
             s = before
             return []
         }
-        if s.phase != .starting || s.server != nil || s.native != nil { s.probe = nil }
+        if case .externalLost = event, before.phase.isExternal, s.phase.isExternal { s.epoch = before.epoch }
+        if s.phase.isExternal != before.phase.isExternal || event.kind.changesExternalEpoch { s.externalEpoch += 1 }
+        if s.phase != .starting || s.server != nil || s.native != nil {
+            s.probe = nil
+            s.busyFound = nil
+            s.probeAfterBind = false
+        }
         // First: the driver runs effects in order, so a cancel after a refresh
         // would wait for its (slow) cache probe while `lsof` kept running.
-        if let probe = before.probe, s.probe != probe, event.kind != .portOwnerFound {
+        if let probe = before.probe, s.probe != probe, event.kind != .portOwnerFound, event.kind != .startProbeResult {
             effects.insert(.cancelProbe(probe: probe), at: 0)
         }
         if let reading = s.reading, reading != s.epoch {
@@ -514,7 +641,7 @@ public enum ServiceLifecycle {
             }
 
         case .installRequested(let managerAvailable):
-            guard s.install == nil, s.removal == nil else { return [] }
+            guard s.install == nil, s.removal == nil, !s.phase.isExternal else { return [] }
             if s.runtime == .appleSpeech {
                 s.declinedSystemDownload = false
                 s.install = s.epoch
@@ -525,7 +652,8 @@ public enum ServiceLifecycle {
             return beginInstall(&s, mode: installMode(environment: s.environment, phase: s.phase), then: .refresh)
 
         case .cancelInstallRequested:
-            return [.cancelInstall]
+            // An External service has no install to cancel.
+            return s.phase.isExternal ? [] : [.cancelInstall]
 
         case .installStage(let stage, _):
             // Never over a removal.
@@ -568,7 +696,7 @@ public enum ServiceLifecycle {
 
         case .startRequested(let appAvailable, let managerAvailable, let portFree):
             guard appAvailable, s.server == nil, s.native == nil, s.install == nil, s.removal == nil,
-                s.phase != .removing
+                s.phase != .removing, !s.phase.isExternal
             else { return [] }
             if s.runtime.usesPython, case .outdated = s.environment, managerAvailable {
                 // The app was updated since this env was built: refresh its packages, then start.
@@ -576,17 +704,71 @@ public enum ServiceLifecycle {
             }
             guard portFree else {
                 s.phase = .starting
-                return [.startDetail("Checking port \(s.port)…"), probePort(&s)]
+                s.busyFound = nil
+                s.probeAfterBind = false
+                // Apple Speech runs in the app: only the owner lookup, never a hello probe.
+                let probe = s.runtime == .appleSpeech ? probePort(&s) : probeExternal(&s)
+                return [.startDetail("Checking port \(s.port)…"), probe]
             }
             return s.runtime == .appleSpeech ? [.launchNative(port: s.port)] : [.launch(port: s.port)]
 
         case .portOwnerFound(let owner, _):
             guard s.phase == .starting else { return [] }
             s.probe = nil
-            s.phase = .failed(.portBusy(port: s.port, owner: owner))
+            let found = s.busyFound ?? .unknown
+            s.busyFound = nil
+            s.phase = .failed(.portBusy(port: s.port, owner: owner, found: found, displayName: s.displayName))
             return []
 
+        case .startProbeResult(_, let outcome):
+            guard s.phase == .starting, s.server == nil, s.native == nil else { return [] }
+            let afterBind = s.probeAfterBind
+            s.probe = nil
+            s.probeAfterBind = false
+            if case .adopt(let entry, let hello) = outcome, entry.port == s.port {
+                return adopt(&s, ExternalInfo(hello: hello))
+            }
+            if afterBind {
+                // The launch lost the bind race and the holder is not ours: the busy failure, as before.
+                return [chainOwnerLookup(&s, found: Self.found(outcome))]
+            }
+            switch outcome {
+            case .unreachable:
+                // Nothing listens: start the app's own server.
+                return [.launch(port: s.port)]
+            case .mismatch, .adopt:
+                return [chainOwnerLookup(&s, found: Self.found(outcome))]
+            case .needsToken, .silent, .timeout:
+                s.phase = .failed(
+                    .portBusy(port: s.port, owner: PortProbe.Owner(), found: Self.found(outcome), displayName: s.displayName))
+                return []
+            }
+
+        case .externalFound(_, let info):
+            guard !s.shuttingDown, s.server == nil, s.native == nil, s.install == nil, s.removal == nil else { return [] }
+            switch s.phase {
+            case .notInstalled, .installed, .failed, .checking, .external: return adopt(&s, info)
+            case .unavailable, .needsModel, .installing, .starting, .running, .stopping, .removing: return []
+            }
+
+        case .externalLost(_, let reason):
+            guard case .external = s.phase else { return [] }
+            if reason != .mismatch {
+                s.externalFailures += 1
+                if s.externalFailures < externalFailureThreshold { return [] }
+            }
+            // Gone for good, or something else holds the port: re-read the state.
+            s.externalFailures = 0
+            s.phase = .checking
+            return [.tearDown(note: "external server lost"), read(&s)]
+
+        case .tryItRequested:
+            guard case .external(let port, _) = s.phase else { return [] }
+            return [.openTryIt(port: port)]
+
         case .launched(let id):
+            // Only a launch effect sends this, and none is issued for an External service.
+            guard !s.phase.isExternal else { return [] }
             s.server = id
             s.stopRequested = false
             s.supervisedError = nil
@@ -594,10 +776,12 @@ public enum ServiceLifecycle {
             return [.startDetail("Loading model…"), .startReadyTimer(id)]
 
         case .launchFailed(let message):
+            guard !s.phase.isExternal else { return [] }
             s.phase = .failed(ServiceFailure(kind: .startup(code: nil), title: "Couldn't start", message: message))
             return []
 
         case .nativeLaunched(let id):
+            guard !s.phase.isExternal else { return [] }
             s.native = id
             s.stopRequested = false
             s.phase = .starting
@@ -647,7 +831,11 @@ public enum ServiceLifecycle {
             }
             if error.code == SupervisedErrorCode.addressInUse.rawValue {
                 s.phase = .starting  // still starting: finding who holds the port
-                return effects + [probePort(&s)]
+                s.busyFound = nil
+                // A KeepAlive restart may have won the port: one hello probe adopts it.
+                if s.runtime == .appleSpeech { return effects + [probePort(&s)] }
+                s.probeAfterBind = true
+                return effects + [probeExternal(&s)]
             }
             let title = error.code == SupervisedErrorCode.moduleNotFound.rawValue ? "Environment incomplete" : "Couldn't start"
             s.phase = .failed(
@@ -662,6 +850,8 @@ public enum ServiceLifecycle {
                 // Cancel while the busy port is probed: drop the probe, re-read the phase.
                 guard s.probe != nil else { return [] }
                 s.probe = nil
+                s.busyFound = nil
+                s.probeAfterBind = false
                 s.phase = .checking
                 return [read(&s)]
             }
@@ -683,7 +873,9 @@ public enum ServiceLifecycle {
             return [.detachTryIt, .stopServer(id, wait: true)]
 
         case .removeRequested(let deleteModel, let managerAvailable):
-            guard s.runtime.usesPython, managerAvailable, s.phase != .removing, s.removal == nil else { return [] }
+            // An External service is never deleted (its server is not ours, nor its environment's business).
+            guard s.runtime.usesPython, managerAvailable, s.phase != .removing, s.removal == nil, !s.phase.isExternal
+            else { return [] }
             s.phase = .removing
             s.removal = s.epoch
             // An install in flight is cancelled and must unwind (and drop the family
@@ -707,8 +899,35 @@ public enum ServiceLifecycle {
             return [.clearLog, read(&s), .familyChanged]
 
         case .dismissFailure:
-            return [read(&s)]
+            return s.phase.isExternal ? [] : [read(&s)]
         }
+    }
+
+    /// Goes (or stays) External. Only called from the phases that accept a discovery.
+    private static func adopt(_ s: inout LifecycleState, _ info: ExternalInfo) -> [LifecycleEffect] {
+        s.probe = nil
+        s.busyFound = nil
+        s.probeAfterBind = false
+        s.startAfterRead = false
+        s.externalFailures = 0
+        s.phase = .external(s.port, info)
+        return []
+    }
+
+    private static func found(_ outcome: ExternalProbe.Outcome) -> PortFound {
+        switch outcome {
+        case .mismatch(let hello), .adopt(_, let hello): .server(backend: hello.backendName, model: hello.model)
+        case .needsToken: .needsToken
+        case .silent: .silent
+        case .timeout: .noAnswer
+        case .unreachable: .unknown
+        }
+    }
+
+    /// Looks up who holds the port, then fails busy with what answered (`busyFound`).
+    private static func chainOwnerLookup(_ s: inout LifecycleState, found: PortFound) -> LifecycleEffect {
+        s.busyFound = found
+        return probePort(&s)
     }
 
     /// Issues a read under the current epoch (it replaces any read in flight).
@@ -716,6 +935,11 @@ public enum ServiceLifecycle {
         s.reading = s.epoch
         s.startAfterRead = thenStart
         return .refresh(epoch: s.epoch)
+    }
+
+    private static func probeExternal(_ s: inout LifecycleState) -> LifecycleEffect {
+        s.probe = s.epoch
+        return .probeExternal(port: s.port, probe: s.epoch)
     }
 
     private static func probePort(_ s: inout LifecycleState) -> LifecycleEffect {
@@ -744,5 +968,16 @@ public enum ServiceLifecycle {
         s.running = nil
         s.phase = .installed
         return [.stopNative, .tearDown(note: "stopped")]
+    }
+}
+
+extension LifecycleEvent.Kind {
+    /// Stop, quit and Delete advance `LifecycleState.externalEpoch` when they change anything
+    /// (the transitions into and out of `.external` advance it on their own).
+    var changesExternalEpoch: Bool {
+        switch self {
+        case .stopRequested, .shutdownRequested, .shutdownServers, .removeRequested: true
+        default: false
+        }
     }
 }

@@ -358,8 +358,3 @@ public enum ServiceCatalog {
         }
     }
 }
-
-/// Which catalog entry a hello on `port` belongs to; see `ServiceInfo.entry(for:port:)`.
-public func entry(for hello: ServerHelloFrame, port: Int) -> ServiceInfo? {
-    ServiceInfo.entry(for: hello, port: port)
-}

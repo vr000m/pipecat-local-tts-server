@@ -7,9 +7,12 @@ import Testing
 /// late ready/exit/timeout events, Stop, Delete and quit against every phase.
 @Suite struct ServiceLifecycleTests {
     static let failure = ServiceFailure(kind: .install, title: "Couldn't remove", message: "no")
+    /// What an adopted tone server's hello reported.
+    static let externalInfo = ExternalInfo(backendName: "tone", model: nil, rate: 24000, protocolVersion: "0.1")
+    static let external = ServicePhase.external(8665, externalInfo)
     static let phases: [ServicePhase] = [
         .checking, .unavailable("old"), .notInstalled, .needsModel, .installing(.model), .installed,
-        .starting, .running, .stopping, .removing, .failed(failure),
+        .starting, .running, .stopping, .removing, .failed(failure), external,
     ]
     static let current = ServerID(1)
     static let stale = ServerID(0)
@@ -26,7 +29,8 @@ import Testing
         s.phase = phase
         s.environment = .ready(marker)
         s.requested = true
-        s.server = server
+        // An External service never has a server of ours.
+        s.server = phase.isExternal ? nil : server
         s.stopRequested = stopRequested
         s.shuttingDown = shuttingDown
         s.install = installing ? installTag : nil
@@ -41,7 +45,8 @@ import Testing
     /// that phase. A crash of the current server fails it; a replaced server's
     /// exit changes nothing.
     @Test func everyExitAgainstEveryPhase() {
-        for phase in Self.phases {
+        // (An External service has no server of ours to exit: `everyEventAgainstEveryState` covers it.)
+        for phase in Self.phases where !phase.isExternal {
             for requested in [true, false] {
                 for current in [true, false] {
                     var s = Self.state(phase, server: current ? Self.current : ServerID(2), stopRequested: requested)
@@ -119,7 +124,7 @@ import Testing
 
                         // An exit: a late one changes nothing; a requested one only completes a Stop.
                         let exit = run(.exited(id, status: 1, logTail: tail))
-                        if late {
+                        if late || phase.isExternal {
                             #expect(exit.after == exit.before && exit.effects.isEmpty, "exit \(label)")
                         } else if stopping {
                             #expect(exit.after.phase == (phase == .stopping ? .installed : phase), "exit \(label)")
@@ -136,11 +141,15 @@ import Testing
                         var idle = Self.state(phase, server: nil)
                         let startIdle = ServiceLifecycle.reduce(
                             &idle, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
-                        #expect(startIdle == (phase == .removing ? [] : [.launch(port: 8665)]), "start \(label)")
+                        #expect(startIdle == (phase == .removing || phase.isExternal ? [] : [.launch(port: 8665)]), "start \(label)")
 
                         // Stop moves the current server to `.stopping` from any phase.
                         let stop = run(.stopRequested)
-                        #expect(stop.after.phase == .stopping && stop.after.stopRequested, "stop \(label)")
+                        if phase.isExternal {
+                            #expect(stop.after == stop.before && stop.effects.isEmpty, "stop \(label)")
+                        } else {
+                            #expect(stop.after.phase == .stopping && stop.after.stopRequested, "stop \(label)")
+                        }
 
                         // An install that ends while a removal owns the phase leaves it alone.
                         for outcome in [InstallOutcome.cancelled, .failed(stage: .model, message: "x", logTail: [])] {
@@ -163,7 +172,7 @@ import Testing
 
                         // A second Delete during a removal is a no-op; otherwise Delete takes the phase.
                         let remove = run(.removeRequested(deleteModel: true, managerAvailable: true))
-                        if phase == .removing {
+                        if phase == .removing || phase.isExternal {
                             #expect(remove.after == remove.before && remove.effects.isEmpty, "remove \(label)")
                         } else {
                             #expect(remove.after.phase == .removing, "remove \(label)")
@@ -190,30 +199,34 @@ import Testing
         switch kind {
         case .environmentRead, .refreshed: .epoch
         case .installStage, .installEnded, .appleSpeechInstallEnded: .install
-        case .portOwnerFound: .probe
+        case .portOwnerFound, .startProbeResult: .probe
+        case .externalFound, .externalLost: .external
         case .removalResumed, .removalFailed, .removalFinished: .removal
         case .ready, .supervisedError, .readyTimedOut, .exited: .server
         case .nativeBound, .nativeFailed: .native
         case .refreshRequested, .environmentChanged, .installRequested, .cancelInstallRequested, .startRequested,
             .launched, .launchFailed, .nativeLaunched, .stopRequested, .shutdownRequested, .shutdownServers,
-            .removeRequested, .dismissFailure:
+            .removeRequested, .dismissFailure, .tryItRequested:
             .none
         }
     }
 
     static func expectedNonOwning(_ kind: LifecycleEvent.Kind) -> Bool {
         switch kind {
-        case .cancelInstallRequested, .environmentRead, .supervisedError: true
+        // `externalLost` is owning (its Nth failure changes the phase); a count-only one is the exception
+        // `externalLostBelowTheThresholdLeavesTheEpoch` pins.
+        case .cancelInstallRequested, .environmentRead, .supervisedError, .tryItRequested: true
         case .refreshRequested, .refreshed, .environmentChanged, .installRequested, .installStage, .installEnded,
             .appleSpeechInstallEnded, .startRequested, .portOwnerFound, .launched, .launchFailed, .nativeLaunched,
             .nativeBound, .nativeFailed, .ready, .readyTimedOut, .exited, .stopRequested, .shutdownRequested,
-            .shutdownServers, .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure:
+            .shutdownServers, .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure,
+            .externalFound, .externalLost, .startProbeResult:
             false
         }
     }
 
     /// The tags `tagged(_:)` gives each owner slot.
-    static let epochTag = 5, probeTag = 4, removalTag = 2
+    static let epochTag = 5, probeTag = 4, removalTag = 2, externalTag = 9
 
     /// A state whose owner slots hold the tags `sample` names (the server or
     /// native one only for the events that name it, the probe only where it can live).
@@ -222,6 +235,7 @@ import Testing
         var s = state(phase, info: owner == .native ? Service.appleSpeech.info : Service.tone.info,
                       server: owner == .server ? current : nil, installing: owner == .install)
         s.epoch = epochTag
+        s.externalEpoch = externalTag
         if owner == .native { s.native = current }
         if owner == .removal { s.removal = removalTag }
         if phase == .starting, s.server == nil, s.native == nil { s.probe = probeTag }
@@ -244,6 +258,11 @@ import Testing
         case .appleSpeechInstallEnded: return .appleSpeechInstallEnded(.cancelled, install: installTag - d)
         case .startRequested: return .startRequested(appAvailable: true, managerAvailable: true, portFree: false)
         case .portOwnerFound: return .portOwnerFound(PortProbe.Owner(), probe: probeTag - d)
+        case .startProbeResult: return .startProbeResult(tag: probeTag - d, outcome: .unreachable)
+        // `.mismatch` moves an External service at once, so the loss is an owning event in every row.
+        case .externalFound: return .externalFound(epoch: externalTag - d, info: externalInfo)
+        case .externalLost: return .externalLost(epoch: externalTag - d, reason: .mismatch)
+        case .tryItRequested: return .tryItRequested
         case .launched: return .launched(ServerID(3))
         case .launchFailed: return .launchFailed("x")
         case .nativeLaunched: return .nativeLaunched(ServerID(3))
@@ -267,8 +286,8 @@ import Testing
     /// Effects that start async work whose result comes back tagged.
     static func issuesWork(_ effect: LifecycleEffect) -> Bool {
         switch effect {
-        case .refresh, .runInstall, .runAppleSpeechInstall, .probePortOwner, .launch, .launchNative, .resumeRemoval,
-            .removeEnvironment, .start:
+        case .refresh, .runInstall, .runAppleSpeechInstall, .probePortOwner, .probeExternal, .launch, .launchNative,
+            .resumeRemoval, .removeEnvironment, .start:
             true
         default: false
         }
@@ -282,13 +301,17 @@ import Testing
     /// non-owning one changes no phase, no owner slot and no `requested`, and
     /// issues no tagged work.
     @Test func everyKindIsClassified() {
-        #expect(LifecycleEvent.Kind.allCases.count == 28)
+        #expect(LifecycleEvent.Kind.allCases.count == 32)
         for kind in LifecycleEvent.Kind.allCases {
             #expect(kind.owner == Self.expectedOwner(kind), "\(kind) owner")
             #expect(kind.isNonOwning == Self.expectedNonOwning(kind), "\(kind) non-owning")
             #expect(Self.sample(kind, stale: false).kind == kind, "\(kind) sample")
             // A probe lives only in `.starting`.
-            for phase in Self.phases where kind != .portOwnerFound || phase == .starting {
+            for phase in Self.phases
+            where ((kind != .portOwnerFound && kind != .startProbeResult) || phase == .starting)
+                // An External service has no server of ours, so a server's event is never current for it.
+                && !(phase.isExternal && kind.owner == .server)
+            {
                 for stale in [false, true] where !stale || kind.owner != .none {
                     let event = Self.sample(kind, stale: stale)
                     var s = Self.tagged(phase, for: kind)
@@ -316,7 +339,7 @@ import Testing
                     for effect in effects {
                         switch effect {
                         case .refresh(let tag), .runInstall(_, _, let tag), .runAppleSpeechInstall(let tag),
-                            .probePortOwner(_, let tag):
+                            .probePortOwner(_, let tag), .probeExternal(_, let tag):
                             #expect(tag == s.epoch, "\(effect): \(label)")
                         default: break
                         }
@@ -350,7 +373,7 @@ import Testing
         {
             return true
         }
-        return [.starting, .running, .stopping, .removing].contains(s.phase)
+        return [.starting, .running, .stopping, .removing, Self.external].contains(s.phase)
     }
 
     /// {phase} x {owner} x {refresh issued under the current or an older epoch}
@@ -512,7 +535,7 @@ import Testing
     @Test func startDuringAPendingPortProbe() {
         var s = Self.state(.installed, server: nil)
         let busy = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
-        guard case .probePortOwner(_, let probe) = busy.last else {
+        guard case .probeExternal(_, let probe) = busy.last else {
             Issue.record("\(busy)")
             return
         }
@@ -544,7 +567,7 @@ import Testing
             guard let probe = s.probe else { continue }
             let effects = ServiceLifecycle.reduce(&s, Self.sample(kind, stale: false))
             let cancels = effects.filter { if case .cancelProbe = $0 { true } else { false } }
-            if s.probe != probe, kind != .portOwnerFound {
+            if s.probe != probe, kind != .portOwnerFound, kind != .startProbeResult {
                 #expect(cancels == [.cancelProbe(probe: probe)], "\(kind): \(effects)")
                 #expect(effects.first == .cancelProbe(probe: probe), "the cancel waits behind other work: \(kind): \(effects)")
             } else {
@@ -563,7 +586,7 @@ import Testing
         var s = Self.state(.installed, server: nil)
         let effects = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
         let probe = s.probe!
-        #expect(effects.last == .probePortOwner(port: 8665, probe: probe))
+        #expect(effects.last == .probeExternal(port: 8665, probe: probe))
         #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.cancelProbe(probe: probe), .refresh(epoch: s.epoch)])
         #expect(s.phase == .checking && s.probe == nil)
         _ = ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch))
@@ -613,7 +636,7 @@ import Testing
                 let installed: Bool
                 let busy: Bool
                 switch phase {
-                case .starting, .running, .stopping: (active, installed) = (true, true)
+                case .starting, .running, .stopping, .external: (active, installed) = (true, true)
                 case .installed, .needsModel: (active, installed) = (false, true)
                 case .installing, .removing: (active, installed) = (false, requested)
                 case .failed(let f): (active, installed) = (f.isRuntime, f.isRuntime || requested)
@@ -637,7 +660,9 @@ import Testing
         for phase in Self.phases {
             for owner in Owner.allCases {
                 let s = Self.owned(phase, by: owner)
-                let expected = [.server, .stoppedServer, .native, .install, .removal].contains(owner)
+                // (An External service holds no server of ours: `owned` leaves that slot empty.)
+                let held: [Owner] = phase.isExternal ? [.native, .install, .removal] : [.server, .stoppedServer, .native, .install, .removal]
+                let expected = held.contains(owner)
                     || [.starting, .running, .stopping, .installing(.model), .removing].contains(phase)
                 #expect(s.blocksReset == expected, "\(phase) \(owner)")
             }
@@ -671,7 +696,7 @@ import Testing
         _ = ServiceLifecycle.reduce(&busy, .supervisedError(Self.current, SupervisedError(code: "EADDRINUSE", message: nil)))
         #expect(
             ServiceLifecycle.reduce(&busy, .exited(Self.current, status: 1, logTail: [])).last
-                == .probePortOwner(port: 8665, probe: busy.epoch))
+                == .probeExternal(port: 8665, probe: busy.epoch))
         var missing = Self.state(.starting)
         _ = ServiceLifecycle.reduce(&missing, .supervisedError(Self.current, SupervisedError(code: "ModuleNotFoundError", message: "m")))
         _ = ServiceLifecycle.reduce(&missing, .exited(Self.current, status: 1, logTail: []))
@@ -699,5 +724,526 @@ import Testing
         // The read lands current: it starts the service.
         outdated.environment = .ready(Self.marker)
         #expect(ServiceLifecycle.reduce(&outdated, .refreshed(.installed, epoch: outdated.epoch)) == [.start])
+    }
+
+    // MARK: - External: discovery events and the ownership invariant
+
+    static let toneHello = try! HelloFixtures.frame(HelloFixtures.json(for: .tone))
+    static let kokoroHello = try! HelloFixtures.frame(HelloFixtures.json(for: .kokoro))
+
+    /// An adopted tone service, no server of ours, `externalEpoch` as a probe would have read it.
+    static func externalState(failures: Int = 0, epoch: Int = 3) -> LifecycleState {
+        var s = state(external, server: nil)
+        s.externalEpoch = epoch
+        s.externalFailures = failures
+        return s
+    }
+
+    /// The effects an External service may ever produce: cancel a probe, open Try it, tear its
+    /// session down, the read-only owner lookup, and the state re-read.
+    static func allowedForExternal(_ effect: LifecycleEffect) -> Bool {
+        switch effect {
+        case .cancelProbe, .openTryIt, .tearDown, .probePortOwner, .refresh: true
+        default: false
+        }
+    }
+
+    /// A lost External server: its Try it session is torn down, then the state is re-read.
+    static func isLossReread(_ effects: [LifecycleEffect], epoch: Int) -> Bool {
+        guard effects.count == 2, case .tearDown = effects[0] else { return false }
+        return effects[1] == .refresh(epoch: epoch)
+    }
+
+    /// Phases that accept a discovery event.
+    static let discoverable: [ServicePhase] = [.notInstalled, .installed, .failed(failure), .checking]
+
+    @Test func externalFoundAdoptsFromEveryAcceptingPhase() {
+        for phase in Self.discoverable {
+            var s = Self.state(phase, server: nil)
+            s.externalEpoch = 3
+            let effects = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+            #expect(s.phase == Self.external, "\(phase)")
+            #expect(s.externalEpoch == 4, "a transition into External advances the epoch: \(phase)")
+            #expect(s.server == nil && s.native == nil, "\(phase)")
+            #expect(effects.allSatisfy(Self.allowedForExternal), "\(phase): \(effects)")
+        }
+    }
+
+    /// An owned phase is never moved, so a found can't drop `s.server` and leak the process.
+    @Test func externalFoundInOwnedPhasesChangesNothing() {
+        let owned: [ServicePhase] = [.installing(.model), .starting, .running, .stopping, .removing, .needsModel, .unavailable("x")]
+        for phase in owned {
+            for withServer in [false, true] {
+                var s = Self.state(phase, server: withServer ? Self.current : nil)
+                s.externalEpoch = 3
+                let before = s
+                let effects = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+                #expect(s == before && effects.isEmpty, "\(phase) server=\(withServer)")
+            }
+        }
+        // A server of ours in any phase keeps the phase, even one that would accept a found.
+        for phase in Self.discoverable {
+            var s = Self.state(phase, server: Self.current)
+            s.externalEpoch = 3
+            let before = s
+            #expect(ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo)).isEmpty)
+            #expect(s == before && s.server == Self.current, "\(phase)")
+        }
+    }
+
+    @Test func externalFoundDuringShutdownChangesNothing() {
+        for phase in Self.discoverable {
+            var s = Self.state(phase, server: nil, shuttingDown: true)
+            s.externalEpoch = 3
+            let before = s
+            #expect(ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo)).isEmpty)
+            #expect(s == before, "\(phase)")
+        }
+    }
+
+    @Test func externalFoundInCheckingClearsTheStartAfterRead() {
+        var s = Self.state(.checking, server: nil)
+        s.startAfterRead = true
+        s.externalEpoch = 3
+        let effects = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+        #expect(s.phase == Self.external && !s.startAfterRead)
+        #expect(!effects.contains(.start) && !effects.contains(.launch(port: 8665)))
+        // The read that was meant to start it lands on an External service and starts nothing.
+        let landed = ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch))
+        #expect(s.phase == Self.external && !landed.contains(.start))
+    }
+
+    @Test func externalFoundOnAnExternalServiceRefreshesTheInfoAndResetsTheCount() {
+        var s = Self.externalState(failures: 2)
+        let newer = ExternalInfo(backendName: "tone", model: nil, rate: 16000, protocolVersion: "0.1")
+        let effects = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: newer))
+        #expect(s.phase == .external(8665, newer) && s.externalFailures == 0)
+        #expect(s.externalEpoch == 3, "External to External is not a transition")
+        #expect(effects.allSatisfy(Self.allowedForExternal))
+    }
+
+    @Test func externalLostIsIgnoredOutsideExternal() {
+        for phase in Self.phases where !phase.isExternal {
+            for reason in [ExternalLostReason.refused, .timeout, .mismatch] {
+                var s = Self.state(phase, server: nil)
+                s.externalEpoch = 3
+                let before = s
+                let effects = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: reason))
+                #expect(s == before && effects.isEmpty, "\(phase) \(reason)")
+            }
+        }
+    }
+
+    /// Refused and timeout each count one; the Nth moves the service to checking and re-reads it.
+    @Test(arguments: [
+        [ExternalLostReason.refused, .refused, .refused],
+        [.timeout, .timeout, .timeout],
+        [.refused, .timeout, .refused],
+    ])
+    func theNthFailedProbeMovesToChecking(reasons: [ExternalLostReason]) {
+        #expect(reasons.count == ServiceLifecycle.externalFailureThreshold)
+        var s = Self.externalState()
+        for reason in reasons.dropLast() {
+            let before = s
+            let effects = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: reason))
+            #expect(effects.isEmpty && s.phase == Self.external, "\(reason)")
+            #expect(s.externalEpoch == 3 && s.epoch == before.epoch, "a below-threshold loss leaves both epochs alone")
+            #expect(s.externalFailures == before.externalFailures + 1)
+        }
+        let effects = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: reasons.last!))
+        #expect(s.phase == .checking && s.externalFailures == 0)
+        #expect(s.externalEpoch == 4, "leaving External advances the epoch")
+        #expect(Self.isLossReread(effects, epoch: s.epoch), "\(effects)")
+        #expect(s.server == nil && s.native == nil)
+    }
+
+    /// The count is of consecutive failures: a found in between starts over.
+    @Test func aFoundResetsTheFailureCount() {
+        var s = Self.externalState()
+        for _ in 0..<(ServiceLifecycle.externalFailureThreshold - 1) {
+            _ = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: .refused))
+        }
+        _ = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+        #expect(s.externalFailures == 0)
+        for _ in 0..<(ServiceLifecycle.externalFailureThreshold - 1) {
+            _ = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: .timeout))
+        }
+        #expect(s.phase == Self.external, "the count did not start over")
+    }
+
+    /// A count-only loss is the one owning kind that changes no phase: `epoch` stays.
+    @Test func externalLostBelowTheThresholdLeavesTheEpoch() {
+        var s = Self.externalState()
+        s.epoch = 12
+        let before = s
+        let effects = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: .refused))
+        #expect(effects.isEmpty)
+        #expect(s.epoch == 12 && s.externalEpoch == before.externalEpoch && s.phase == before.phase)
+        #expect(s.externalFailures == 1)
+    }
+
+    @Test func aMismatchMovesToCheckingAtOnce() {
+        for failures in 0..<ServiceLifecycle.externalFailureThreshold {
+            var s = Self.externalState(failures: failures)
+            let effects = ServiceLifecycle.reduce(&s, .externalLost(epoch: 3, reason: .mismatch))
+            #expect(s.phase == .checking && s.externalFailures == 0, "failures=\(failures)")
+            #expect(Self.isLossReread(effects, epoch: s.epoch), "\(effects)")
+        }
+    }
+
+    /// Discovery events carry the `externalEpoch` the probe started under; one behind is dropped.
+    @Test func aStaleDiscoveryEventChangesNothing() {
+        let events: [LifecycleEvent] = [
+            .externalFound(epoch: 2, info: Self.externalInfo), .externalLost(epoch: 2, reason: .mismatch),
+            .externalLost(epoch: 4, reason: .refused),
+        ]
+        for phase in Self.phases {
+            for event in events {
+                var s = Self.state(phase, server: phase.isExternal ? nil : Self.current)
+                s.externalEpoch = 3
+                let before = s
+                #expect(ServiceLifecycle.reduce(&s, event).isEmpty)
+                #expect(s == before, "\(phase) \(event)")
+            }
+        }
+    }
+
+    /// A probe that started before Stop, Delete or quit can't resurrect or demote the service.
+    @Test func stopDeleteAndQuitAdvanceTheExternalEpoch() {
+        // Stop while the Start-path probe runs.
+        var stopped = Self.state(.installed, server: nil)
+        let discoveryEpoch = stopped.externalEpoch
+        _ = ServiceLifecycle.reduce(&stopped, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        _ = ServiceLifecycle.reduce(&stopped, .stopRequested)
+        #expect(stopped.externalEpoch > discoveryEpoch)
+        let afterStop = stopped
+        #expect(ServiceLifecycle.reduce(&stopped, .externalFound(epoch: discoveryEpoch, info: Self.externalInfo)).isEmpty)
+        #expect(stopped == afterStop && !stopped.phase.isExternal)
+
+        // Delete.
+        var deleted = Self.state(.installed, server: nil)
+        _ = ServiceLifecycle.reduce(&deleted, .removeRequested(deleteModel: true, managerAvailable: true))
+        #expect(deleted.externalEpoch > discoveryEpoch)
+        #expect(ServiceLifecycle.reduce(&deleted, .externalFound(epoch: discoveryEpoch, info: Self.externalInfo)).isEmpty)
+        #expect(deleted.phase == .removing)
+
+        // Quit stops a server of ours.
+        var quit = Self.state(.running)
+        _ = ServiceLifecycle.reduce(&quit, .shutdownServers)
+        #expect(quit.externalEpoch > discoveryEpoch)
+        #expect(ServiceLifecycle.reduce(&quit, .externalFound(epoch: discoveryEpoch, info: Self.externalInfo)).isEmpty)
+        #expect(!quit.phase.isExternal)
+
+        // Quit that cancels an Apple Speech install.
+        var apple = Self.state(.installing(.model), info: Service.appleSpeech.info, server: nil, installing: true)
+        _ = ServiceLifecycle.reduce(&apple, .shutdownRequested)
+        #expect(apple.externalEpoch > discoveryEpoch)
+    }
+
+    /// {every event kind} x {every phase}: `externalEpoch` moves only on a transition into or out
+    /// of External, or on Stop, Delete and quit; no other event touches it.
+    @Test func theExternalEpochSurvivesEveryNonTransitionEvent() {
+        let advancing: Set<LifecycleEvent.Kind> = [.stopRequested, .shutdownRequested, .shutdownServers, .removeRequested]
+        for kind in LifecycleEvent.Kind.allCases {
+            for phase in Self.phases where (kind != .portOwnerFound && kind != .startProbeResult) || phase == .starting {
+                var s = Self.tagged(phase, for: kind)
+                let before = s
+                _ = ServiceLifecycle.reduce(&s, Self.sample(kind, stale: false))
+                let label = "\(kind) \(phase)"
+                if s.phase.isExternal != before.phase.isExternal {
+                    #expect(s.externalEpoch == before.externalEpoch + 1, "transition: \(label)")
+                } else if advancing.contains(kind) {
+                    #expect([before.externalEpoch, before.externalEpoch + 1].contains(s.externalEpoch), "\(label)")
+                } else {
+                    #expect(s.externalEpoch == before.externalEpoch, "\(label)")
+                }
+            }
+        }
+    }
+
+    // MARK: External: the ownership invariant
+
+    /// An External service is never started, installed, removed or signalled.
+    @Test func externalRefusesEveryOwnedIntent() {
+        let intents: [LifecycleEvent] = [
+            .startRequested(appAvailable: true, managerAvailable: true, portFree: true),
+            .startRequested(appAvailable: true, managerAvailable: true, portFree: false),
+            .installRequested(managerAvailable: true), .installRequested(managerAvailable: false),
+            .cancelInstallRequested, .removeRequested(deleteModel: true, managerAvailable: true),
+            .removeRequested(deleteModel: false, managerAvailable: true), .stopRequested, .shutdownRequested,
+            .shutdownServers, .dismissFailure,
+            .launched(ServerID(3)), .launchFailed("x"), .nativeLaunched(ServerID(3)),
+        ]
+        for info in [Service.tone.info, Service.whisper.info] {
+            for event in intents {
+                var s = Self.state(Self.external, info: info, server: nil)
+                let before = s
+                let effects = ServiceLifecycle.reduce(&s, event)
+                #expect(s == before && effects.isEmpty, "\(info.service) \(event): \(effects)")
+            }
+        }
+    }
+
+    /// Reset is app-wide and gated by `blocksReset`; an External service neither blocks it nor is changed by it.
+    @Test func resetNeitherBlocksNorChangesAnExternalService() {
+        var s = Self.externalState()
+        #expect(!s.blocksReset)
+        #expect(AppPhase.ready.allowsReset(servicesBusy: s.blocksReset))
+        // The re-read Reset leads to, and a sibling's environment change, never overwrite External.
+        let read = Self.issueRead(&s)
+        #expect(ServiceLifecycle.reduce(&s, .refreshed(.notInstalled, environment: .missing, requested: false, epoch: read)).isEmpty)
+        #expect(s.phase == Self.external)
+        #expect(ServiceLifecycle.reduce(&s, .environmentChanged(.missing)).isEmpty)
+        #expect(s.phase == Self.external && s.environment == .missing)
+    }
+
+    @Test func tryItRequestedOpensOnlyOnAnExternalService() {
+        for phase in Self.phases {
+            var s = Self.state(phase, server: nil)
+            let before = s
+            let effects = ServiceLifecycle.reduce(&s, .tryItRequested)
+            #expect(s == before, "non-owning: \(phase)")
+            #expect(effects == (phase.isExternal ? [.openTryIt(port: 8665)] : []), "\(phase)")
+        }
+        // A server of ours in a running phase still opens through `becameReady` only.
+        var running = Self.state(.running)
+        #expect(ServiceLifecycle.reduce(&running, .tryItRequested).isEmpty)
+    }
+
+    /// The allow-list: whatever happens to an External service, only these effects come out and
+    /// no server or native process ever appears. {every event kind} x {stale, current} x {quit under way}.
+    ///
+    /// `nativeBound` is the one kind left out: a bind that names no native server of ours is answered
+    /// with `.discardNative` (it stops the process that bind belongs to, never an External one), by
+    /// the reducer's first guard whatever the phase. It is asserted on its own below.
+    @Test func anExternalServiceOnlyEverGetsAllowListedEffects() {
+        for info in [Service.tone.info, Service.whisper.info] {
+            for kind in LifecycleEvent.Kind.allCases where kind != .nativeBound {
+                for stale in [false, true] {
+                    for quitting in [false, true] {
+                        for failures in [0, ServiceLifecycle.externalFailureThreshold - 1] {
+                            var s = Self.state(Self.external, info: info, server: nil, shuttingDown: quitting)
+                            s.epoch = Self.epochTag
+                            s.externalEpoch = Self.externalTag
+                            s.externalFailures = failures
+                            let event = Self.sample(kind, stale: stale)
+                            let effects = ServiceLifecycle.reduce(&s, event)
+                            let label = "\(info.service) \(kind) stale=\(stale) quit=\(quitting) failures=\(failures)"
+                            #expect(effects.allSatisfy(Self.allowedForExternal), "\(label): \(effects)")
+                            #expect(s.server == nil && s.native == nil, "\(label)")
+                            #expect(s.stopRequested == false, "\(label)")
+                        }
+                    }
+                }
+            }
+        }
+        var s = Self.externalState()
+        let effects = ServiceLifecycle.reduce(&s, Self.sample(.nativeBound, stale: true))
+        #expect(effects == [.discardNative(Self.stale)] && s == Self.externalState())
+    }
+
+    // MARK: External: the Start path
+
+    static func busyStart(info: ServiceInfo = Service.tone.info) -> (state: LifecycleState, probe: Int) {
+        var s = state(.installed, info: info, server: nil)
+        let effects = ServiceLifecycle.reduce(
+            &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        guard case .probeExternal(_, let probe)? = effects.last else {
+            Issue.record("no hello probe: \(effects)")
+            return (s, -1)
+        }
+        return (s, probe)
+    }
+
+    @Test func aBusyPortStartIssuesOneHelloProbeAndStaysStarting() {
+        var s = Self.state(.installed, server: nil)
+        let effects = ServiceLifecycle.reduce(
+            &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        #expect(s.phase == .starting && s.probe == s.epoch)
+        #expect(effects == [.startDetail("Checking port 8665…"), .probeExternal(port: 8665, probe: s.epoch)])
+        // A free port launches at once, with no probe.
+        var free = Self.state(.installed, server: nil)
+        let launch = ServiceLifecycle.reduce(
+            &free, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        #expect(launch == [.launch(port: 8665)] && free.probe == nil)
+    }
+
+    @Test func appleSpeechOnABusyPortLooksUpTheOwnerOnly() {
+        var s = Self.state(.installed, info: Service.appleSpeech.info, server: nil)
+        let effects = ServiceLifecycle.reduce(
+            &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        #expect(effects.last == .probePortOwner(port: 9465, probe: s.epoch))
+        #expect(!effects.contains { if case .probeExternal = $0 { true } else { false } })
+    }
+
+    @Test func startProbeAdoptGoesExternal() {
+        var (s, probe) = Self.busyStart()
+        let effects = ServiceLifecycle.reduce(
+            &s, .startProbeResult(tag: probe, outcome: .adopt(Service.tone.info, Self.toneHello)))
+        #expect(s.phase == .external(8665, ExternalInfo(hello: Self.toneHello)))
+        #expect(s.probe == nil && s.server == nil && s.native == nil)
+        #expect(effects.allSatisfy(Self.allowedForExternal), "\(effects)")
+        #expect(!effects.contains(.launch(port: 8665)))
+    }
+
+    @Test func startProbeMismatchChainsTheOwnerLookupBeforeTheBusyFailure() {
+        var (s, probe) = Self.busyStart()
+        let effects = ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: .mismatch(Self.kokoroHello)))
+        guard case .probePortOwner(8665, let ownerProbe)? = effects.last, effects.count == 1 else {
+            Issue.record("\(effects)")
+            return
+        }
+        #expect(s.phase == .starting && s.probe == ownerProbe)
+        let owner = PortProbe.Owner(pid: 77, command: "python")
+        _ = ServiceLifecycle.reduce(&s, .portOwnerFound(owner, probe: ownerProbe))
+        guard case .failed(let failure) = s.phase,
+            case .portBusy(let found, found: .server(let backend, _)) = failure.kind
+        else {
+            Issue.record("\(s.phase)")
+            return
+        }
+        #expect(found == owner && backend == "kokoro")
+        #expect(failure.message.contains("kokoro"), "\(failure.message)")
+    }
+
+    @Test(arguments: [
+        (ExternalProbe.Outcome.needsToken, "token"), (.silent, "identified itself"), (.timeout, "answered"),
+    ])
+    func startProbeNeedsTokenSilentAndTimeoutFailBusyWithTheirMessage(outcome: ExternalProbe.Outcome, word: String) {
+        var (s, probe) = Self.busyStart()
+        let effects = ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: outcome))
+        #expect(effects.isEmpty, "\(effects)")
+        guard case .failed(let failure) = s.phase, case .portBusy = failure.kind else {
+            Issue.record("\(s.phase)")
+            return
+        }
+        #expect(failure.title == "Port 8665 is busy")
+        #expect(failure.message.contains(word), "\(failure.message)")
+        #expect(s.probe == nil && s.server == nil)
+    }
+
+    @Test func startProbeUnreachableLaunchesTheAppsOwnServer() {
+        var (s, probe) = Self.busyStart()
+        let effects = ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: .unreachable))
+        #expect(effects == [.launch(port: 8665)])
+        #expect(s.phase == .starting)
+    }
+
+    static let outcomes: [ExternalProbe.Outcome] = [
+        .adopt(Service.tone.info, toneHello), .mismatch(kokoroHello), .needsToken, .silent, .timeout, .unreachable,
+    ]
+
+    @Test func aStaleStartProbeResultChangesNothing() {
+        for outcome in Self.outcomes {
+            var (s, probe) = Self.busyStart()
+            let before = s
+            #expect(ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe - 1, outcome: outcome)).isEmpty)
+            #expect(s == before, "\(outcome)")
+            // Stop ended the probe: the late answer can't resurrect or launch anything.
+            _ = ServiceLifecycle.reduce(&s, .stopRequested)
+            let stopped = s
+            #expect(ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: outcome)).isEmpty)
+            #expect(s == stopped && !s.phase.isExternal, "\(outcome)")
+        }
+    }
+
+    /// Outside `.starting` an outcome adopts, launches and fails nothing.
+    @Test func aStartProbeResultOutsideStartingDoesNothing() {
+        for phase in Self.phases where phase != .starting {
+            for outcome in Self.outcomes {
+                var s = Self.state(phase, server: nil)
+                s.probe = 7
+                let before = s
+                let effects = ServiceLifecycle.reduce(&s, .startProbeResult(tag: 7, outcome: outcome))
+                #expect(s.phase == before.phase, "\(phase) \(outcome)")
+                #expect(!effects.contains(.launch(port: 8665)), "\(phase) \(outcome)")
+                #expect(!effects.contains { if case .probePortOwner = $0 { true } else { false } }, "\(phase) \(outcome)")
+            }
+        }
+        // A launched server (the probe's slot is gone): nothing to adopt over it.
+        var s = Self.state(.starting)
+        s.probe = 7
+        let before = s.phase
+        _ = ServiceLifecycle.reduce(&s, .startProbeResult(tag: 7, outcome: .adopt(Service.tone.info, Self.toneHello)))
+        #expect(s.phase == before && s.server == Self.current)
+    }
+
+    // MARK: External: EADDRINUSE after a launch
+
+    /// The launched server loses the bind race; the reducer chains one hello probe.
+    static func lostTheBindRace() -> (state: LifecycleState, probe: Int) {
+        var s = state(.starting)
+        _ = ServiceLifecycle.reduce(&s, .supervisedError(current, SupervisedError(code: "EADDRINUSE", message: nil)))
+        let effects = ServiceLifecycle.reduce(&s, .exited(current, status: 1, logTail: []))
+        guard case .probeExternal(8665, let probe)? = effects.last else {
+            Issue.record("\(effects)")
+            return (s, -1)
+        }
+        return (s, probe)
+    }
+
+    @Test func eaddrinuseAfterLaunchAdoptsTheKeepAliveRestartThatWonThePort() {
+        var (s, probe) = Self.lostTheBindRace()
+        #expect(s.phase == .starting && s.server == nil && s.probeAfterBind)
+        let effects = ServiceLifecycle.reduce(
+            &s, .startProbeResult(tag: probe, outcome: .adopt(Service.tone.info, Self.toneHello)))
+        #expect(s.phase == .external(8665, ExternalInfo(hello: Self.toneHello)))
+        #expect(!s.probeAfterBind && s.probe == nil)
+        #expect(effects.allSatisfy(Self.allowedForExternal), "\(effects)")
+    }
+
+    @Test(arguments: [
+        ExternalProbe.Outcome.mismatch(ServiceLifecycleTests.kokoroHello), .needsToken, .silent, .timeout, .unreachable,
+    ])
+    func eaddrinuseAfterLaunchStaysBusyForAnythingButAnAdopt(outcome: ExternalProbe.Outcome) {
+        var (s, probe) = Self.lostTheBindRace()
+        let effects = ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: outcome))
+        #expect(!effects.contains(.launch(port: 8665)), "\(outcome): the app's own server just lost the port")
+        guard case .probePortOwner(_, let ownerProbe)? = effects.last else {
+            Issue.record("\(outcome): \(effects)")
+            return
+        }
+        _ = ServiceLifecycle.reduce(&s, .portOwnerFound(PortProbe.Owner(pid: 5), probe: ownerProbe))
+        guard case .failed(let failure) = s.phase, case .portBusy = failure.kind else {
+            Issue.record("\(outcome): \(s.phase)")
+            return
+        }
+        #expect(!s.phase.isExternal)
+    }
+
+    // MARK: External: the policy's directives against the reducer
+
+    /// A LaunchAgent restart: refused (one failed probe, still External), then found again.
+    @Test func externalLostThenFoundAfterALaunchAgentRestart() {
+        var s = Self.state(.installed, server: nil)
+        func apply(_ outcome: ExternalProbe.Outcome) {
+            let snapshot = ExternalDiscoveryPolicy.Snapshot(service: .tone, epoch: s.externalEpoch, phase: s.phase)
+            let directives = ExternalDiscoveryPolicy.events(
+                for: [.init(snapshot: snapshot, outcome: outcome)])
+            for directive in directives { _ = ServiceLifecycle.reduce(&s, directive.event) }
+        }
+        apply(.adopt(Service.tone.info, Self.toneHello))
+        #expect(s.phase.isExternal)
+        apply(.unreachable)
+        apply(.unreachable)
+        #expect(s.phase.isExternal && s.externalFailures == 2, "not responding, still External")
+        apply(.adopt(Service.tone.info, Self.toneHello))
+        #expect(s.phase.isExternal && s.externalFailures == 0)
+        // A restart that outlasts the threshold: back to checking, then adopted again.
+        for _ in 0..<ServiceLifecycle.externalFailureThreshold { apply(.unreachable) }
+        #expect(s.phase == .checking)
+        apply(.adopt(Service.tone.info, Self.toneHello))
+        #expect(s.phase.isExternal)
+    }
+
+    /// Silent, needs-token and mismatch re-probes all mean something else holds the port.
+    @Test(arguments: [ExternalProbe.Outcome.silent, .needsToken, .mismatch(ServiceLifecycleTests.kokoroHello)])
+    func aReProbeThatFindsSomethingElseMovesToCheckingAtOnce(outcome: ExternalProbe.Outcome) {
+        var s = Self.externalState()
+        let snapshot = ExternalDiscoveryPolicy.Snapshot(service: .tone, epoch: s.externalEpoch, phase: s.phase)
+        let directives = ExternalDiscoveryPolicy.events(for: [.init(snapshot: snapshot, outcome: outcome)])
+        #expect(directives.count == 1)
+        for directive in directives { _ = ServiceLifecycle.reduce(&s, directive.event) }
+        #expect(s.phase == .checking, "\(outcome)")
     }
 }

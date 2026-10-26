@@ -33,6 +33,11 @@ struct PanelView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .clipped()
         .animation(.snappy(duration: 0.28), value: app.page)
+        // Discovery re-probes only while the panel is visible. UNVERIFIED: that a
+        // `MenuBarExtra(.window)` content view gets both on every open and close
+        // (a person must confirm; Phase 3 re-checks by hand).
+        .onAppear { app.panelVisibilityChanged(true) }
+        .onDisappear { app.panelVisibilityChanged(false) }
     }
 }
 
@@ -203,6 +208,11 @@ struct RunningRow: View {
                 Text(verbatim: "127.0.0.1:\(model.port)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+            case .external(let port, _):
+                StatusDot(color: model.externalFailures > 0 ? .orange : .green)
+                Text(verbatim: model.externalFailures > 0 ? "Not responding" : "External · 127.0.0.1:\(port)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
             case .starting:
                 StatusDot(color: .orange)
                 Text(model.info.needsModelDownload ? "Loading model…" : "Starting…")
@@ -228,6 +238,9 @@ struct RunningRow: View {
                 CopyButton(text: "ws://\(ServiceCatalog.host):\(model.port)/", help: "Copy URL")
                 IconButton(systemImage: "stop.fill", help: "Stop") { model.stop() }
             }
+        case .external(let port, _):
+            // Observe and copy only: the app never stops a server it did not start.
+            CopyButton(text: "ws://\(ServiceCatalog.host):\(port)/", help: "Copy URL")
         case .starting, .stopping:
             ProgressView().controlSize(.small).frame(width: 44)
         case .failed:
@@ -498,6 +511,9 @@ struct CatalogSubtitle: View {
             case .running:
                 StatusDot(color: .green)
                 Text(verbatim: "Running on :\(model.port)").foregroundStyle(.secondary)
+            case .external(let port, _):
+                StatusDot(color: .green)
+                Text(verbatim: "External on :\(port)").foregroundStyle(.secondary)
             case .stopping:
                 Text("Stopping…").foregroundStyle(.secondary)
             case .removing:
@@ -558,6 +574,8 @@ struct CatalogAction: View {
             Button("Start") { model.start() }.buttonStyle(PillButtonStyle(tint: .green, prominent: true))
         case .running:
             Button("Stop") { model.stop() }.buttonStyle(PillButtonStyle(tint: .secondary))
+        case .external:
+            EmptyView()
         case .failed(let failure):
             switch failure.kind {
             case .install, .download:
@@ -691,7 +709,7 @@ struct FooterBar: View {
         }
     }
 
-    private var quitTitle: String { app.running.isEmpty ? "Quit" : "Stop All & Quit" }
+    private var quitTitle: String { app.quitTitle }
 }
 
 struct SetupBanner: View {
