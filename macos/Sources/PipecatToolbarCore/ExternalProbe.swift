@@ -107,3 +107,14 @@ public struct ExternalProbe: Sendable {
         }
     }
 }
+
+extension ExternalProbe.Outcome {
+    /// The one test of "this `adopt` is the server of the service on `port`": the entry
+    /// `ServiceInfo.entry(for:port:)` matched is the one that owns `port`. Discovery
+    /// (`ExternalDiscoveryPolicy`) and the Start path (`ServiceLifecycle`) both ask it.
+    /// Nil for every other outcome.
+    public func adoptedInfo(onPort port: Int) -> ExternalInfo? {
+        guard case .adopt(let entry, let hello) = self, entry.port == port else { return nil }
+        return ExternalInfo(hello: hello)
+    }
+}

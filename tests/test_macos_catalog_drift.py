@@ -3,7 +3,8 @@
 ``macos/Sources/PipecatToolbarCore/Service.swift`` repeats, per TTS backend, the
 ``serve --backend`` name (as the package extra), the canonical port, the
 default model repo, the streaming capability and (for variants) the ``--model``
-alias; ``PrefetchEvent.swift`` repeats the supervised error codes. Swift cannot
+alias. (``PrefetchEvent.swift``'s supervised error codes are checked once, in
+``tests/test_supervised_contract.py``.) Swift cannot
 import Python, so these tests parse the Swift source (one parser,
 ``_macos_catalog``) and assert it equals the Python/justfile source of truth:
 
@@ -22,10 +23,10 @@ import Python, so these tests parse the Swift source (one parser,
     TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
     repo with no revision pin (the upstream ``stt_server prefetch`` pins none);
   * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
-    repo's LaunchAgent labels, ports, backend names and default model repos
-    (written out here: the lean job never imports ``stt_server``);
-  * ``SupervisedErrorCode`` raw values equal the union of the contract's per-emitter
-    lists, and ``tts_server.supervise``'s ``CODE_*`` equal the ``tts`` list;
+    repo's LaunchAgent labels and ports (written out here), and backend names and
+    default model repos that equal the upstream registry, read from the recorded
+    excerpt of the installed release (``_stt_upstream``; the lean job never imports
+    ``stt_server``);
   * the Try it wire fixture is what the server sends.
 """
 
@@ -35,7 +36,6 @@ import json
 import re
 from pathlib import Path
 
-from tts_server import supervise
 from tts_server.__main__ import BACKEND_CHOICES
 
 from ._macos_catalog import (
@@ -44,6 +44,7 @@ from ._macos_catalog import (
     macos_snapshots,
     mlx_audio_default_patterns,
 )
+from ._stt_upstream import upstream_stt
 
 REPO = Path(__file__).resolve().parents[1]
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
@@ -278,23 +279,6 @@ def test_swift_stt_snapshots_are_the_model_repo_unpinned():
             assert snap.files == "allButDocs", name
 
 
-def test_swift_supervised_error_codes_match_the_contract():
-    swift = set(
-        re.findall(
-            r'case \w+ = "(\w+)"',
-            (CORE / "PrefetchEvent.swift")
-            .read_text()
-            .split("enum SupervisedErrorCode", 1)[1]
-            .split("}", 1)[0],
-        )
-    )
-    codes = json.loads((REPO / "docs" / "supervised-contract.json").read_text())["error_codes"]
-    python = {v for k, v in vars(supervise).items() if k.startswith("CODE_")}
-    assert set(codes["tts"]) == python
-    assert swift == set(codes["tts"]) | set(codes["stt"])
-    assert swift - python == {"ModelInvalidError"}, "the STT-only code"
-
-
 _BACKEND_NAME = re.compile(r'^\s+backend_name = "(\w+)"', re.MULTILINE)
 _REPORTS_RAW_MODEL = re.compile(r"^\s+self\.model = model$", re.MULTILINE)
 
@@ -358,7 +342,10 @@ def test_swift_expected_models_match_what_the_backends_report():
 # The STT repo's (pipecat-local-stt-server 0.4.0) LaunchAgents, which the app's STT entries
 # agree with: ``backend.name`` the server reports, port, launchd label and default model repo
 # per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper`` engine name is the
-# app's own (it names the environment and the constraints file).
+# app's own (it names the environment and the constraints file). The backend names and
+# default models are checked against the recorded upstream registry
+# (``test_stt_families_match_the_recorded_upstream_registry``); the ports and labels are the
+# STT repo's LaunchAgent plists (PR #16), which no released source carries yet.
 _STT_FAMILIES = {
     "whisper": ("mlx", 9565, "pipecat.stt-server", "mlx-community/whisper-large-v3-turbo"),
     "kyutai": ("kyutai", 9665, "pipecat.stt-server.kyutai", "kyutai/stt-1b-en_fr-mlx"),
@@ -375,6 +362,22 @@ _STT_FAMILIES = {
         "mlx-community/nemotron-3.5-asr-streaming-0.6b",
     ),
 }
+
+
+def test_stt_families_match_the_recorded_upstream_registry():
+    """Each family's ``backend.name`` is an upstream ``BACKENDS`` name whose default model is the
+    family's repo, read from the recorded excerpt of the release the app installs (and the live
+    registry when ``stt_server`` is importable), so an upstream rename or a new default fails here."""
+    upstream = upstream_stt().default_models
+    for family, (backend, _, _, repo) in _STT_FAMILIES.items():
+        assert upstream.get(backend) == repo, family
+    # Every upstream backend but the test-only ``echo`` is a catalog family.
+    assert {name for name in upstream if name != "echo"} == {b for b, *_ in _STT_FAMILIES.values()}
+    try:
+        from stt_server.backends import BACKENDS as live
+    except ImportError:
+        return
+    assert {name: entry.default_model for name, entry in live.items()} == upstream
 
 
 def _swift_launchd_labels() -> dict[str, str]:

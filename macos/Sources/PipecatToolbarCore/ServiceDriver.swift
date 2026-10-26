@@ -219,14 +219,19 @@ public final class ServiceDriver {
     /// Discovery found this service's server on its port. `epoch` is the `state.externalEpoch`
     /// read when the probe started; the reducer drops it if that moved.
     public func externalFound(epoch: Int, info: ExternalInfo) {
-        guard !quitting else { return }
-        execute(send(.externalFound(epoch: epoch, info: info)))
+        discovered(.found(service, epoch: epoch, info: info))
     }
 
     /// A discovery re-probe lost (or replaced) the External server.
     public func externalLost(epoch: Int, reason: ExternalLostReason) {
-        guard !quitting else { return }
-        execute(send(.externalLost(epoch: epoch, reason: reason)))
+        discovered(.lost(service, epoch: epoch, reason: reason))
+    }
+
+    /// The one path from discovery into the reducer: sends `directive.event`, the same event
+    /// the policy's tests reduce. Refused after quit began, and for another service's directive.
+    public func discovered(_ directive: ExternalDiscoveryPolicy.Directive) {
+        guard !quitting, directive.service == service else { return }
+        execute(send(directive.event))
     }
 
     /// The Start-path probe `tag` finished (the `.probeExternal` effect calls this).

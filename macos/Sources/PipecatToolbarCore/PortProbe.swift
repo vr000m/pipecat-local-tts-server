@@ -82,14 +82,11 @@ public enum PortProbe {
     }
 
     /// The service's own `pid = N` line in `launchctl print` output: the first one at the
-    /// top level of the service block (a single tab of indent), else the first `pid =` line.
+    /// top level of the service block (a single tab of indent). A `pid =` nested deeper
+    /// belongs to another block and never stands in for it: no top-level pid is nil.
     static func launchctlPid(_ lines: [String]) -> Int32? {
-        func pid(_ line: String) -> Int32? {
-            Int32(line.trimmingCharacters(in: .whitespaces).dropFirst("pid = ".count))
-        }
-        let isPid: (String) -> Bool = { $0.trimmingCharacters(in: .whitespaces).hasPrefix("pid = ") }
-        if let top = lines.first(where: { $0.hasPrefix("\tpid = ") }) { return pid(top) }
-        return lines.first(where: isPid).flatMap(pid)
+        guard let top = lines.first(where: { $0.hasPrefix("\tpid = ") }) else { return nil }
+        return Int32(top.dropFirst("\tpid = ".count).trimmingCharacters(in: .whitespaces))
     }
 
     /// Runs `sub` to completion; cancelling the calling task stops it (SIGTERM,

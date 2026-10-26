@@ -38,11 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the helper's cooperative cancel are removed. An STT server on an older version
   is adopted by its hello, but an app-started STT server needs 0.4.0.
 - STT model weights are **not pinned to a commit** in this release (upstream 0.4.0 has
-  no revision option; the app follows each repo's `main`). The STT repo has said it
-  intends to add pins and a per-frame Kyutai cancel in a later release; until the app
-  moves to it, Kyutai barge-in waits for the in-flight decode.
-- `docs/supervised-contract.json` lists error codes per emitter; `ModelInvalidError`
-  is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
+  no revision option; the app follows each repo's `main`). Upstream 0.4.0 Kyutai has
+  no per-frame cancel, so Kyutai barge-in waits for the in-flight decode.
+- `docs/supervised-contract.json` lists error codes per emitter (contract `version` 2;
+  version 1 had one flat list); `ModelInvalidError` is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
 
 ## [0.7.0] - 2026-10-25
 

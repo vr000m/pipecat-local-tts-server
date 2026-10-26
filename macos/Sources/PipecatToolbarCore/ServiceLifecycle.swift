@@ -293,13 +293,48 @@ extension LifecycleEvent.Kind {
     public var isNonOwning: Bool {
         switch self {
         // `externalLost` is classified owning: its Nth failure changes the phase. A count-only
-        // loss changes no phase or slot and `reduce` leaves the epoch alone for it.
+        // loss changes no phase or slot, so `reduce` leaves the epoch alone for it
+        // (`keepsEpochWhenItOnlyCounts`, the one exception to this table).
         case .cancelInstallRequested, .environmentRead, .supervisedError, .tryItRequested: true
         case .refreshRequested, .refreshed, .environmentChanged, .installRequested, .installStage, .installEnded,
             .appleSpeechInstallEnded, .startRequested, .portOwnerFound, .launched, .launchFailed, .nativeLaunched,
             .nativeBound, .nativeFailed, .ready, .readyTimedOut, .exited, .stopRequested, .shutdownRequested,
             .shutdownServers, .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure,
             .externalFound, .externalLost, .startProbeResult:
+            false
+        }
+    }
+
+    /// The owning kinds that can also apply without changing a phase or an owner slot: a
+    /// below-threshold `externalLost` only counts a failure (the External service stays
+    /// External), and `reduce` then restores `epoch` as for a non-owning event.
+    public var keepsEpochWhenItOnlyCounts: Bool {
+        switch self {
+        case .externalLost: true
+        case .refreshRequested, .environmentRead, .refreshed, .environmentChanged, .installRequested,
+            .cancelInstallRequested, .installStage, .installEnded, .appleSpeechInstallEnded, .startRequested,
+            .portOwnerFound, .launched, .launchFailed, .nativeLaunched, .nativeBound, .nativeFailed, .ready,
+            .supervisedError, .readyTimedOut, .exited, .stopRequested, .shutdownRequested, .shutdownServers,
+            .removeRequested, .removalResumed, .removalFailed, .removalFinished, .dismissFailure, .externalFound,
+            .startProbeResult, .tryItRequested:
+            false
+        }
+    }
+
+    /// Start, Install, Stop, quit and Delete advance `LifecycleState.externalEpoch` when they
+    /// change anything (the transitions into and out of `.external` advance it on their own).
+    /// Start and Install begin an owned activity that settles a fresher answer about the port
+    /// than any discovery probe that began before them, so such a probe must not land after.
+    public var changesExternalEpoch: Bool {
+        switch self {
+        case .startRequested, .installRequested, .stopRequested, .shutdownRequested, .shutdownServers,
+            .removeRequested:
+            true
+        case .refreshRequested, .environmentRead, .refreshed, .environmentChanged, .cancelInstallRequested,
+            .installStage, .installEnded, .appleSpeechInstallEnded, .portOwnerFound, .launched, .launchFailed,
+            .nativeLaunched, .nativeBound, .nativeFailed, .ready, .supervisedError, .readyTimedOut, .exited,
+            .removalResumed, .removalFailed, .removalFinished, .dismissFailure, .externalFound, .externalLost,
+            .startProbeResult, .tryItRequested:
             false
         }
     }
@@ -426,6 +461,14 @@ public struct LifecycleState: Equatable, Sendable {
 extension LifecycleState {
     /// An install is in flight.
     public var installing: Bool { install != nil }
+
+    /// Ends the Start-path probe chain: `probe`, `busyFound` and `probeAfterBind` describe one
+    /// probe in flight and are only ever cleared together, here.
+    mutating func endStartProbe() {
+        probe = nil
+        busyFound = nil
+        probeAfterBind = false
+    }
 
     /// A server, an install, a probe or a removal owns the phase: a refresh must
     /// not overwrite it (only the event that ends that work moves the phase on). A
@@ -557,9 +600,10 @@ public enum ServiceLifecycle {
     ///    phase (otherwise the owner's own end re-reads it); it never carries a
     ///    start with it.
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
-    ///    transition into or out of `.external`, and when Stop, Delete or quit changed anything.
-    ///    A count-only `externalLost` leaves `epoch` alone (it is the one owning kind that can
-    ///    be non-owning).
+    ///    transition into or out of `.external`, and for the kinds in `changesExternalEpoch`.
+    ///    A kind in `keepsEpochWhenItOnlyCounts` (a count-only `externalLost`) that left an
+    ///    External service External leaves `epoch` alone. All three tables sit together with
+    ///    `owner` and `isNonOwning` (`everyKindIsClassified`).
     public static func reduce(_ s: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect] {
         guard isCurrent(event, in: s) else {
             if case .nativeBound(let id, _, _, _) = event { return [.discardNative(id)] }
@@ -574,13 +618,9 @@ public enum ServiceLifecycle {
             s = before
             return []
         }
-        if case .externalLost = event, before.phase.isExternal, s.phase.isExternal { s.epoch = before.epoch }
+        if event.kind.keepsEpochWhenItOnlyCounts, before.phase.isExternal, s.phase.isExternal { s.epoch = before.epoch }
         if s.phase.isExternal != before.phase.isExternal || event.kind.changesExternalEpoch { s.externalEpoch += 1 }
-        if s.phase != .starting || s.server != nil || s.native != nil {
-            s.probe = nil
-            s.busyFound = nil
-            s.probeAfterBind = false
-        }
+        if s.phase != .starting || s.server != nil || s.native != nil { s.endStartProbe() }
         // First: the driver runs effects in order, so a cancel after a refresh
         // would wait for its (slow) cache probe while `lsof` kept running.
         if let probe = before.probe, s.probe != probe, event.kind != .portOwnerFound, event.kind != .startProbeResult {
@@ -704,8 +744,7 @@ public enum ServiceLifecycle {
             }
             guard portFree else {
                 s.phase = .starting
-                s.busyFound = nil
-                s.probeAfterBind = false
+                s.endStartProbe()
                 // Apple Speech runs in the app: only the owner lookup, never a hello probe.
                 let probe = s.runtime == .appleSpeech ? probePort(&s) : probeExternal(&s)
                 return [.startDetail("Checking port \(s.port)…"), probe]
@@ -714,19 +753,17 @@ public enum ServiceLifecycle {
 
         case .portOwnerFound(let owner, _):
             guard s.phase == .starting else { return [] }
-            s.probe = nil
             let found = s.busyFound ?? .unknown
-            s.busyFound = nil
+            s.endStartProbe()
             s.phase = .failed(.portBusy(port: s.port, owner: owner, found: found, displayName: s.displayName))
             return []
 
         case .startProbeResult(_, let outcome):
             guard s.phase == .starting, s.server == nil, s.native == nil else { return [] }
             let afterBind = s.probeAfterBind
-            s.probe = nil
-            s.probeAfterBind = false
-            if case .adopt(let entry, let hello) = outcome, entry.port == s.port {
-                return adopt(&s, ExternalInfo(hello: hello))
+            s.endStartProbe()
+            if let info = outcome.adoptedInfo(onPort: s.port) {
+                return adopt(&s, info)
             }
             if afterBind {
                 // The launch lost the bind race and the holder is not ours: the busy failure, as before.
@@ -833,7 +870,7 @@ public enum ServiceLifecycle {
             }
             if error.code == SupervisedErrorCode.addressInUse.rawValue {
                 s.phase = .starting  // still starting: finding who holds the port
-                s.busyFound = nil
+                s.endStartProbe()
                 // A KeepAlive restart may have won the port: one hello probe adopts it.
                 if s.runtime == .appleSpeech { return effects + [probePort(&s)] }
                 s.probeAfterBind = true
@@ -851,9 +888,7 @@ public enum ServiceLifecycle {
             guard let id = s.server else {
                 // Cancel while the busy port is probed: drop the probe, re-read the phase.
                 guard s.probe != nil else { return [] }
-                s.probe = nil
-                s.busyFound = nil
-                s.probeAfterBind = false
+                s.endStartProbe()
                 s.phase = .checking
                 return [read(&s)]
             }
@@ -907,9 +942,7 @@ public enum ServiceLifecycle {
 
     /// Goes (or stays) External. Only called from the phases that accept a discovery.
     private static func adopt(_ s: inout LifecycleState, _ info: ExternalInfo) -> [LifecycleEffect] {
-        s.probe = nil
-        s.busyFound = nil
-        s.probeAfterBind = false
+        s.endStartProbe()
         s.startAfterRead = false
         s.externalFailures = 0
         s.phase = .external(s.port, info)
@@ -970,19 +1003,5 @@ public enum ServiceLifecycle {
         s.running = nil
         s.phase = .installed
         return [.stopNative, .tearDown(note: "stopped")]
-    }
-}
-
-extension LifecycleEvent.Kind {
-    /// Start, Install, Stop, quit and Delete advance `LifecycleState.externalEpoch` when they
-    /// change anything (the transitions into and out of `.external` advance it on their own).
-    /// Start and Install begin an owned activity that settles a fresher answer about the port
-    /// than any discovery probe that began before them, so such a probe must not land after.
-    var changesExternalEpoch: Bool {
-        switch self {
-        case .startRequested, .installRequested, .stopRequested, .shutdownRequested, .shutdownServers,
-            .removeRequested: true
-        default: false
-        }
     }
 }

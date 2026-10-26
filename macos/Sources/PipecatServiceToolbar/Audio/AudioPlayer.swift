@@ -40,6 +40,11 @@ final class AudioPlayer {
         }
     }
 
+    struct UnsupportedRate: LocalizedError {
+        let rate: Int
+        var errorDescription: String? { "The server's audio rate (\(rate) Hz) can't be played." }
+    }
+
     /// Prepares for a new response at `rate` Hz (mono).
     func begin(rate: Int) throws {
         stop()
@@ -47,7 +52,11 @@ final class AudioPlayer {
             // Also after a configuration change, which leaves `format` nil.
             engine.stop()
             engine.disconnectNodeOutput(node)
-            let fmt = AVAudioFormat(standardFormatWithSampleRate: Double(rate), channels: 1)!
+            // The rate comes from a server's hello (`ServerHelloFrame.acceptedRates` already
+            // drops a nonsense one); a format AVFoundation still refuses fails this response.
+            guard let fmt = AVAudioFormat(standardFormatWithSampleRate: Double(rate), channels: 1) else {
+                throw UnsupportedRate(rate: rate)
+            }
             engine.connect(node, to: engine.mainMixerNode, format: fmt)
             format = fmt
         }

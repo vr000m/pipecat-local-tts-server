@@ -42,21 +42,20 @@ def load_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def known_error_codes(contract: dict[str, Any], emitter: str | None = None) -> set[str]:
-    """The ``error.code`` values of one emitter (``tts`` / ``stt``), or of either by default."""
-    by_emitter = contract["error_codes"]
-    if emitter is not None:
-        return set(by_emitter[emitter])
-    return {code for codes in by_emitter.values() for code in codes}
+def known_error_codes(contract: dict[str, Any], emitter: str) -> set[str]:
+    """The ``error.code`` values of one emitter (``tts`` / ``stt``).
+
+    There is no "either emitter" default: a TTS line carrying an STT-only code (or the
+    reverse) is a contract violation, so every caller names the emitter it checks."""
+    return set(contract["error_codes"][emitter])
 
 
 def event_errors(
-    scope: str, event: Any, contract: dict[str, Any] | None = None, emitter: str | None = None
+    scope: str, event: Any, contract: dict[str, Any] | None = None, *, emitter: str
 ) -> list[str]:
     """Every way ``event`` departs from its ``contract[scope]`` entry ([] = conforms).
 
-    An ``error`` line's ``code`` must be one of ``emitter``'s codes (either emitter's when
-    ``emitter`` is None: the app-path smoke runs both)."""
+    An ``error`` line's ``code`` must be one of ``emitter``'s codes (``tts`` or ``stt``)."""
     contract = contract if contract is not None else load_contract()
     if not isinstance(event, dict):
         return [f"{scope}: not a JSON object: {event!r}"]

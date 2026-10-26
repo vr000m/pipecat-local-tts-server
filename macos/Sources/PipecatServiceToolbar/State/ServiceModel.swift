@@ -70,7 +70,6 @@ final class ServiceModel: Identifiable {
     /// The LaunchAgent label `PortProbe.owner` confirmed holds the External server's port
     /// (pid matched); nil until looked up or when unconfirmed. Reset when the service leaves External.
     private(set) var externalLaunchdLabel: String?
-    /// Whether the owner lookup ran for the current adoption.
     /// The row's status line for an External service (`ExternalPresentation`, Core).
     var externalStatusLine: String {
         guard case .external(let port, _) = phase else { return "" }
@@ -91,16 +90,19 @@ final class ServiceModel: Identifiable {
     /// LaunchAgent label. Read-only: `lsof` and `launchctl print`, never a signal. It runs
     /// every pass (not once per adoption) so that a different holder answering the same hello,
     /// or an agent that restarted under a new pid, never keeps the previous holder's label; an
-    /// unconfirmed lookup clears it. A cancelled lookup (Quit) changes nothing.
+    /// unconfirmed lookup clears it. A cancelled lookup (Quit) changes nothing. When to look
+    /// up and whether the answer lands is `ExternalPresentation.OwnerLookup` (Core, tested).
     func refreshExternalOwner() async {
-        guard case .external(let port, _) = phase else {
+        typealias Lookup = ExternalPresentation.OwnerLookup
+        switch Lookup.step(for: driver.state, hasLaunchdFamily: info.launchdLabel != nil) {
+        case .clear:
             externalLaunchdLabel = nil
-            return
+        case .lookUp(let port, let epoch):
+            let owner = await PortProbe.owner(of: port, backend: service)
+            externalLaunchdLabel = Lookup.settle(
+                found: owner.launchdLabel, startedAt: epoch, cancelled: Task.isCancelled,
+                current: externalLaunchdLabel, in: driver.state)
         }
-        guard info.launchdLabel != nil else { return }
-        let owner = await PortProbe.owner(of: port, backend: service)
-        guard !Task.isCancelled, case .external(let now, _) = phase, now == port else { return }
-        externalLaunchdLabel = owner.launchdLabel
     }
     // The lifecycle's own reading of its state (Core, tested with the reducer).
     /// Started by the user: shown in the main menu.
@@ -110,7 +112,10 @@ final class ServiceModel: Identifiable {
     var isBusy: Bool { driver.state.isBusy }
 
     /// The Python services own an environment and model files that can be deleted.
-    var canDeleteModel: Bool { info.runtime.usesPython && isInstalled && phase != .removing && !phase.isExternal }
+    /// An External row follows `ExternalPresentation.Actions.delete` (never: the server is not ours).
+    var canDeleteModel: Bool {
+        info.runtime.usesPython && isInstalled && phase != .removing && (externalActions?.delete ?? true)
+    }
 
     var installFraction: Double? { info.runtime == .appleSpeech ? assetProgress : download?.fraction }
     var diskBytes: Int64? { cache.map(\.sizeBytes).flatMap { $0 > 0 ? $0 : nil } }
@@ -162,7 +167,8 @@ extension ServiceModel: ServiceHost {
     func openTryIt(port: Int) {
         switch kind {
         case .tts: ttsTryIt = TryItSession(backend: service, port: port)
-        case .stt: sttTryIt = STTTryItSession(port: port)
+        // An External server gets the test clip but never live microphone audio (`Actions.microphone`).
+        case .stt: sttTryIt = STTTryItSession(port: port, allowsMicrophone: externalActions?.microphone ?? true)
         }
     }
 

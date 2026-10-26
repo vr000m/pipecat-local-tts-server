@@ -155,6 +155,10 @@ public struct ServiceInfo: Sendable, Equatable {
             }
         }
     }
+    /// The service's `serve` child runs a tool from Homebrew (`PATH` needs its prefixes):
+    /// `parakeet-mlx` decodes audio by running `ffmpeg`, also during its warm-up before
+    /// `ready`. No other service runs a tool from `PATH` (`ProcessEnvironment.serve`).
+    public var serveRunsHomebrewTools: Bool { family == .parakeet }
     /// What a server's hello must report as `backend.model` to be this entry: the
     /// `--model` argument when the entry passes one (Phonon reports the alias), else the repo.
     /// Nil for an entry that pins no model (tone, Apple Speech).

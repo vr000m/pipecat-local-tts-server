@@ -233,12 +233,14 @@ public enum ProcessEnvironment {
     }
 
     /// The environment a service's `serve` child starts from: `huggingFace()`, plus the
-    /// Homebrew prefixes on `PATH` for Parakeet only. `parakeet-mlx` decodes audio by
-    /// running `ffmpeg` (also during its warm-up, before `ready`), and a GUI app's minimal
-    /// `PATH` cannot see a Homebrew install. No other service runs a tool from `PATH`.
+    /// Homebrew prefixes on `PATH` for a service whose catalog entry says its server runs a
+    /// Homebrew tool (`ServiceInfo.serveRunsHomebrewTools`: Parakeet's `ffmpeg`). A GUI app's
+    /// minimal `PATH` cannot see a Homebrew install.
     public static func serve(_ service: Service) -> [String: String] {
         var env = huggingFace()
-        if service == .parakeet { env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin" }
+        if service.info.serveRunsHomebrewTools {
+            env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin"
+        }
         return env
     }
 

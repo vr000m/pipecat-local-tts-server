@@ -228,6 +228,9 @@ final class AppModel {
             for model in services {
                 group.addTask { await model.shutdown() }
             }
+            // The discovery pass `stop()` cancelled, with its probes and owner lookups.
+            let discovery = self.discovery
+            group.addTask { await discovery.drain() }
             let processes = bootstrapProcesses
             group.addTask { await processes.shutdown() }
             if let manager {

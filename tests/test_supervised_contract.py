@@ -11,11 +11,13 @@ stt wire rate. The lean job has no STT server installed, so:
     contract, JSON types); every contract event is exercised;
   * the STT emitter's lines are a recorded 0.4.0 fixture
     (``tests/fixtures/stt_supervised_lines.jsonl``: a real ``ready`` and ``error``
-    line), checked against the same contract; this file never imports ``stt_server``;
+    line), checked against the same contract and against the key sets the TTS emitter
+    writes for the same events; the lean job never imports ``stt_server``;
   * every ``"event": "<name>"`` literal in ``tts_server`` is a contract event;
-  * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``, the ``stt``
-    list holds the fixture's code and the STT-only ``ModelInvalidError`` (never a
-    TTS code), and Swift ``SupervisedErrorCode`` == the union of both lists;
+  * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``; the ``stt``
+    list == upstream ``stt_server.supervise.CODE_*``, read from a verbatim recorded
+    excerpt of the release the app installs (``tests/_stt_upstream.py``) and from the
+    live package when it is importable; Swift ``SupervisedErrorCode`` == the union;
   * the Swift decoder (``ServerCLIEvent.CodingKeys``) reads only contract fields;
   * wire rate: contract == fixture ``ready.rate`` == Swift ``STTWire.rate``;
   * each STT engine's requirements are hash-pinned in ``macos/constraints`` and name
@@ -42,6 +44,7 @@ from tts_server.backend import ToneBackend
 
 from ._helpers import running_server
 from ._macos_catalog import macos_catalog
+from ._stt_upstream import upstream_stt
 from .smoke._supervised_contract import event_errors
 from .test_prefetch_cli import PH, _run, fake_hub  # noqa: F401 - fake_hub is a fixture
 
@@ -62,7 +65,7 @@ def stt_fixture_lines() -> list[dict]:
 
 def conform(scope: str, event: dict, emitter: str) -> None:
     """Assert ``event`` matches its contract entry exactly, with ``emitter``'s error codes."""
-    errors = event_errors(scope, event, CONTRACT, emitter)
+    errors = event_errors(scope, event, CONTRACT, emitter=emitter)
     assert not errors, errors
 
 
@@ -186,7 +189,7 @@ def test_every_emitted_line_conforms_to_the_contract(emitted):
         assert seen == set(CONTRACT[scope]), f"{scope}: contract events never emitted"
 
 
-def test_recorded_stt_lines_conform_to_the_contract():
+def test_recorded_stt_lines_conform_to_the_contract(emitted):
     """The upstream 0.4.0 ``ready`` and ``error`` lines, byte for byte as recorded."""
     lines = stt_fixture_lines()
     assert [line["event"] for line in lines] == ["ready", "error"]
@@ -197,9 +200,10 @@ def test_recorded_stt_lines_conform_to_the_contract():
     assert set(ready) == set(CONTRACT["serve"]["ready"]["fields"])
     assert set(error) == set(CONTRACT["serve"]["error"]["fields"])
     assert error["code"] in STT_CODES
-    # The same key set the TTS emitter writes for the same events.
-    tts_ready = set(CONTRACT["serve"]["ready"]["fields"])
-    assert set(ready) == tts_ready
+    # The same key sets the TTS emitter actually wrote for the same events (one Swift decoder reads both).
+    tts = {line["event"]: set(line) for line in emitted["serve"]}
+    assert set(ready) == tts["ready"]
+    assert set(error) == tts["error"]
 
 
 def test_tts_check_dialect_is_check_rows_then_summary(emitted):
@@ -247,17 +251,32 @@ def test_tts_codes_equal_what_supervise_can_emit():
     assert "ModelInvalidError" not in TTS_CODES
 
 
-def test_stt_codes_cover_the_recorded_line_and_model_invalid():
+def test_stt_codes_equal_what_the_recorded_upstream_release_can_emit():
+    """The ``stt`` list is upstream's ``CODE_*`` set, from the recorded excerpt of the
+    release the app installs (not a hand-typed copy), so a code upstream adds or drops
+    fails here once the excerpt is re-recorded for a new pin."""
+    upstream = upstream_stt()
+    assert upstream.version == _swift_stt_server_version(), (
+        "re-record the STT excerpt for the new pin"
+    )
+    assert STT_CODES == upstream.error_codes
     fixture_codes = {line["code"] for line in stt_fixture_lines() if line["event"] == "error"}
     assert fixture_codes and fixture_codes <= STT_CODES
-    assert "ModelInvalidError" in STT_CODES
-    # The two emitters share the startup-failure codes except the ones only one has.
-    assert (TTS_CODES - STT_CODES) <= {"SocketPathConflict"}
-    assert STT_CODES - TTS_CODES == {"ModelInvalidError"}
+
+
+def test_stt_codes_equal_the_live_upstream_package_when_installed():
+    """Where ``stt_server`` is importable (not the lean job), the recorded excerpt is checked
+    against it too."""
+    stt_supervise = pytest.importorskip("stt_server.supervise")
+    live = {v for k, v in vars(stt_supervise).items() if k.startswith("CODE_")}
+    assert live == upstream_stt().error_codes == STT_CODES
 
 
 def test_swift_supervised_error_codes_are_the_union_of_both_lists():
-    assert _swift_error_codes() == TTS_CODES | STT_CODES
+    swift = _swift_error_codes()
+    assert swift == TTS_CODES | STT_CODES
+    # The codes only the STT emitter has are the ones the TTS emitter can never write.
+    assert swift - TTS_CODES == STT_CODES - TTS_CODES == {"ModelInvalidError"}
 
 
 def test_download_module_prefixes_match():

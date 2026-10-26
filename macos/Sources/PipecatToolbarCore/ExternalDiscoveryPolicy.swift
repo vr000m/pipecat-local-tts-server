@@ -69,13 +69,14 @@ public enum ExternalDiscoveryPolicy {
             guard probes(snapshot.service, in: snapshot.phase) else { return nil }
             let external = snapshot.phase.isExternal
             switch observation.outcome {
-            case .adopt(let entry, let hello):
-                // `entry(for:port:)` already matched the port; the check keeps a second
-                // server for the same entry (another port) from being adopted here.
-                guard entry.service == snapshot.service else {
+            case .adopt:
+                // The same test the Start path uses (`adoptedInfo(onPort:)`): the matched entry
+                // owns this service's port, so a second server for an entry on another port is
+                // never adopted here.
+                guard let info = observation.outcome.adoptedInfo(onPort: snapshot.service.info.port) else {
                     return external ? .lost(snapshot.service, epoch: snapshot.epoch, reason: .mismatch) : nil
                 }
-                return .found(snapshot.service, epoch: snapshot.epoch, info: ExternalInfo(hello: hello))
+                return .found(snapshot.service, epoch: snapshot.epoch, info: info)
             case .unreachable:
                 return external ? .lost(snapshot.service, epoch: snapshot.epoch, reason: .refused) : nil
             case .timeout:

@@ -473,3 +473,58 @@ def test_architecture_known_followups_lists_deferred_discovery() -> None:
     assert re.search(r"Unix-socket discovery", body)
     assert re.search(r"\bLAN endpoints\b", body)
     assert re.search(r"token storage", body)
+
+
+def _ui_smoke_functions(*names: str) -> str:
+    """The named shell functions, verbatim from ui_smoke.sh (to run them without the script)."""
+    text = _UI_SMOKE.read_text()
+    out = []
+    for name in names:
+        m = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.S | re.M)
+        assert m is not None, f"{name}() not found in ui_smoke.sh"
+        out.append(m.group(0))
+    return "\n".join(out)
+
+
+def test_ui_smoke_signals_ext_pid_only_through_the_identity_check() -> None:
+    """Every TERM/KILL to EXT_PID sits behind ``ext_is_ours`` (``kill -0`` alone does not prove
+    the pid is still the child it started: a reaped child's pid can be reused)."""
+    code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
+    signals = [ln for ln in code if re.search(r'\bkill\b(?! -0)[^\n]*"\$EXT_PID"', ln)]
+    assert signals, "the pattern sees the EXT_PID signals"
+    for ln in signals:
+        assert "ext_is_ours" in ln, f"unguarded signal to EXT_PID: {ln.strip()}"
+    body = _ui_smoke_functions("stop_ext")
+    after_wait = body.split('wait "$EXT_PID"', 1)[1]
+    assert "kill" not in after_wait and 'EXT_PID=""' in after_wait, "no signal after the reap"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_ui_smoke_never_signals_a_pid_that_is_no_longer_its_child() -> None:
+    """``stop_ext`` against (a) its own child, which it stops and reaps, and (b) a process with
+    the same command line that is NOT its child (what a reused pid looks like), which it must
+    leave alone."""
+    functions = _ui_smoke_functions("ext_is_ours", "stop_ext")
+    stranger = subprocess.Popen(["sleep", "30"])
+    try:
+        script = f"""set -euo pipefail
+{functions}
+EXT_MATCH="sleep 30"
+sleep 30 &
+EXT_PID=$!
+sleep 0.2
+ext_is_ours || {{ echo "own child not recognised"; exit 3; }}
+stop_ext
+[[ -z "$EXT_PID" ]] || {{ echo "EXT_PID not cleared"; exit 4; }}
+EXT_PID={stranger.pid}
+EXT_MATCH="sleep 30"
+if ext_is_ours; then echo "a non-child counted as ours"; exit 5; fi
+stop_ext
+echo done
+"""
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)
+        assert stranger.poll() is None, "stop_ext signalled a process that was not its child"
+    finally:
+        stranger.kill()
+        stranger.wait()

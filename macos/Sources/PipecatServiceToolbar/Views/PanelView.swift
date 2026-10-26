@@ -239,8 +239,16 @@ struct RunningRow: View {
                 IconButton(systemImage: "stop.fill", help: "Stop") { model.stop() }
             }
         case .external(let port, _):
-            // Observe and copy only: the app never stops a server it did not start.
-            CopyButton(text: "ws://\(ServiceCatalog.host):\(port)/", help: "Copy URL")
+            // Observe and copy only (`ExternalPresentation.Actions`): the app never stops a server it did not start.
+            let actions = model.externalActions
+            HStack(spacing: 2) {
+                if actions?.copyURL == true {
+                    CopyButton(text: "ws://\(ServiceCatalog.host):\(port)/", help: "Copy URL")
+                }
+                if actions?.stop == true {
+                    IconButton(systemImage: "stop.fill", help: "Stop") { model.stop() }
+                }
+            }
         case .starting, .stopping:
             ProgressView().controlSize(.small).frame(width: 44)
         case .failed:
@@ -575,7 +583,10 @@ struct CatalogAction: View {
         case .running:
             Button("Stop") { model.stop() }.buttonStyle(PillButtonStyle(tint: .secondary))
         case .external:
-            EmptyView()
+            // `ExternalPresentation.Actions`: no Get or Install for a server the app did not start.
+            if model.externalActions?.get == true || model.externalActions?.install == true {
+                Button("Get") { model.install() }.buttonStyle(PillButtonStyle())
+            }
         case .failed(let failure):
             switch failure.kind {
             case .install, .download:
@@ -596,13 +607,21 @@ struct ServiceMenuItems: View {
 
     var body: some View {
         let info = model.info
-        Button("Copy URL") { Pasteboard.copy("ws://\(ServiceCatalog.host):\(model.port)/") }
-        Button("Copy Pipecat Service") { Pasteboard.copy(info.pipecatService(port: model.port)) }
-        Button("Copy Environment Variables") { Pasteboard.copy(info.environment(port: model.port)) }
+        // An External row offers what `ExternalPresentation.Actions` allows; every other row all of them.
+        let external = model.externalActions
+        if external?.copyURL ?? true {
+            Button("Copy URL") { Pasteboard.copy("ws://\(ServiceCatalog.host):\(model.port)/") }
+        }
+        if external?.copyPipecatService ?? true {
+            Button("Copy Pipecat Service") { Pasteboard.copy(info.pipecatService(port: model.port)) }
+        }
+        if external?.copyEnvironment ?? true {
+            Button("Copy Environment Variables") { Pasteboard.copy(info.environment(port: model.port)) }
+        }
         Divider()
         // Disabled while the app can't run them (`AppPhase.acceptsServiceActions`).
         action.disabled(!model.acceptsActions)
-        if model.isRunning {
+        if model.isRunning, external?.tryIt ?? true {
             // Opens the detail view, which shows the result (playing, transcript, or error).
             Button(model.kind == .tts ? "Test Voice" : "Test Transcription") {
                 app.show(model.service)
@@ -622,6 +641,8 @@ struct ServiceMenuItems: View {
         switch model.phase {
         case .running:
             Button("Stop") { model.stop() }
+        case .external:
+            if model.externalActions?.stop == true { Button("Stop") { model.stop() } }
         case .installed:
             Button("Start") { model.start() }
         case .notInstalled, .needsModel:

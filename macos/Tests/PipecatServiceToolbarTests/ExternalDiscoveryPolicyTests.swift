@@ -217,4 +217,15 @@ import Testing
         for directive in directives { _ = ServiceLifecycle.reduce(&state, directive.event) }
         #expect(state.phase == Self.external && state.externalFailures == 1)
     }
+
+    /// The one adopt test discovery and the Start path share: an `adopt` counts only on the
+    /// matched entry's own port; every other outcome adopts nothing.
+    @Test func adoptedInfoIsTheMatchedEntrysOwnPortOnly() {
+        let adopt = ExternalProbe.Outcome.adopt(Service.tone.info, Self.toneHello)
+        #expect(adopt.adoptedInfo(onPort: Service.tone.info.port) == Self.info)
+        #expect(adopt.adoptedInfo(onPort: Service.kokoro.info.port) == nil)
+        for other: ExternalProbe.Outcome in [.mismatch(Self.toneHello), .needsToken, .silent, .timeout, .unreachable] {
+            #expect(other.adoptedInfo(onPort: Service.tone.info.port) == nil, "\(other)")
+        }
+    }
 }

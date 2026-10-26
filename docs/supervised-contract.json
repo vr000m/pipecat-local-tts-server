@@ -8,9 +8,10 @@
     "(tests/fixtures/stt_supervised_lines.jsonl), and the Swift consumer (PrefetchEvent.swift, PCMStreamConverter.swift) against this file.",
     "`error_codes` is listed per emitter: each emitter's codes are exactly its own list, and the Swift SupervisedErrorCode is their union.",
     "Field types: string | integer | boolean | null. `fields` are always present; `optional` may be present.",
-    "One object per stdout line; consumers skip lines that are not JSON objects."
+    "One object per stdout line; consumers skip lines that are not JSON objects.",
+    "`version` 2: `error_codes` became an object keyed by emitter (`tts`, `stt`); in version 1 it was one flat list."
   ],
-  "version": 1,
+  "version": 2,
   "error_codes": {
     "tts": [
       "ModuleNotFoundError",

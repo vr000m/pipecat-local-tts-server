@@ -24,11 +24,15 @@ final class STTTryItSession {
     private(set) var level: Float = 0
 
     let port: Int
+    /// False for a server the app did not start (`ExternalPresentation.Actions.microphone`):
+    /// the card hides Record and `toggleRecording` refuses, so only the test clip is sent.
+    let allowsMicrophone: Bool
     private let engine = AVAudioEngine()
     private var recorded = Data()
 
-    init(port: Int) {
+    init(port: Int, allowsMicrophone: Bool = true) {
         self.port = port
+        self.allowsMicrophone = allowsMicrophone
     }
 
     var isBusy: Bool { phase != .idle && !isFailed }
@@ -50,6 +54,9 @@ final class STTTryItSession {
     }
 
     private func startRecording() async {
+        guard allowsMicrophone else {
+            return fail("Recording is off for a server the app did not start. Use Test Clip.")
+        }
         guard Self.microphoneAvailable else {
             return fail("Microphone access needs the bundled app (just app-open).")
         }

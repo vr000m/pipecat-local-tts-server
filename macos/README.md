@@ -238,8 +238,8 @@ constraints (network needed; `tests/test_supervised_contract.py` fails until you
 uv run python macos/scripts/compile_stt_constraints.py   # writes macos/constraints/stt-<engine>.txt
 ```
 
-STT model weights are not pinned (see How it works). The STT repo has said it
-intends to add revision pins; once it ships them, the app has to bump
+STT model weights are not pinned (see How it works): upstream 0.4.0 has no revision
+option. Pinning them needs an STT release that has one; the app then has to bump
 `ServiceCatalog.sttServerRequirement`, regenerate the constraints and pass the new
 revision option.
 

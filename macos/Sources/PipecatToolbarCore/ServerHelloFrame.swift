@@ -14,8 +14,13 @@ public struct ServerHelloFrame: Sendable, Equatable {
     public var model: String?
     /// `protocol_version`; nil when absent.
     public var protocolVersion: String?
-    /// `audio.rate`; nil when absent.
+    /// `audio.rate`; nil when absent or outside `acceptedRates` (callers then use their default).
     public var rate: Int?
+
+    /// The `audio.rate` values the app plays or resamples. A hello comes from any process that
+    /// holds a catalog port (an adopted server is trusted by its hello alone), so a rate of 0, a
+    /// negative one or an absurd one is dropped here rather than reaching `AVAudioFormat`.
+    public static let acceptedRates = 8000...192_000
 
     public init(backendName: String, model: String? = nil, protocolVersion: String? = nil, rate: Int? = nil) {
         self.backendName = backendName
@@ -41,6 +46,6 @@ public struct ServerHelloFrame: Sendable, Equatable {
             backendName: backend["name"] as? String ?? "",
             model: backend["model"] as? String,
             protocolVersion: obj["protocol_version"] as? String,
-            rate: audio["rate"] as? Int)
+            rate: (audio["rate"] as? Int).flatMap { acceptedRates.contains($0) ? $0 : nil })
     }
 }

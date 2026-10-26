@@ -574,13 +574,16 @@ struct STTTryItCard: View {
     var body: some View {
         Card(title: "Try it", systemImage: "mic.circle") {
             HStack(spacing: 8) {
-                Button {
-                    Task { await session.toggleRecording() }
-                } label: {
-                    Label(session.phase == .recording ? "Stop & Transcribe" : "Record", systemImage: session.phase == .recording ? "stop.fill" : "record.circle")
+                // No Record for an External server (`ExternalPresentation.Actions.microphone`).
+                if session.allowsMicrophone {
+                    Button {
+                        Task { await session.toggleRecording() }
+                    } label: {
+                        Label(session.phase == .recording ? "Stop & Transcribe" : "Record", systemImage: session.phase == .recording ? "stop.fill" : "record.circle")
+                    }
+                    .buttonStyle(PillButtonStyle(tint: .red, prominent: session.phase == .recording))
+                    .disabled(session.isBusy && session.phase != .recording)
                 }
-                .buttonStyle(PillButtonStyle(tint: .red, prominent: session.phase == .recording))
-                .disabled(session.isBusy && session.phase != .recording)
 
                 Button {
                     Task { await session.transcribeSample() }

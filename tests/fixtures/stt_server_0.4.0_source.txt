@@ -1,0 +1,35 @@
+# Verbatim excerpts of the upstream STT server, recorded for the lean drift tests
+# (tests/test_supervised_contract.py, tests/test_macos_catalog_drift.py), which cannot import it.
+# release: pipecat-local-stt-server 0.4.0 (tag v0.4.0, commit 44843732c9c3e6161889645192e1d4c1362d8474)
+# Re-record from the new tag whenever ServiceCatalog.sttServerRequirement moves; the tests check
+# that the release above is the one the app installs.
+## stt_server/supervise.py
+CODE_MODULE_NOT_FOUND = "ModuleNotFoundError"
+CODE_ADDR_IN_USE = "EADDRINUSE"
+CODE_ACCESS_DENIED = "EACCES"
+CODE_MODEL_DOWNLOAD = "ModelDownloadError"
+CODE_CONFIG = "ConfigError"
+CODE_BACKEND_START = "BackendStartError"
+CODE_MODEL_INVALID = "ModelInvalidError"
+## stt_server/backends/__init__.py
+DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+DEFAULT_NEMOTRON_MODEL = "mlx-community/nemotron-3.5-asr-streaming-0.6b"
+DEFAULT_KYUTAI_MODEL = "kyutai/stt-1b-en_fr-mlx"
+BACKENDS: dict[str, BackendEntry] = {
+    "echo": BackendEntry(None, None, None),
+    "mlx": BackendEntry("stt_server.backends.mlx_whisper", "MLXWhisperBackend", DEFAULT_MLX_MODEL),
+    "parakeet": BackendEntry(
+        "stt_server.backends.parakeet", "ParakeetBackend", DEFAULT_PARAKEET_MODEL
+    ),
+    "nemotron": BackendEntry(
+        "stt_server.backends.nemotron", "NemotronBackend", DEFAULT_NEMOTRON_MODEL
+    ),
+    # The kyutai loader fetches by Hub repo id (``hf_hub_download``) only.
+    "kyutai": BackendEntry(
+        "stt_server.backends.kyutai",
+        "KyutaiBackend",
+        DEFAULT_KYUTAI_MODEL,
+        local_model_paths=False,
+    ),
+}

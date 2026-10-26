@@ -37,16 +37,43 @@ LOG_PID=""
 APP_PID=""
 EXT_PID=""        # the out-of-process server this script started (step 5), nothing else
 EXT_LISTEN_PID="" # whatever pid listens on its port once it is up
+EXT_PORT=8665     # tone's canonical port (ServiceCatalog / justfile _resolve); not a real agent's
+EXT_MATCH=""      # the command line EXT_PID must still be running (set when it starts)
 
 pass() { printf '  \033[32mok\033[0m   %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; exit 1; }
 step() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 
+# True only while EXT_PID is still the server this script started: alive, a child of this
+# shell, and running the command line it was started with. `kill -0` alone is not proof:
+# once the child exits and the shell reaps it, the kernel can hand its pid to an unrelated
+# process. Every signal to EXT_PID goes through this check.
+ext_is_ours() {
+    [[ -n "$EXT_PID" && -n "$EXT_MATCH" ]] || return 1
+    local ppid cmd
+    ppid="$(ps -o ppid= -p "$EXT_PID" 2>/dev/null | tr -d ' ' || true)"
+    cmd="$(ps -o command= -p "$EXT_PID" 2>/dev/null || true)"
+    [[ "$ppid" == "$$" && "$cmd" == *"$EXT_MATCH"* ]]
+}
+
+# Stop the server this script started: SIGTERM, then SIGKILL only if it is still ours and
+# ignored SIGTERM, then reap it. Nothing is signalled once it is gone or no longer ours, and
+# nothing after `wait` (EXT_PID is cleared with it).
+stop_ext() {
+    [[ -n "$EXT_PID" ]] || return 0
+    if ext_is_ours; then kill "$EXT_PID" 2>/dev/null || true; fi
+    for _ in $(seq 1 20); do ext_is_ours || break; sleep 0.25; done
+    if ext_is_ours; then kill -9 "$EXT_PID" 2>/dev/null || true; fi
+    wait "$EXT_PID" 2>/dev/null || true
+    EXT_PID=""; EXT_LISTEN_PID=""
+}
+
 cleanup() {
     [[ -n "$LOG_PID" ]] && kill "$LOG_PID" 2>/dev/null || true
     [[ -n "$APP_PID" ]] && kill -9 "$APP_PID" 2>/dev/null || true
-    # Only the pid this script started (never the lsof listener, never a pattern kill).
-    [[ -n "$EXT_PID" ]] && kill "$EXT_PID" 2>/dev/null || true
+    # Only the pid this script started, and only while it is still that process
+    # (never the lsof listener, never a pattern kill).
+    stop_ext
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -162,7 +189,6 @@ assert_clean_exit "SIGTERM"
 # The script cannot open the panel or read its text, so External is read from the
 # phase line the bootstrap logs after its one discovery pass: `tone: external(8665, ...)`.
 step "External: a server started outside the app is adopted and survives Quit"
-EXT_PORT=8665   # tone's canonical port (ServiceCatalog / justfile _resolve); not a real agent's
 REPO_ROOT="$(dirname "$MACOS_DIR")"
 EXT_PY="$REPO_ROOT/.venv/bin/python"
 if lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -172,14 +198,16 @@ elif launchctl print "gui/$(id -u)/pipecat.tts-server.tone" >/dev/null 2>&1; the
 elif [[ ! -x "$EXT_PY" ]] || ! "$EXT_PY" -c 'import tts_server' >/dev/null 2>&1; then
     echo "  SKIP external: no usable $EXT_PY (run: uv sync --extra client)"
 else
+    EXT_MATCH="-m tts_server serve --backend tone --host 127.0.0.1 --port $EXT_PORT"
     "$EXT_PY" -m tts_server serve --backend tone --host 127.0.0.1 --port "$EXT_PORT" >"$WORK/external.log" 2>&1 &
     EXT_PID=$!
     deadline=$((SECONDS + 20))
     while ((SECONDS < deadline)); do
+        # Liveness only (no signal): until the child has exec'd python its command line is still bash's.
         kill -0 "$EXT_PID" 2>/dev/null || { cat "$WORK/external.log"; fail "the external tone server exited at start"; }
         # Accept the listener only if it is the process we started ($! is the python itself).
         EXT_LISTEN_PID="$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
-        [[ "$EXT_LISTEN_PID" == "$EXT_PID" ]] && break
+        [[ "$EXT_LISTEN_PID" == "$EXT_PID" ]] && ext_is_ours && break
         EXT_LISTEN_PID=""
         sleep 0.25
     done
@@ -195,16 +223,13 @@ else
     quitter=$!
     assert_clean_exit "quit with an external server"
     kill "$quitter" 2>/dev/null || true
-    kill -0 "$EXT_PID" 2>/dev/null || fail "Quit stopped the external server (pid $EXT_PID)"
-    lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN >/dev/null 2>&1 || fail "nothing listens on $EXT_PORT after Quit"
+    ext_is_ours || fail "Quit stopped the external server (pid $EXT_PID)"
+    [[ "$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)" == "$EXT_PID" ]] \
+        || fail "the server we started no longer listens on $EXT_PORT after Quit"
     pass "external server (pid $EXT_PID) still running after Quit"
 
     # Stop what this script started; cleanup() repeats it if we fail before here.
-    kill "$EXT_PID" 2>/dev/null || true
-    for _ in $(seq 1 20); do kill -0 "$EXT_PID" 2>/dev/null || break; sleep 0.25; done
-    kill -9 "$EXT_PID" 2>/dev/null || true   # still ours: only if SIGTERM was ignored
-    wait "$EXT_PID" 2>/dev/null || true
-    EXT_PID=""; EXT_LISTEN_PID=""
+    stop_ext
 fi
 
 step "UI smoke passed"

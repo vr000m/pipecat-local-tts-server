@@ -695,8 +695,11 @@ import Testing
         let epoch = driver.state.externalEpoch
         await driver.quit()
         let before = driver.state
+        // Each event below is still current after quit, so only the quit guard refuses it.
+        let lost = LifecycleEvent.externalLost(epoch: epoch, reason: .mismatch)
+        #expect(ServiceLifecycle.isCurrent(lost, in: before) && ServiceLifecycle.isCurrent(.tryItRequested, in: before))
         driver.externalLost(epoch: epoch, reason: .mismatch)
-        driver.startProbeResult(tag: 0, outcome: .unreachable)
+        driver.discovered(.lost(.tone, epoch: epoch, reason: .mismatch))
         driver.tryItRequested()
         #expect(driver.state == before && driver.state.phase.isExternal)
         #expect(host.tryIt.isEmpty)
@@ -705,8 +708,52 @@ import Testing
         await fresh.refresh()
         let idle = fresh.state
         await fresh.quit()
-        fresh.externalFound(epoch: idle.externalEpoch, info: Self.toneInfo)
+        #expect(ServiceLifecycle.isCurrent(.externalFound(epoch: fresh.state.externalEpoch, info: Self.toneInfo), in: fresh.state))
+        fresh.externalFound(epoch: fresh.state.externalEpoch, info: Self.toneInfo)
+        fresh.discovered(.found(.tone, epoch: fresh.state.externalEpoch, info: Self.toneInfo))
         #expect(fresh.state.phase == idle.phase, "an External adoption landed after quit began")
+    }
+
+    /// A Start-path probe still in flight when quit begins: its tag stays current (quit leaves a
+    /// `.starting` service with no server alone), so only the quit guard keeps its result out.
+    @Test func startProbeResultRefusesWhenQuitting() async {
+        let host = FakeHost()
+        host.externalHandler = { _ in
+            try? await Task.sleep(for: .seconds(30))  // cancelled by quit
+            return .unreachable
+        }
+        let processes = Processes([])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        await until { !host.externalProbes.isEmpty }
+        await driver.quit()
+        let before = driver.state
+        guard let tag = before.probe else {
+            Issue.record("no Start-path probe in flight: \(before.phase)")
+            return
+        }
+        #expect(before.phase == .starting)
+        #expect(ServiceLifecycle.isCurrent(.startProbeResult(tag: tag, outcome: .unreachable), in: before))
+        driver.startProbeResult(tag: tag, outcome: .unreachable)
+        #expect(driver.state == before, "a Start-path probe result landed after quit began")
+        #expect(processes.launches == 0, "quit must not launch a server")
+    }
+
+    /// Discovery has one path into the reducer (`discovered`), the same `Directive.event` the
+    /// policy tests reduce; a directive for another service is refused.
+    @Test func discoveredSendsTheDirectivesEventToItsOwnServiceOnly() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        let idle = driver.state
+        driver.discovered(.found(.kokoro, epoch: idle.externalEpoch, info: Self.toneInfo))
+        #expect(driver.state == idle, "another service's directive changed this one")
+        let directive = ExternalDiscoveryPolicy.Directive.found(.tone, epoch: idle.externalEpoch, info: Self.toneInfo)
+        var expected = idle
+        _ = ServiceLifecycle.reduce(&expected, directive.event)
+        driver.discovered(directive)
+        #expect(driver.state == expected && driver.state.phase.isExternal)
     }
 
     // MARK: Start path through the driver

@@ -8,7 +8,7 @@ import PipecatToolbarCore
 /// for that pass and does not start another, so a bootstrap that overlaps a timer tick still
 /// returns after the External results have landed. Closing the panel stops the timer but lets
 /// the pass finish (it is bounded by `helloTimeout`, and its events are epoch-gated); only
-/// quit cancels it.
+/// quit cancels it, and quit waits for it to unwind (`drain()`, `SerialPass` in Core).
 @MainActor
 final class ExternalDiscovery {
     /// Longer than `ExternalProbe.helloTimeout`, so a pass is over before the next tick.
@@ -17,10 +17,10 @@ final class ExternalDiscovery {
     private unowned let app: AppModel
     private let prober: any HelloProber
     private var timer: Task<Void, Never>?
-    /// The pass in progress, if any. Cleared by the pass itself when it ends.
-    private var inFlight: Task<Void, Never>?
+    /// One pass at a time; quit stops it and waits for the pass in flight.
+    private let passes = SerialPass()
     /// Quit began: no pass starts and no result lands.
-    private var stopped = false
+    private var stopped: Bool { passes.stopped }
 
     init(app: AppModel, prober: any HelloProber = ExternalProbe()) {
         self.app = app
@@ -41,27 +41,22 @@ final class ExternalDiscovery {
     }
 
     /// App quit: cancel the timer and the pass in flight (its results are dropped, so a Quit
-    /// during launch does not wait for a slow hello).
+    /// during launch does not wait for a slow hello). Then `drain()`.
     func stop() {
-        stopped = true
         timer?.cancel()
         timer = nil
-        inFlight?.cancel()
+        passes.stop()
+    }
+
+    /// After `stop()`: returns once the cancelled pass has unwound, so its probes and the
+    /// owner lookup's `lsof` / `launchctl` (cancelled with it) never outlive shutdown.
+    func drain() async {
+        await passes.drain()
     }
 
     /// One pass over the catalog's loopback ports, or the wait for the one already running.
     func runPass() async {
-        guard !stopped else { return }
-        if let running = inFlight {
-            await running.value
-            return
-        }
-        let task = Task { [self] in
-            await performPass()
-            inFlight = nil
-        }
-        inFlight = task
-        await task.value
+        await passes.run { [self] in await performPass() }
     }
 
     /// Each service gets an epoch-tagged event built from the epoch read here, before the
@@ -75,13 +70,8 @@ final class ExternalDiscovery {
         // A cancelled pass (panel closed, quit) may hold outcomes of cancelled probes.
         guard !Task.isCancelled, !stopped else { return }
         for directive in directives {
-            let driver = app.model(directive.service).driver
-            switch directive {
-            case .found(_, let epoch, let info):
-                driver.externalFound(epoch: epoch, info: info)
-            case .lost(_, let epoch, let reason):
-                driver.externalLost(epoch: epoch, reason: reason)
-            }
+            // The same event the policy's tests reduce (`Directive.event`), through the driver's quit guard.
+            app.model(directive.service).driver.discovered(directive)
         }
         for service in app.services {
             await service.refreshExternalOwner()

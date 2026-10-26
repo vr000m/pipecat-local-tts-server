@@ -1802,6 +1802,8 @@ final class ConcurrencyGauge: @unchecked Sendable {
         for service in Service.allCases where service != .parakeet {
             #expect(ProcessEnvironment.serve(service)["PATH"] == base, "\(service)")
         }
+        // The fact lives in the catalog, not in the process-environment layer.
+        #expect(Service.allCases.filter { $0.info.serveRunsHomebrewTools } == [.parakeet])
     }
 }
 
@@ -1902,6 +1904,25 @@ final class ConcurrencyGauge: @unchecked Sendable {
         let frame = try HelloFixtures.frame(HelloFixtures.json(for: .dia))
         #expect(frame.backendName == "dia" && frame.model == "mlx-community/Dia-1.6B-fp16")
         #expect(frame.rate == 44100)
+    }
+
+    /// A hello's `audio.rate` reaches `AVAudioFormat` (TTS Try it on an adopted server), so a
+    /// rate outside `acceptedRates` decodes as absent and the clients fall back to their default.
+    @Test(arguments: [
+        (rate: "24000", expected: 24000 as Int?), ("8000", 8000), ("192000", 192_000), ("16000", 16000),
+        ("0", nil), ("-24000", nil), ("7999", nil), ("192001", nil), ("1000000000", nil), ("24000.5", nil),
+        ("true", nil), ("\"24000\"", nil), ("null", nil),
+    ])
+    func aHelloRateOutsideTheAcceptedRangeIsDropped(rate: String, expected: Int?) throws {
+        let json = #"{"type":"server.hello","protocol_version":"0.1","backend":{"name":"tone","model":null},"audio":{"rate":"#
+            + rate + "}}"
+        let frame = try #require(ServerHelloFrame.decode(json))
+        #expect(frame.rate == expected, "rate \(rate)")
+        if case .hello(let hello)? = TTSEvent.decode(json) {
+            #expect(hello.rate == (expected ?? 24000), "TTS fallback for \(rate)")
+        } else {
+            Issue.record("TTSEvent did not decode the hello")
+        }
     }
 
     @Test func aMissingProtocolVersionIsNilNotAGuess() throws {
@@ -2114,6 +2135,12 @@ final class ConcurrencyGauge: @unchecked Sendable {
     @Test func aNestedPidDoesNotStandInForTheServicesPid() {
         #expect(PortProbe.launchctlPid(Self.printOutput(pid: 4242, nestedPid: 1)) == 4242)
         #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil, nestedPid: nil)) == nil)
+        // No top-level pid (the agent is down): a nested one is not the service's.
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil, nestedPid: 4242)) == nil)
+        #expect(
+            PortProbe.launchdLabel(
+                "pipecat.stt-server", launchctlStatus: 0, launchctlLines: Self.printOutput(pid: nil, nestedPid: 4242),
+                lsofPid: 4242) == nil)
     }
 
     @Test func aLoadedButNotRunningAgentHasNoPid() {

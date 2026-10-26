@@ -305,6 +305,12 @@ import Testing
         for kind in LifecycleEvent.Kind.allCases {
             #expect(kind.owner == Self.expectedOwner(kind), "\(kind) owner")
             #expect(kind.isNonOwning == Self.expectedNonOwning(kind), "\(kind) non-owning")
+            // The other two epoch tables, stated independently of the reducer.
+            #expect(kind.keepsEpochWhenItOnlyCounts == (kind == .externalLost), "\(kind) count-only")
+            #expect(
+                kind.changesExternalEpoch
+                    == [.startRequested, .installRequested, .stopRequested, .shutdownRequested, .shutdownServers,
+                        .removeRequested].contains(kind), "\(kind) external epoch")
             #expect(Self.sample(kind, stale: false).kind == kind, "\(kind) sample")
             // A probe lives only in `.starting`.
             for phase in Self.phases
@@ -327,7 +333,13 @@ import Testing
                     var settled = s
                     settled.epoch = before.epoch
                     let rejected = effects.isEmpty && settled == before
-                    #expect(s.epoch == before.epoch + (kind.isNonOwning || rejected ? 0 : 1), "epoch: \(label)")
+                    let onlyCounted = kind.keepsEpochWhenItOnlyCounts && before.phase.isExternal && s.phase.isExternal
+                    #expect(
+                        s.epoch == before.epoch + (kind.isNonOwning || rejected || onlyCounted ? 0 : 1), "epoch: \(label)")
+                    // `externalEpoch` follows the tables too: a transition into or out of External,
+                    // or an applied kind in `changesExternalEpoch`.
+                    let movesExternal = !rejected && (s.phase.isExternal != before.phase.isExternal || kind.changesExternalEpoch)
+                    #expect(s.externalEpoch == before.externalEpoch + (movesExternal ? 1 : 0), "external epoch: \(label)")
                     if kind.isNonOwning {
                         #expect(s.phase == before.phase && s.requested == before.requested, "\(label)")
                         #expect(
