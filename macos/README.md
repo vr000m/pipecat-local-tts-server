@@ -31,7 +31,7 @@ then **Start**.
 | Whisper | STT | 9565 | `mlx-community/whisper-large-v3-turbo` | MIT |
 | Kyutai STT | STT | 9665 | `kyutai/stt-1b-en_fr-mlx` | CC-BY-4.0 |
 | Parakeet | STT | 9765 | `mlx-community/parakeet-tdt-0.6b-v3` | CC-BY-4.0 |
-| Nemotron | STT | 9865 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | NVIDIA open model licence (`license:other`) |
+| Nemotron | STT | 9865 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | Custom licence (`license:other`) |
 | **Kokoro** (default TTS) | TTS | 8765 | `mlx-community/Kokoro-82M-bf16` | Apache-2.0 |
 | Phonon | TTS | 9365 | `gradium/phonon-31m-en` | Apache-2.0 |
 | Pocket TTS | TTS | 8965 | `mlx-community/pocket-tts` | CC-BY-4.0 |
@@ -69,13 +69,15 @@ for running both.
   Try it and the Copy items. **Quit leaves it running**
   (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
 - **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the
-  same ports, so a running agent shows as External. If an app-started server and
-  an agent contend for one port, the app reports the port busy and names what
-  answered (the agent's label, when `launchctl` confirms it holds the port).
+  same ports, so a running agent whose hello matches shows as External. If
+  whatever holds the port does not identify as that service (a different
+  backend or model, no hello, or a token), Start reports the port busy, naming
+  the holder when `launchctl` confirms it (the agent's label).
 - **Every server on a well-known port.** The app can own every TTS and STT server
   while other apps probe the same catalog ports.
 - **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
-  server that needs a bearer token is shown as needing one; the app stores none.
+  server that needs a bearer token is not adopted (Start then reports the port busy
+  because it wants a token); the app stores no token.
 - **Support floor.** STT starts through `pipecat-local-stt-server==0.4.0`'s own CLI
   (`python -m stt_server serve --supervised`). An STT agent on an older version
   is still adopted by its hello, but an app-started STT server needs 0.4.0.
@@ -236,9 +238,10 @@ constraints (network needed; `tests/test_supervised_contract.py` fails until you
 uv run python macos/scripts/compile_stt_constraints.py   # writes macos/constraints/stt-<engine>.txt
 ```
 
-STT model weights are not pinned (see How it works); to move to the STT version
-that adds revision pins, bump `ServiceCatalog.sttServerRequirement` and regenerate
-the constraints.
+STT model weights are not pinned (see How it works). The STT repo has said it
+intends to add revision pins; once it ships them, the app has to bump
+`ServiceCatalog.sttServerRequirement`, regenerate the constraints and pass the new
+revision option.
 
 Build knobs (environment variables read by `macos/scripts/`):
 

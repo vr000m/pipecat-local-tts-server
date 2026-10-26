@@ -444,8 +444,19 @@ def test_ui_smoke_recognises_external_phase() -> None:
 
 
 def test_ui_smoke_skips_when_canonical_port_held() -> None:
-    text = _UI_SMOKE.read_text()
-    assert re.search(r"\bskip", text, re.I), "no skip path in ui_smoke.sh"
+    code = "\n".join(
+        ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")
+    )
+    assert re.search(r"^EXT_PORT=8665\b", code, re.M), (
+        "the external step must use tone's canonical port"
+    )
+    held = re.search(r'lsof -nP -iTCP:"\$EXT_PORT" -sTCP:LISTEN', code)
+    skip = re.search(r"SKIP external: port", code)
+    serve = re.search(r"tts_server serve --backend tone", code)
+    assert held and skip and serve, "held-port check, SKIP message and tone launch must all be code"
+    assert held.start() < skip.start() < serve.start(), (
+        "the held-port skip must come before the launch"
+    )
 
 
 def test_ui_smoke_never_names_real_agent_ports() -> None:
@@ -458,7 +469,7 @@ def test_architecture_known_followups_lists_deferred_discovery() -> None:
     text = _ARCH_DOC.read_text()
     m = re.search(r"^## Known follow-ups\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     assert m is not None, "Known follow-ups section missing"
-    body = m.group(1).lower()
-    assert "unix" in body and "socket" in body
-    assert "lan" in body
-    assert "token" in body
+    body = m.group(1)
+    assert re.search(r"Unix-socket discovery", body)
+    assert re.search(r"\bLAN endpoints\b", body)
+    assert re.search(r"token storage", body)

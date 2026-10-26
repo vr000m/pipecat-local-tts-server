@@ -15,8 +15,10 @@
 # 4. SIGTERM: a second launch killed with SIGTERM also leaves no child behind.
 # 5. External: a tone server started OUT OF PROCESS on its canonical loopback port
 #    (8665) is adopted at launch (the bootstrap log line says `external(`) and is
-#    still alive after Quit. Skipped when 8665 is held or the repo .venv is missing.
-#    It never touches 8965 or 9565-9865 (real LaunchAgents run there).
+#    still alive after Quit. Skipped when 8665 is held, a tone LaunchAgent is loaded
+#    or the repo .venv is missing. The script never starts or stops anything on 8965 or
+#    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
+#    read-only, at every launch.
 #
 # Not covered (needs Accessibility, see macos/README.md "Manual UI checklist"):
 # opening the panel, clicking Install/Start, and the port a started service opens.
@@ -43,8 +45,7 @@ step() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 cleanup() {
     [[ -n "$LOG_PID" ]] && kill "$LOG_PID" 2>/dev/null || true
     [[ -n "$APP_PID" ]] && kill -9 "$APP_PID" 2>/dev/null || true
-    # Only the pids this script started; never a pattern kill.
-    [[ -n "$EXT_LISTEN_PID" ]] && kill "$EXT_LISTEN_PID" 2>/dev/null || true
+    # Only the pid this script started (never the lsof listener, never a pattern kill).
     [[ -n "$EXT_PID" ]] && kill "$EXT_PID" 2>/dev/null || true
     rm -rf "$WORK"
 }
@@ -143,7 +144,7 @@ launch
 kind="$(lsappinfo info -only ApplicationType "$APP_PID" 2>/dev/null || true)"
 [[ "$kind" == *UIElement* ]] || fail "not a menu bar (UIElement) app: ${kind:-not registered with LaunchServices}"
 pass "running as a UIElement app (pid $APP_PID)"
-pass "bootstrap finished: $(grep -o 'tools from [a-z]*' "$WORK/app.log" | head -1); $(grep -cE ': (notInstalled|installed|unavailable|running|installing)' "$WORK/app.log") service phase line(s)"
+pass "bootstrap finished: $(grep -o 'tools from [a-z]*' "$WORK/app.log" | head -1); $(grep -cE ': (notInstalled|installed|unavailable|running|installing|external\()' "$WORK/app.log") service phase line(s)"
 
 step "Quit (Apple Event, as the menu's Quit does)"
 osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
@@ -166,6 +167,8 @@ REPO_ROOT="$(dirname "$MACOS_DIR")"
 EXT_PY="$REPO_ROOT/.venv/bin/python"
 if lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "  SKIP external: port $EXT_PORT is already held ($(lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN | awk 'NR==2{print $1" pid "$2}'))"
+elif launchctl print "gui/$(id -u)/pipecat.tts-server.tone" >/dev/null 2>&1; then
+    echo "  SKIP external: a pipecat.tts-server.tone LaunchAgent is loaded (it would race for $EXT_PORT)"
 elif [[ ! -x "$EXT_PY" ]] || ! "$EXT_PY" -c 'import tts_server' >/dev/null 2>&1; then
     echo "  SKIP external: no usable $EXT_PY (run: uv sync --extra client)"
 else
@@ -173,13 +176,15 @@ else
     EXT_PID=$!
     deadline=$((SECONDS + 20))
     while ((SECONDS < deadline)); do
-        EXT_LISTEN_PID="$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
-        [[ -n "$EXT_LISTEN_PID" ]] && break
         kill -0 "$EXT_PID" 2>/dev/null || { cat "$WORK/external.log"; fail "the external tone server exited at start"; }
+        # Accept the listener only if it is the process we started ($! is the python itself).
+        EXT_LISTEN_PID="$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+        [[ "$EXT_LISTEN_PID" == "$EXT_PID" ]] && break
+        EXT_LISTEN_PID=""
         sleep 0.25
     done
-    [[ -n "$EXT_LISTEN_PID" ]] || { cat "$WORK/external.log"; fail "the external tone server never listened on $EXT_PORT"; }
-    pass "external tone server up on 127.0.0.1:$EXT_PORT (pid $EXT_LISTEN_PID)"
+    [[ -n "$EXT_LISTEN_PID" ]] || { cat "$WORK/external.log"; fail "the external tone server we started never listened on $EXT_PORT"; }
+    pass "external tone server up on 127.0.0.1:$EXT_PORT (pid $EXT_PID)"
 
     launch
     grep -qE "tone: external\($EXT_PORT" "$WORK/app.log" \
@@ -190,13 +195,14 @@ else
     quitter=$!
     assert_clean_exit "quit with an external server"
     kill "$quitter" 2>/dev/null || true
-    kill -0 "$EXT_LISTEN_PID" 2>/dev/null || fail "Quit stopped the external server (pid $EXT_LISTEN_PID)"
+    kill -0 "$EXT_PID" 2>/dev/null || fail "Quit stopped the external server (pid $EXT_PID)"
     lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN >/dev/null 2>&1 || fail "nothing listens on $EXT_PORT after Quit"
-    pass "external server (pid $EXT_LISTEN_PID) still running after Quit"
+    pass "external server (pid $EXT_PID) still running after Quit"
 
     # Stop what this script started; cleanup() repeats it if we fail before here.
-    kill "$EXT_LISTEN_PID" 2>/dev/null || true
-    [[ "$EXT_PID" == "$EXT_LISTEN_PID" ]] || kill "$EXT_PID" 2>/dev/null || true
+    kill "$EXT_PID" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$EXT_PID" 2>/dev/null || break; sleep 0.25; done
+    kill -9 "$EXT_PID" 2>/dev/null || true   # still ours: only if SIGTERM was ignored
     wait "$EXT_PID" 2>/dev/null || true
     EXT_PID=""; EXT_LISTEN_PID=""
 fi

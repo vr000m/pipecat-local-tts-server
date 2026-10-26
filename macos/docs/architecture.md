@@ -33,7 +33,7 @@ flowchart LR
 | Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints: bundle first, then the overrides below, then the repo checkout. |
 | Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports: every component above the folder must resolve, symlinks included, to exactly that root or `<root>/<backend>`, so a symlinked backend directory can't carry a deletion outside it. Builds every command line by runtime. |
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
-| Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
+| Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus the entry's `launchdLabel` agent, named only when its `launchctl print` pid equals the `lsof` pid): the "port busy" failure in the README's Problems section. |
 | Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision (STT repos excepted) and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, an "all but docs" filter for the STT repos, an approximation: upstream STT `prefetch` fetches the whole repo or the config-named weights). STT repos are sized at their `main`, as they are not pinned. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)`. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
 | Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift`, `AppLifecycle.swift` | The per-service state machine and the app-wide one, UI-free. `ServiceLifecycle.reduce(_ state: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect]` mutates only the state it is handed and does no I/O; it makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it). On quit each layer stops its own work: `ServiceDriver.quit()` first stops new reads and intents, then the reducer's `shutdownRequested` cancels an Apple Speech install (the app runs it; a Python install is the manager's); `EnvironmentManager.shutdown()` stops the install or prefetch step subprocess in flight and every probe, sets `shuttingDown` so no later step or probe starts (the interrupted install unwinds), and waits up to 20 s for busy families; the bootstrap's own `uv build`/`uv export` are stopped through a `ProcessRegistry`. `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. `AppLifecycle.reduce(_ phase: inout AppPhase, _ event: AppEvent) -> [AppEffect]` owns bootstrap, Reset and quit the same way ([App lifecycle](#app-lifecycle)). |
 | Protocols | `TTSClient.swift`, `TTSRequestMachine.swift`, `TTSRequestDriver.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, the TTS Try it request lifecycle (a pure state machine and the driver that runs it on a connection), plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
@@ -216,27 +216,29 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
   Apple Speech never) with `ExternalProbe`, a `server.hello` with no `Origin`
   header. A hello whose backend name and model match the entry (`ServiceInfo.entry(for:port:)`)
   moves the service to `.external(port, info)`; the app starts its own server only
-  when nothing answers (Start runs the same probe first, so a server that appears
-  between probe and launch is adopted, not reported busy). One pass runs at
+  when nothing answers (Start probes only a busy port; a free port launches at once,
+  and a server that takes the port in between is adopted through the one re-probe
+  after `EADDRINUSE`, not reported busy). One pass runs at
   bootstrap (the Phase 6 smoke reads its `<service>: external(<port>, ...)` log
   line), then one on every panel open and every 15 s while it stays open. A
   discovery result is applied only if its `externalEpoch` is current.
 - **Ownership invariant.** The app only signals, stops or deletes processes it
   started. `.external` carries no pid and holds `server == nil && native == nil`;
-  the reducer issues no stop, launch, install or remove effect for it, so Stop,
-  Delete, Get, Install and Reset are not offered (`ExternalPresentation.Actions`),
-  and Quit leaves it running ("Quit" when `ServiceCounts.owned == 0`, else
-  "Stop All & Quit"). The only effects it may issue are read-only probes
-  (`probeExternal`, `probePortOwner`, Try it).
+  the reducer issues no stop, launch, install or remove effect for it (the effects
+  allowed in `.external` are `.cancelProbe`, `.openTryIt`, `.tearDown` and the
+  read-only `.probePortOwner`, plus a state re-read), and the views do not offer
+  Stop, Delete, Get, Install or Reset. Quit leaves it running ("Quit" when
+  `ServiceCounts.owned == 0`, else "Stop All & Quit").
 - **Support floor.** STT is app-started through `pipecat-local-stt-server==0.4.0`;
   older STT servers are adopted by hello only.
 - **Beside LaunchAgents.** `just tts-install` and `just stt-*` agents use the same
   ports, so they show as External; the source line is the agent's label when
   `PortProbe.owner` confirms the `launchctl print` pid equals the `lsof` pid, else
-  `127.0.0.1:<port>`. An app-started server and an agent that contend for one port
-  fail with `.portBusy`, naming what answered.
-- **Not discovered:** Unix sockets, LAN endpoints, token-protected servers (shown
-  as needing a token).
+  `127.0.0.1:<port>`. A holder that does not identify as the service (different
+  backend or model, silent, timed out, or wants a token) makes Start fail with
+  `.portBusy`; it is named only when `launchctl` or the hello identifies it.
+- **Not discovered:** Unix sockets, LAN endpoints, token-protected servers (Start
+  reports the port busy because it wants a token).
 
 ## Known follow-ups
 
@@ -259,7 +261,7 @@ Left as they are on purpose, across both lifecycles and their adapters:
 - External discovery covers loopback TCP on the catalog ports only. Left for
   later: Unix-socket discovery (the servers' `--socket-path` mode), LAN endpoints,
   and token storage (a non-loopback server requires a bearer token; the app stores
-  none, so such a server is shown as needing a token).
+  none, so Start reports such a server's port busy because it wants a token).
 - Out of scope: the TTS 24000 Hz fallback rate when a ready line has none; the
   STT Try it phase logic; the loopback token.
 - Native Apple Speech server: a listener failure after it reported ready is not
@@ -461,8 +463,8 @@ the bare file name.
   `uv.lock` stays `--no-hashes`.
 - **STT weights are not pinned.** Upstream `pipecat-local-stt-server` 0.4.0 has no
   revision option, so `prefetch` and `serve` follow each STT repo's `main`. The STT
-  repo is adding pins in its next release; until the app moves to it, do not claim a
-  pinned STT commit.
+  repo has said it intends to add pins; until the app moves to a release that has
+  them (and passes the revision option), do not claim a pinned STT commit.
 - **Fingerprints.** The pin of Phonon's weights is not part of
   `Tools.fingerprint(for:)` (the TTS wheel name, or an STT engine's requirement
   list), so refreshing it never marks an existing environment outdated. A pin refresh

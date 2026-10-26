@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confirms it holds the port (else `127.0.0.1:<port>`), and **Quit leaves them
   running** ("Stop All & Quit" appears only when the app started a server). The app
   only signals, stops or deletes processes it started. An app-started server and a
-  `just tts-install` / `just stt-*` agent on one port still contend: the app reports
-  the port busy and names what answered. Unix sockets, LAN endpoints and
+  `just tts-install` / `just stt-*` agent on one port: a matching agent is adopted;
+  a holder that does not identify as that service makes Start report the port busy,
+  naming it when `launchctl` confirms it. Unix sockets, LAN endpoints and
   token-protected servers are not discovered.
 - **Parakeet (9765) and Nemotron (9865)** STT services, matching the
   `pipecat.stt-server.parakeet` / `nemotron` agent ports. Parakeet needs `ffmpeg` on
@@ -37,9 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the helper's cooperative cancel are removed. An STT server on an older version
   is adopted by its hello, but an app-started STT server needs 0.4.0.
 - STT model weights are **not pinned to a commit** in this release (upstream 0.4.0 has
-  no revision option; the app follows each repo's `main`). The STT repo is adding
-  pins in its next release. Kyutai barge-in waits for the in-flight decode until
-  upstream cancels per frame.
+  no revision option; the app follows each repo's `main`). The STT repo has said it
+  intends to add pins and a per-frame Kyutai cancel in a later release; until the app
+  moves to it, Kyutai barge-in waits for the in-flight decode.
 - `docs/supervised-contract.json` lists error codes per emitter; `ModelInvalidError`
   is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
 
@@ -126,9 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and clock seams; `ServiceModel` is now a thin `@Observable` adapter and the Swift
   tests depend on Core only. Add Models' download size now counts every snapshot an
   install fetches at its pinned revision (Phonon's pin, dia's codec, pocket_tts's
-  voice embeddings, an "all but docs" filter for the STT repos) from
-  `ServiceCatalog.snapshots(for:)`, which a lean drift test compares with each
-  backend's `prefetch_specs(model)`.
+  voice embeddings, the STT helper's file filter at its `MODEL_REVISIONS` pin, which
+  `ServiceCatalog.sttModelRevisions` repeats) from `ServiceCatalog.snapshots(for:)`,
+  which a lean drift test compares with each backend's `prefetch_specs(model)` and
+  with the helper's pins. (Since changed: the STT helper, `MODEL_REVISIONS` and
+  `sttModelRevisions` are gone; see Unreleased.)
 - `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
   (both still `RuntimeError` subclasses).
 - `TTSServer.listening_port()` returns `None` for a Unix socket instead of a
