@@ -429,7 +429,8 @@ Context lifecycle:
   3. No Phase 0 no-go fallback through `status --json`: a failed spike defers Unix sockets and the branch stays TCP-only.
   4. SocketScan accepts a directory owned by the user with no group or other write bit (0755 accepted, 0775 refused), mirroring the servers.
 - 2026-10-26, applied without a grill (obvious from the second review): added a `timeout` probe outcome distinct from `silent`; moved `Snapshots.swift` into Phase 2 and `ServiceDriverTests.swift` and the other `init(host:port:)` callers into Phase 3 so every boundary builds; Phase 1 keeps a forwarding `init(host:port:)`; Phase 4 steps (b)/(c) split so only (c) removes the helper; the real-hello drift test compares static backend names (live hello for tone only); a recorded upstream `ready`/`error` fixture for the lean job; Kyutai has no socket or label; adoption of Parakeet and Nemotron arrives in Phase 4; STT adapter socket support verified (`stt_server/examples/pipecat_stt_service.py:57,66`); the Known follow-ups heading lives in `macos/docs/architecture.md`; the hello timeout is measured in Phase 1; the Nemotron try-it check uses a hand-started TCP server.
-- Pending: onoats-bot-39 has not answered about LaunchAgent self-heal when the app holds a port, or whether it needs TTS (it has no TTS client today and does no port probing).
+- 2026-10-26, user: onoats-bot needs STT only, no TTS. TTS adoption is for other Pipecat apps and the `just tts-*` agents; onoats-bot's only touchpoint is STT (Unix socket by default, TCP via `STT_WS_URI`).
+- Pending: onoats-bot-39 has not answered about LaunchAgent self-heal when the app holds a port (it does no port probing today).
 - Not yet verified: whether the app's STT try-it flow fits the nemotron backend's transcript semantics (Phase 4 E2E checks it); whether the Unix transport sends an `Origin` header (Phase 0 records it).
 
 ## Issues & Solutions
