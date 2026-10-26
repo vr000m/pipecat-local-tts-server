@@ -38,6 +38,8 @@ class CatalogEntry:
     model_repo: str | None
     model_argument: str | None
     streaming: bool
+    # ``expectedBackendName``: the ``backend.name`` the entry's ``server.hello`` reports
+    expected_backend_name: str
     # ``runtime: .sttHelper(engine:requirements:)`` (STT helper engines only)
     engine: str | None = None
     requirements: tuple[str, ...] = ()
@@ -103,10 +105,11 @@ def macos_catalog() -> dict[str, CatalogEntry]:
             model_repo=_optional_string(block, "modelRepo"),
             model_argument=_optional_string(block, "modelArgument"),
             streaming=_field(block, r"streaming: (true|false)") == "true",
+            expected_backend_name=_field(block, r'expectedBackendName: "(\w+)"'),
         )
     entries = dict(literals)
     for case, base, block in variants:
-        # A variant shares its family's runtime, kind and streaming flag.
+        # A variant shares its family's runtime, kind, streaming flag and backend name.
         entries[case] = replace(
             literals[base],
             name=raw[case],

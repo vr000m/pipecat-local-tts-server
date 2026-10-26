@@ -676,6 +676,21 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         let client = TTSClient(port: readyPort)
         let hello = try await client.connect()
         #expect(hello.backend == "tone" && hello.rate == 24000)
+        #expect(hello.protocolVersion == "0.1")
+
+        // The live hello maps back to the service that was started (the server is on an
+        // ephemeral port, so the match is made on tone's own catalog port).
+        let live = try await HelloFixtures.liveHello(port: readyPort)
+        #expect(live.backendName == "tone" && live.model == nil && live.protocolVersion == "0.1")
+        #expect(HelloFixtures.entry(for: live, port: Service.tone.info.port)?.service == .tone)
+        #expect(HelloFixtures.entry(for: live, port: readyPort) == nil, "an ephemeral port belongs to no entry")
+        // The probe reads the same hello with no Origin header (a 403 would be `needsToken`);
+        // on this port it is a mismatch, and it names the tone server that answered.
+        guard case .mismatch(let probed) = await ExternalProbe().probe(port: readyPort) else {
+            Issue.record("expected the live tone hello to be read by the probe")
+            return
+        }
+        #expect(probed.backendName == "tone" && probed.protocolVersion == "0.1")
 
         for frame in TTSClientFrame.request(TTSRequest(id: "tryit-1", text: "Hello there.", voice: nil)) {
             try await client.send(frame)
@@ -1757,5 +1772,198 @@ final class ConcurrencyGauge: @unchecked Sendable {
         // Nothing starts after quit.
         let late = Subprocess(.init(executable: uv, arguments: [], environment: [:]))
         await #expect(throws: CancellationError.self) { _ = try await processes.collect(late) }
+    }
+}
+
+/// One decoder for the `server.hello` text frame, shared by the probe and both clients.
+@Suite struct ServerHelloFrameTests {
+    @Test func decodesTheRecordedToneHello() throws {
+        let frame = try HelloFixtures.frame(HelloFixtures.recordedTone)
+        #expect(frame.backendName == "tone")
+        #expect(frame.model == nil)
+        #expect(frame.protocolVersion == "0.1")
+        #expect(frame.rate == 24000)
+    }
+
+    @Test func decodesModelAndRate() throws {
+        let frame = try HelloFixtures.frame(HelloFixtures.json(for: .dia))
+        #expect(frame.backendName == "dia" && frame.model == "mlx-community/Dia-1.6B-fp16")
+        #expect(frame.rate == 44100)
+    }
+
+    @Test func aMissingProtocolVersionIsNilNotAGuess() throws {
+        let frame = try HelloFixtures.frame(HelloFixtures.json(name: "tone", model: nil, protocolVersion: nil))
+        #expect(frame.protocolVersion == nil)
+    }
+
+    @Test func otherFramesAndNonJSONAreNotHellos() {
+        #expect(ServerHelloFrame.decode(#"{"type":"server.status","voices":[],"queue_depth":0}"#) == nil)
+        #expect(ServerHelloFrame.decode(#"{"type":"response.audio.done","response_id":"r1"}"#) == nil)
+        #expect(ServerHelloFrame.decode("not json") == nil)
+        #expect(ServerHelloFrame.decode("") == nil)
+    }
+
+    @Test func aHelloWithoutABackendNameIsNeverAdopted() throws {
+        // Unsupported (plan): either the decoder rejects it or the match does.
+        let json = HelloFixtures.json(name: nil, model: nil)
+        if let frame = ServerHelloFrame.decode(json) {
+            for service in Service.allCases where service != .appleSpeech {
+                #expect(HelloFixtures.entry(for: frame, port: service.info.port) == nil, "\(service)")
+            }
+        }
+    }
+
+    /// The TTS client's hello carries the version too, and a memberwise `ServerHello`
+    /// without it still compiles (`TTSRequestMachineTests` builds one).
+    @Test func ttsClientHelloKeepsTheProtocolVersion() throws {
+        guard case .hello(let hello)? = TTSEvent.decode(HelloFixtures.recordedTone) else {
+            Issue.record("not a hello")
+            return
+        }
+        #expect(hello.protocolVersion == "0.1")
+        #expect(hello.backend == "tone" && hello.rate == 24000)
+        guard case .hello(let bare)? = TTSEvent.decode(HelloFixtures.json(name: "tone", model: nil, protocolVersion: nil)) else {
+            Issue.record("not a hello")
+            return
+        }
+        #expect(bare.protocolVersion == nil)
+        #expect(ServerHello(backend: "x", model: nil, rate: 1, channels: 1, streaming: false, voiceCount: 0, maxTextChars: nil, languages: []).protocolVersion == nil)
+    }
+}
+
+/// `entry(for:port:)`: the one place a hello becomes a catalog entry.
+@Suite struct HelloMatchingTests {
+    static let catalogServices = Service.allCases.filter { $0 != .appleSpeech }
+
+    /// Each entry reports a `backend.name` the catalog expects, independent of the fixtures.
+    @Test func expectedBackendNames() {
+        for service in Service.allCases where service.kind == .tts {
+            #expect(service.info.expectedBackendName == service.family.rawValue, "\(service)")
+        }
+        // Whisper's variants are all the `mlx` backend; Kyutai's both `kyutai`.
+        for service in Service.whisper.variants { #expect(service.info.expectedBackendName == "mlx", "\(service)") }
+        for service in Service.kyutai.variants { #expect(service.info.expectedBackendName == "kyutai", "\(service)") }
+    }
+
+    @Test func launchdLabelsExistPerFamilyOnly() {
+        for service in Service.allCases where service.kind == .tts {
+            let expected = service == service.family ? "pipecat.tts-server.\(service.rawValue)" : nil
+            #expect(service.info.launchdLabel == expected, "\(service)")
+        }
+        #expect(Service.tone.info.launchdLabel == "pipecat.tts-server.tone")
+        #expect(Service.whisper.info.launchdLabel == "pipecat.stt-server")
+        #expect(Service.kyutai.info.launchdLabel == "pipecat.stt-server.kyutai")
+        for service in Service.whisper.variants.dropFirst() + Service.kyutai.variants.dropFirst() {
+            #expect(service.info.launchdLabel == nil, "\(service)")
+        }
+        #expect(Service.appleSpeech.info.launchdLabel == nil)
+    }
+
+    /// Every service's hello, on its own port, maps back to exactly that service.
+    @Test func everyHelloMapsBackToItsService() throws {
+        for r in HelloFixtures.synthesized {
+            let info = try #require(try HelloFixtures.match(HelloFixtures.json(for: r.service), port: r.service.info.port), "\(r.service)")
+            #expect(info.service == r.service)
+        }
+        #expect(Set(HelloFixtures.synthesized.map(\.service)) == Set(Self.catalogServices))
+    }
+
+    @Test func recordedToneHelloMapsToTone() throws {
+        let info = try #require(try HelloFixtures.match(HelloFixtures.recordedTone, port: Service.tone.info.port))
+        #expect(info.service == .tone)
+    }
+
+    @Test func phononVariantsReportTheirAlias() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q8"), port: 9366)?.service == .phononQ8)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q4"), port: 9367)?.service == .phononQ4)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "gradium/phonon-31m-en"), port: 9365)?.service == .phonon)
+        // The quantized servers report the alias, not the repo they fetched.
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "gradium/phonon-31m-en"), port: 9366) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "gradium/phonon-31m-en"), port: 9367) == nil)
+        // Full precision does not answer on a quantized port, nor q8 on the full port.
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q8"), port: 9365) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q8"), port: 9367) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q4"), port: 9366) == nil)
+    }
+
+    @Test func whisperVariantsAllReportMlx() throws {
+        for service in Service.whisper.variants {
+            let repo = try #require(service.info.modelRepo)
+            let json = HelloFixtures.json(name: "mlx", model: repo, rate: 16000)
+            #expect(try HelloFixtures.match(json, port: service.info.port)?.service == service, "\(service)")
+            // The model decides which variant; another size's repo on this port is a mismatch.
+            for other in Service.whisper.variants where other != service {
+                #expect(try HelloFixtures.match(json, port: other.info.port) == nil, "\(service) on \(other)")
+            }
+        }
+        // The family name is not the backend name.
+        let turbo = try #require(Service.whisper.info.modelRepo)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "whisper", model: turbo), port: Service.whisper.info.port) == nil)
+    }
+
+    @Test func kyutaiVariantsMatchByModel() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai), port: 9665)?.service == .kyutai)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai2B), port: 9666)?.service == .kyutai2B)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai2B), port: 9665) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai), port: 9666) == nil)
+    }
+
+    @Test func toneWithAModelIsAMismatch() throws {
+        // Tone pins no model: only a hello without one matches.
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "tone", model: nil), port: 8665)?.service == .tone)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "tone", model: "some/model"), port: 8665) == nil)
+    }
+
+    @Test func kokoroWithNoModelIsAMismatch() throws {
+        // A missing model matches only an entry that pins none; kokoro pins its repo.
+        let repo = try #require(Service.kokoro.info.modelRepo)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: repo), port: 8765)?.service == .kokoro)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: nil), port: 8765) == nil)
+    }
+
+    @Test func unknownModelForAKnownBackendIsAMismatch() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: "someone/else-82M"), port: 8765) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q2"), port: 9365) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "mlx", model: "mlx-community/whisper-huge"), port: 9565) == nil)
+    }
+
+    @Test func unknownBackendNameIsAMismatch() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "echo", model: nil), port: 8665) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "TONE", model: nil), port: 8665) == nil)
+        // Another entry's backend name on this entry's port.
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kokoro), port: Service.tone.info.port) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .tone), port: Service.kokoro.info.port) == nil)
+    }
+
+    @Test(arguments: [nil, "", "0", "0.2", "0.10", "1", "1.0", "v0.1"] as [String?])
+    func protocolVersionMustBeZeroPointOne(version: String?) throws {
+        for service in Self.catalogServices {
+            let json = HelloFixtures.json(for: service, protocolVersion: version)
+            #expect(try HelloFixtures.match(json, port: service.info.port) == nil, "\(service) with \(String(describing: version))")
+        }
+        let ok = HelloFixtures.json(for: .tone, protocolVersion: "0.1")
+        #expect(try HelloFixtures.match(ok, port: 8665)?.service == .tone)
+    }
+
+    @Test func aHelloOnAnyOtherPortIsAMismatch() throws {
+        for r in HelloFixtures.synthesized {
+            let json = HelloFixtures.json(for: r.service)
+            let own = r.service.info.port
+            for port in [own + 1000, own - 1, 0, 1, 65535] where port != own {
+                // No other entry shares a model, so a stray port matches nothing.
+                #expect(try HelloFixtures.match(json, port: port)?.service != r.service, "\(r.service) on \(port)")
+            }
+            for other in Self.catalogServices where other != r.service {
+                #expect(try HelloFixtures.match(json, port: other.info.port)?.service != r.service, "\(r.service) on \(other)")
+            }
+        }
+    }
+
+    @Test func theMatchIsPureAndStable() throws {
+        let json = HelloFixtures.json(for: .phononQ8)
+        let frame = try HelloFixtures.frame(json)
+        let first = HelloFixtures.entry(for: frame, port: 9366)
+        #expect(first == HelloFixtures.entry(for: frame, port: 9366))
+        #expect(first == Service.phononQ8.info)
     }
 }

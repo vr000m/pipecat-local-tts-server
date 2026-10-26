@@ -57,12 +57,23 @@ struct EndToEndTests {
         throw TTSClientError.closed
     }
 
+    /// The live hello of a server the test started maps back to the service it started: the
+    /// shared decoder reads it and `entry(for:port:)` picks the same catalog entry (the
+    /// server is on an ephemeral port, so the match is made on the service's own port).
+    func expectHelloMapsBack(_ service: Service, port: Int) async throws {
+        let live = try await HelloFixtures.liveHello(port: port)
+        #expect(live.protocolVersion == "0.1", "\(service): protocol_version \(String(describing: live.protocolVersion))")
+        let matched = HelloFixtures.entry(for: live, port: service.info.port)
+        #expect(matched?.service == service, "\(service): hello \(live) matched \(String(describing: matched?.service))")
+    }
+
     func serveAndSpeak(_ backend: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> Int {
         let (server, port) = try await startServer(backend, manager, paths: paths)
         defer { server.kill() }
         let client = TTSClient(port: port)
         let hello = try await client.connect()
         #expect(hello.backend == backend.family.rawValue)
+        try await expectHelloMapsBack(backend, port: port)
         for frame in TTSClientFrame.request(TTSRequest(id: "tryit-1", text: "Testing the menu bar app.", voice: nil)) {
             try await client.send(frame)
         }
@@ -118,6 +129,7 @@ struct EndToEndTests {
 
         let (full, fullPort) = try await startServer(.phonon, manager, paths: paths)
         defer { full.kill() }
+        try await expectHelloMapsBack(.phonon, port: fullPort)
         #expect(try await serveAndSpeak(.phononQ8, manager, paths: paths) > 48_000)
         #expect(fullPort > 0)
         full.closeStdin()
@@ -158,6 +170,7 @@ struct EndToEndTests {
         defer { server.kill() }
         let client = STTClient(port: port)
         #expect(try await client.connect().model == "mlx-community/whisper-tiny-mlx")
+        try await expectHelloMapsBack(.whisperTiny, port: port)
         let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
         #expect(text.lowercased().contains("weather"))
         await client.close()
@@ -178,6 +191,7 @@ struct EndToEndTests {
         defer { server.kill() }
         let client = STTClient(port: port)
         #expect(try await client.connect().backend == "kyutai")
+        try await expectHelloMapsBack(.kyutai, port: port)
         let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
         #expect(text.lowercased().contains("weather"))
         await client.close()

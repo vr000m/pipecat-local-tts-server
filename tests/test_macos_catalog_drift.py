@@ -12,6 +12,9 @@ import Python, so these tests parse the Swift source (one parser,
     (variants included) is unique;
   * each family's ``modelRepo`` equals the backend's ``DEFAULT_*_MODEL``
     (``tone`` has none);
+  * each TTS entry's expected hello ``backend.name`` equals its backend's static
+    ``backend_name`` and the model it expects equals what the backend reports
+    (default repo, or the raw ``--model`` alias), read from source;
   * each TTS entry's ``streaming`` equals its backend's ``capabilities()``;
   * each variant ``modelArgument`` is an alias its backend resolves to the
     family's repo;
@@ -300,3 +303,92 @@ def test_swift_supervised_error_codes_match_supervise():
     )
     python = {v for k, v in vars(supervise).items() if k.startswith("CODE_")}
     assert swift == python
+
+
+_BACKEND_NAME = re.compile(r'^\s+backend_name = "(\w+)"', re.MULTILINE)
+_REPORTS_RAW_MODEL = re.compile(r"^\s+self\.model = model$", re.MULTILINE)
+
+
+def _backend_source(family: str) -> str:
+    """The module that defines ``family``'s backend class (``tone`` lives in ``backend.py``)."""
+    path = REPO / "tts_server" / ("backend.py" if family == "tone" else f"backends/{family}.py")
+    return path.read_text()
+
+
+def _static_backend_name(family: str) -> str:
+    if family == "tone":
+        text = _backend_source("tone")
+        # ToneBackend's: ``backend.py`` also holds the protocol's annotation, which has no value.
+        names = _BACKEND_NAME.findall(text)
+    else:
+        names = _BACKEND_NAME.findall(_backend_source(family))
+    assert len(names) == 1, f"{family}: expected one static backend_name, got {names}"
+    return names[0]
+
+
+def test_swift_expected_backend_names_match_backend_name():
+    """The hello's ``backend.name`` is the backend class's static ``backend_name``
+    (``server.py`` sends ``self._backend.backend_name``); the app matches a hello on it,
+    so each TTS catalog entry, variants included, must expect exactly that."""
+    for entry in macos_catalog().values():
+        if entry.kind != "tts":
+            continue
+        assert entry.expected_backend_name == _static_backend_name(entry.family), entry.name
+        # The ``serve --backend`` name is the static name for every shipped backend.
+        assert entry.expected_backend_name == entry.family, entry.name
+    assert "backend_name" in (REPO / "tts_server" / "server.py").read_text()
+
+
+def test_swift_expected_models_match_what_the_backends_report():
+    """The hello's ``backend.model`` is the backend's ``model`` attribute, which every
+    backend sets to the ``--model`` it was given (``self.model = model``): the default
+    repo for a family default, the raw alias (``phonon-q8``) for a quantized variant,
+    never the repo the alias resolves to. The app matches on ``modelArgument ??
+    modelRepo``; this pins that to the source of each side."""
+    for family in sorted(BACKEND_CHOICES):
+        if family == "tone":
+            assert "model = None" in _backend_source("tone")
+            continue
+        assert _REPORTS_RAW_MODEL.search(_backend_source(family)), f"{family}: no raw self.model"
+    for entry in macos_catalog().values():
+        if entry.kind != "tts":
+            continue
+        expected = entry.model_argument or entry.model_repo
+        if entry.family == "tone":
+            assert expected is None, entry.name
+            continue
+        if entry.model_argument is None:
+            defaults = _DEFAULT_MODEL.findall(_backend_source(entry.family))
+            assert expected == defaults[0], f"{entry.name}: expects {expected!r}"
+        else:
+            # A variant's hello carries its alias verbatim, which differs from its repo.
+            assert expected == entry.model_argument != entry.model_repo, entry.name
+
+
+# Upstream (pipecat-local-stt-server, STT 0.4.0): ``backend.name`` per catalog family.
+# Whisper is the ``mlx`` backend; the engine name in ``.sttHelper`` is the app's own.
+_STT_BACKEND_NAMES = {"whisper": "mlx", "kyutai": "kyutai"}
+
+
+def test_swift_stt_expected_backend_names():
+    """Every STT variant of a family reports the family's backend name (all Whisper
+    sizes are ``mlx``). Apple Speech is in-process, never probed, and has no entry here."""
+    seen = set()
+    for entry in macos_catalog().values():
+        if entry.kind != "stt" or entry.family == "apple_speech":
+            continue
+        assert entry.expected_backend_name == _STT_BACKEND_NAMES[entry.family], entry.name
+        seen.add(entry.family)
+    assert seen == set(_STT_BACKEND_NAMES)
+
+
+def test_swift_stt_model_repos_are_the_helpers_pinned_repos():
+    """Where the catalog already carries an STT ``modelRepo`` (Whisper and Kyutai), it is
+    exactly one of the helper's ``MODEL_REVISIONS`` repos, and every pinned repo has an
+    entry. (Parakeet and Nemotron arrive with the upstream CLI in a later phase.)"""
+    repos = {
+        entry.model_repo
+        for entry in macos_catalog().values()
+        if entry.kind == "stt" and entry.model_repo is not None
+    }
+    assert repos == set(_helper_model_revisions())

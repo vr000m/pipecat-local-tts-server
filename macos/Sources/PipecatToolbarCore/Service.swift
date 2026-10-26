@@ -108,6 +108,8 @@ public enum WeightsLicence: Sendable, Equatable {
 public struct ServiceInfo: Sendable, Equatable {
     public let service: Service
     public let kind: ServiceKind
+    /// `backend.name` of this entry's `server.hello` (`mlx` for every Whisper size).
+    public let expectedBackendName: String
     public let displayName: String
     public let tagline: String
     public let runtime: ServiceRuntime
@@ -130,10 +132,25 @@ public struct ServiceInfo: Sendable, Equatable {
 
     public var family: Service { service.family }
     public var needsModelDownload: Bool { modelRepo != nil }
-    /// The launchd agent `just tts-install` creates; it serves the backend's default model.
+    /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
+    /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and
+    /// `pipecat.stt-server[.<engine>]` for the STT families. Variants (Phonon q8/q4,
+    /// Whisper sizes, Kyutai 2.6B) and Apple Speech have none.
     public var launchdLabel: String? {
-        kind == .tts && family == service ? "pipecat.tts-server.\(service.rawValue)" : nil
+        switch kind {
+        case .tts: family == service ? "pipecat.tts-server.\(service.rawValue)" : nil
+        case .stt:
+            switch service {
+            case .whisper: "pipecat.stt-server"
+            case .kyutai: "pipecat.stt-server.kyutai"
+            default: nil
+            }
+        }
     }
+    /// What a server's hello must report as `backend.model` to be this entry: the
+    /// `--model` argument when the entry passes one (Phonon reports the alias), else the repo.
+    /// Nil for an entry that pins no model (tone, Apple Speech).
+    public var expectedModel: String? { modelArgument ?? modelRepo }
     public var endpoint: String { "ws://\(ServiceCatalog.host):\(port)/" }
 
     /// Client environment for a Pipecat bot (`TTS_WS_*` / `STT_WS_*`).
@@ -151,6 +168,24 @@ public struct ServiceInfo: Sendable, Equatable {
         return "\(cls)(host=\"\(ServiceCatalog.host)\", port=\(port ?? self.port))"
     }
 
+    /// The one decision function: which catalog entry, if any, a server that answered `hello`
+    /// on `port` is. Pure and strict, and the only place that decides; every caller
+    /// (discovery, the Start-path probe, the tests) uses it.
+    ///
+    /// A match needs the entry's own port, `backend.name` equal to `expectedBackendName`,
+    /// `protocol_version` exactly `0.1`, and `backend.model` equal to the entry's `expectedModel`.
+    /// A hello with no model matches only an entry that pins none (tone); an unknown model for
+    /// a known backend matches nothing. Apple Speech runs in the app and is never adopted.
+    public static func entry(for hello: ServerHelloFrame, port: Int) -> ServiceInfo? {
+        guard hello.protocolVersion == ServerHelloFrame.supportedProtocolVersion, !hello.backendName.isEmpty else {
+            return nil
+        }
+        return ServiceCatalog.all.first {
+            $0.runtime != .appleSpeech && $0.port == port && $0.expectedBackendName == hello.backendName
+                && $0.expectedModel == hello.model
+        }
+    }
+
     /// A weights variant of this (family default) service: same runtime and
     /// environment, its own port and model.
     func variant(
@@ -158,7 +193,7 @@ public struct ServiceInfo: Sendable, Equatable {
         modelArgument: String? = nil, modelRepo: String? = nil, tagline: String? = nil
     ) -> ServiceInfo {
         ServiceInfo(
-            service: service, kind: kind, displayName: name, tagline: tagline ?? self.tagline, runtime: runtime,
+            service: service, kind: kind, expectedBackendName: expectedBackendName, displayName: name, tagline: tagline ?? self.tagline, runtime: runtime,
             port: port, modelRepo: modelRepo ?? self.modelRepo, licence: licence, streaming: streaming,
             symbol: symbol, variantLabel: label, variantDetail: detail, modelArgument: modelArgument)
     }
@@ -226,17 +261,17 @@ public enum ServiceCatalog {
         switch service {
         case .tone:
             ServiceInfo(
-                service: .tone, kind: .tts, displayName: "Tone", tagline: "Test signal, starts instantly",
+                service: .tone, kind: .tts, expectedBackendName: "tone", displayName: "Tone", tagline: "Test signal, starts instantly",
                 runtime: .ttsServer(extra: nil), port: 8665, modelRepo: nil, licence: .none,
                 streaming: false, symbol: "tuningfork")
         case .kokoro:
             ServiceInfo(
-                service: .kokoro, kind: .tts, displayName: "Kokoro", tagline: "Fast, natural, multilingual",
+                service: .kokoro, kind: .tts, expectedBackendName: "kokoro", displayName: "Kokoro", tagline: "Fast, natural, multilingual",
                 runtime: .ttsServer(extra: "kokoro"), port: 8765, modelRepo: "mlx-community/Kokoro-82M-bf16",
                 licence: .apache2, streaming: false, symbol: "leaf", isDefault: true)
         case .phonon:
             ServiceInfo(
-                service: .phonon, kind: .tts, displayName: "Phonon", tagline: "Tiny streaming English voice",
+                service: .phonon, kind: .tts, expectedBackendName: "phonon", displayName: "Phonon", tagline: "Tiny streaming English voice",
                 runtime: .ttsServer(extra: "phonon"), port: 9365, modelRepo: "gradium/phonon-31m-en",
                 licence: .apache2, streaming: true, symbol: "dot.radiowaves.left.and.right",
                 variantLabel: "Full precision", variantDetail: "Best quality")
@@ -250,40 +285,40 @@ public enum ServiceCatalog {
                 port: 9367, modelArgument: "phonon-q4")
         case .pocketTTS:
             ServiceInfo(
-                service: .pocketTTS, kind: .tts, displayName: "Pocket TTS", tagline: "Kyutai's small streaming model",
+                service: .pocketTTS, kind: .tts, expectedBackendName: "pocket_tts", displayName: "Pocket TTS", tagline: "Kyutai's small streaming model",
                 runtime: .ttsServer(extra: "pocket_tts"), port: 8965, modelRepo: "mlx-community/pocket-tts",
                 licence: .ccBy4, streaming: true, symbol: "bolt.horizontal")
         case .qwen3TTS:
             ServiceInfo(
-                service: .qwen3TTS, kind: .tts, displayName: "Qwen3 TTS", tagline: "Nine speakers, streaming",
+                service: .qwen3TTS, kind: .tts, expectedBackendName: "qwen3_tts", displayName: "Qwen3 TTS", tagline: "Nine speakers, streaming",
                 runtime: .ttsServer(extra: "qwen3_tts"), port: 9165,
                 modelRepo: "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
                 licence: .apache2, streaming: true, symbol: "person.2.wave.2")
         case .voxtralTTS:
             ServiceInfo(
-                service: .voxtralTTS, kind: .tts, displayName: "Voxtral TTS", tagline: "Mistral's expressive 4B model",
+                service: .voxtralTTS, kind: .tts, expectedBackendName: "voxtral_tts", displayName: "Voxtral TTS", tagline: "Mistral's expressive 4B model",
                 runtime: .ttsServer(extra: "voxtral_tts"), port: 8865,
                 modelRepo: "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 licence: .ccByNC, streaming: true, symbol: "wind")
         case .dia:
             ServiceInfo(
-                service: .dia, kind: .tts, displayName: "Dia", tagline: "Dialogue with speaker tags",
+                service: .dia, kind: .tts, expectedBackendName: "dia", displayName: "Dia", tagline: "Dialogue with speaker tags",
                 runtime: .ttsServer(extra: "dia"), port: 9065, modelRepo: "mlx-community/Dia-1.6B-fp16",
                 licence: .apache2, streaming: false, symbol: "bubble.left.and.bubble.right")
         case .fishTTS:
             ServiceInfo(
-                service: .fishTTS, kind: .tts, displayName: "Fish S2 Pro", tagline: "Fish Audio's expressive model",
+                service: .fishTTS, kind: .tts, expectedBackendName: "fish_tts", displayName: "Fish S2 Pro", tagline: "Fish Audio's expressive model",
                 runtime: .ttsServer(extra: "fish_tts"), port: 9265, modelRepo: "mlx-community/fish-audio-s2-pro",
                 licence: .researchOnly, streaming: false, symbol: "fish")
         case .appleSpeech:
             ServiceInfo(
-                service: .appleSpeech, kind: .stt, displayName: "Apple Speech",
+                service: .appleSpeech, kind: .stt, expectedBackendName: "apple_speech", displayName: "Apple Speech",
                 tagline: "On-device SpeechAnalyzer, no Python",
                 runtime: .appleSpeech, port: 9465, modelRepo: nil, licence: .system,
                 streaming: false, symbol: "apple.logo", isDefault: true)
         case .whisper:
             ServiceInfo(
-                service: .whisper, kind: .stt, displayName: "Whisper", tagline: "OpenAI's speech recognition on MLX",
+                service: .whisper, kind: .stt, expectedBackendName: "mlx", displayName: "Whisper", tagline: "OpenAI's speech recognition on MLX",
                 runtime: .sttHelper(
                     engine: "whisper", requirements: ["pipecat-local-stt-server[mlx]==0.3.3", "mlx-whisper==0.4.3"]),
                 port: 9565, modelRepo: "mlx-community/whisper-large-v3-turbo", licence: .mit,
@@ -311,7 +346,7 @@ public enum ServiceCatalog {
                 port: 9570, modelRepo: "mlx-community/whisper-tiny-mlx")
         case .kyutai:
             ServiceInfo(
-                service: .kyutai, kind: .stt, displayName: "Kyutai STT", tagline: "Streaming, English and French",
+                service: .kyutai, kind: .stt, expectedBackendName: "kyutai", displayName: "Kyutai STT", tagline: "Streaming, English and French",
                 runtime: .sttHelper(engine: "kyutai", requirements: [sttServerRequirement, "moshi_mlx==0.3.0"]),
                 port: 9665, modelRepo: "kyutai/stt-1b-en_fr-mlx", licence: .ccBy4,
                 streaming: true, symbol: "text.bubble",
@@ -322,4 +357,9 @@ public enum ServiceCatalog {
                 port: 9666, modelRepo: "kyutai/stt-2.6b-en-mlx", tagline: "Streaming, English, larger model")
         }
     }
+}
+
+/// Which catalog entry a hello on `port` belongs to; see `ServiceInfo.entry(for:port:)`.
+public func entry(for hello: ServerHelloFrame, port: Int) -> ServiceInfo? {
+    ServiceInfo.entry(for: hello, port: port)
 }

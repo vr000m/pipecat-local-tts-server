@@ -8,6 +8,8 @@ public actor STTClient {
         public var backend: String
         public var model: String?
         public var rate: Int
+        /// `protocol_version`; defaults to nil so memberwise callers need not pass it.
+        public var protocolVersion: String? = nil
     }
 
     public enum Failure: LocalizedError, Sendable {
@@ -40,12 +42,10 @@ public actor STTClient {
         task.resume()
         while true {
             let obj = try await nextObject()
-            if obj["type"] as? String == "server.hello" {
-                let backend = obj["backend"] as? [String: Any] ?? [:]
-                let audio = obj["audio"] as? [String: Any] ?? [:]
+            if let frame = ServerHelloFrame.decode(object: obj) {
                 return Hello(
-                    backend: backend["name"] as? String ?? "", model: backend["model"] as? String,
-                    rate: audio["rate"] as? Int ?? STTWire.rate)
+                    backend: frame.backendName, model: frame.model, rate: frame.rate ?? STTWire.rate,
+                    protocolVersion: frame.protocolVersion)
             }
         }
     }
