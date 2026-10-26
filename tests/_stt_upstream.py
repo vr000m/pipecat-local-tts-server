@@ -6,6 +6,13 @@ recorded verbatim in ``tests/fixtures/stt_server_<version>_source.txt``, with th
 commit they came from. The drift tests compare the contract and the macOS catalog with
 this excerpt (not with a hand-typed copy), and with the live package when it is
 importable. Re-record it from the new tag whenever ``sttServerRequirement`` moves.
+
+No CI job installs the STT server, so CI checks only that the excerpt names the release the
+app installs. Its content is checked against real source only where one is present: the
+importable-package tests, and ``test_recorded_stt_excerpt_is_verbatim_upstream_source``
+when ``PIPECAT_STT_SERVER_SITE`` names a directory holding that release's ``stt_server/``
+and ``pipecat_local_stt_server-<version>.dist-info`` (e.g. the app's uv cache entry, or a
+``site-packages``). Run it locally whenever the excerpt is re-recorded.
 """
 
 from __future__ import annotations
@@ -45,3 +52,18 @@ def upstream_stt(path: Path = FIXTURE) -> UpstreamSTT:
         models[name] = constants[constant.group(1)] if constant else None
     assert codes and models, f"{path.name}: the parser sees the excerpt"
     return UpstreamSTT(version=release.group(1), error_codes=codes, default_models=models)
+
+
+def excerpt_lines_missing_from(site: Path, path: Path = FIXTURE) -> list[str]:
+    """The excerpt's code lines that are not, verbatim, a line of the file their ``## <path>``
+    section names under ``site`` (empty: the excerpt is a faithful copy of that source)."""
+    missing: list[str] = []
+    source: list[str] | None = None
+    for line in path.read_text().splitlines():
+        if line.startswith("## "):
+            source = (site / line[3:]).read_text().splitlines()
+        elif source is not None and line.strip() and not line.startswith("#"):
+            if line not in source:
+                missing.append(line)
+    assert source is not None, f"{path.name}: no ## <path> section"
+    return missing

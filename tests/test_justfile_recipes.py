@@ -486,25 +486,29 @@ def _ui_smoke_functions(*names: str) -> str:
     return "\n".join(out)
 
 
-def test_ui_smoke_signals_ext_pid_only_through_the_identity_check() -> None:
-    """Every TERM/KILL to EXT_PID sits behind ``ext_is_ours`` (``kill -0`` alone does not prove
-    the pid is still the child it started: a reaped child's pid can be reused)."""
+def test_ui_smoke_signals_its_children_only_by_job_spec() -> None:
+    """Every signal the script sends to a process it started names a job spec (``%N``), never a
+    pid: the shell resolves a job spec from its own job table and skips a child it has already
+    reaped, while a check-then-``kill $pid`` can hit a pid the kernel reused in between."""
     code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
-    signals = [ln for ln in code if re.search(r'\bkill\b(?! -0)[^\n]*"\$EXT_PID"', ln)]
-    assert signals, "the pattern sees the EXT_PID signals"
+    signals = [ln for ln in code if re.search(r"\bkill\b(?! -0)", ln)]
+    assert signals, "the pattern sees the script's signals"
     for ln in signals:
-        assert "ext_is_ours" in ln, f"unguarded signal to EXT_PID: {ln.strip()}"
+        assert re.search(r'\bkill "?-\$?\w+"? "%\$\w+"', ln), (
+            f"signal not by job spec: {ln.strip()}"
+        )
     body = _ui_smoke_functions("stop_ext")
     after_wait = body.split('wait "$EXT_PID"', 1)[1]
-    assert "kill" not in after_wait and 'EXT_PID=""' in after_wait, "no signal after the reap"
+    assert "kill" not in after_wait and 'EXT_JOB=""' in after_wait, "no signal after the reap"
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_ui_smoke_never_signals_a_pid_that_is_no_longer_its_child() -> None:
-    """``stop_ext`` against (a) its own child, which it stops and reaps, and (b) a process with
-    the same command line that is NOT its child (what a reused pid looks like), which it must
-    leave alone."""
-    functions = _ui_smoke_functions("ext_is_ours", "stop_ext")
+    """``stop_ext`` and ``signal_job`` against (a) the script's own child, which they stop and
+    reap, and (b) the race the identity check alone cannot close: the child has exited and been
+    reaped and its pid now names an unrelated process that even passes ``ext_is_ours`` (the
+    check ran before the pid changed hands). Neither may signal that process."""
+    functions = _ui_smoke_functions("ext_is_ours", "job_of", "signal_job", "stop_ext")
     stranger = subprocess.Popen(["sleep", "30"])
     try:
         script = f"""set -euo pipefail
@@ -512,19 +516,29 @@ def test_ui_smoke_never_signals_a_pid_that_is_no_longer_its_child() -> None:
 EXT_MATCH="sleep 30"
 sleep 30 &
 EXT_PID=$!
+EXT_JOB="$(job_of "$EXT_PID")"
+[[ -n "$EXT_JOB" ]] || {{ echo "job_of found no job"; exit 2; }}
 sleep 0.2
 ext_is_ours || {{ echo "own child not recognised"; exit 3; }}
 stop_ext
-[[ -z "$EXT_PID" ]] || {{ echo "EXT_PID not cleared"; exit 4; }}
+[[ -z "$EXT_PID" && -z "$EXT_JOB" ]] || {{ echo "EXT_PID/EXT_JOB not cleared"; exit 4; }}
+sleep 30 &
+own=$!
+signal_job TERM "$own"
+wait "$own" && {{ echo "signal_job did not stop its own child"; exit 5; }}
+sleep 0.1 &
+EXT_PID=$!
+EXT_JOB="$(job_of "$EXT_PID")"
+sleep 0.5
 EXT_PID={stranger.pid}
-EXT_MATCH="sleep 30"
-if ext_is_ours; then echo "a non-child counted as ours"; exit 5; fi
+ext_is_ours() {{ return 0; }}
 stop_ext
+signal_job KILL {stranger.pid}
 echo done
 """
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
         assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)
-        assert stranger.poll() is None, "stop_ext signalled a process that was not its child"
+        assert stranger.poll() is None, "a signal reached a process that was not the shell's child"
     finally:
         stranger.kill()
         stranger.wait()

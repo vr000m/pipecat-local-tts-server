@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pipecat Service Toolbar adopts running servers (External).** At launch and while
   the panel is open (every 15 s) the app probes the catalog ports (loopback TCP) with
   a `server.hello` and shows a matching server it did not start as **External**;
-  it starts its own only when none answers. External rows offer Try it and Copy but
-  no Stop, Delete, Get, Install or Reset, show the LaunchAgent label when `launchctl`
+  it starts its own only when none answers. External rows offer Try it (for STT, the
+  test clip only, never the microphone) and Copy but no Stop, Delete, Get, Install or
+  Reset, show the LaunchAgent label when `launchctl`
   confirms it holds the port (else `127.0.0.1:<port>`), and **Quit leaves them
   running** ("Stop All & Quit" appears only when the app started a server). The app
   only signals, stops or deletes processes it started. An app-started server and a
@@ -37,9 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prefetch --json`); the bundled `pipecat_app_helper.py`, `PIPECAT_TOOLBAR_HELPER`
   and the helper's cooperative cancel are removed. An STT server on an older version
   is adopted by its hello, but an app-started STT server needs 0.4.0.
-- STT model weights are **not pinned to a commit** in this release (upstream 0.4.0 has
-  no revision option; the app follows each repo's `main`). Upstream 0.4.0 Kyutai has
-  no per-frame cancel, so Kyutai barge-in waits for the in-flight decode.
+- STT model weights are **not pinned to a commit** in this release: in
+  `pipecat-local-stt-server` 0.4.0 (tag `v0.4.0`, commit `44843732`) `serve` and
+  `prefetch` take no revision option and every backend's snapshot uses the repo's
+  `main`, so the app follows `main`. In 0.4.0, Kyutai's cancel only stops a decode that
+  has not started (its frame loop has no cancel check), so Kyutai barge-in waits for
+  the in-flight decode.
 - `docs/supervised-contract.json` lists error codes per emitter (contract `version` 2;
   version 1 had one flat list); `ModelInvalidError` is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
 

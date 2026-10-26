@@ -92,7 +92,8 @@ struct ServiceDetailView: View {
         case .running:
             wideButton("Stop Server", systemImage: "stop.fill", tint: .secondary) { model.stop() }
         case .external:
-            // No Stop, Delete, Get or Install: the app did not start this server and leaves it running.
+            // No Stop, Delete, Get or Install button here (`ExternalPresentation.Actions` has them all
+            // false): the app did not start this server and leaves it running. Only Open Try It is gated.
             Label(
                 model.externalFailures > 0
                     ? "Not responding right now. Running outside the app (\(model.externalSource)); Quit leaves it running."

@@ -20,6 +20,8 @@ stt wire rate. The lean job has no STT server installed, so:
     live package when it is importable; Swift ``SupervisedErrorCode`` == the union;
   * the Swift decoder (``ServerCLIEvent.CodingKeys``) reads only contract fields;
   * wire rate: contract == fixture ``ready.rate`` == Swift ``STTWire.rate``;
+  * the contract's ``version`` is pinned to a digest of its shape (``CONTRACT_SHAPES``), so
+    a change to its keys, fields or types cannot ship without a version bump;
   * each STT engine's requirements are hash-pinned in ``macos/constraints`` and name
     ``pipecat-local-stt-server`` at exactly the Swift ``sttServerRequirement`` version.
 """
@@ -27,8 +29,10 @@ stt wire rate. The lean job has no STT server installed, so:
 from __future__ import annotations
 
 import errno
+import hashlib
 import importlib.util
 import json
+import os
 import re
 import select
 import socket
@@ -44,7 +48,7 @@ from tts_server.backend import ToneBackend
 
 from ._helpers import running_server
 from ._macos_catalog import macos_catalog
-from ._stt_upstream import upstream_stt
+from ._stt_upstream import excerpt_lines_missing_from, upstream_stt
 from .smoke._supervised_contract import event_errors
 from .test_prefetch_cli import PH, _run, fake_hub  # noqa: F401 - fake_hub is a fixture
 
@@ -244,6 +248,50 @@ def test_error_codes_are_listed_per_emitter():
         assert codes and len(codes) == len(set(codes)), emitter
 
 
+def contract_shape(contract: dict) -> dict:
+    """The contract's structure: every key, each event's field names and types, and the
+    emitters ``error_codes`` is keyed by. The members of the code and module-prefix lists and
+    the wire rate's value are data, not shape (they change without a version bump)."""
+    shape = {k: v for k, v in contract.items() if k not in ("_comment", "version")}
+    shape["error_codes"] = {emitter: "list[str]" for emitter in contract["error_codes"]}
+    shape["download_error_module_prefixes"] = "list[str]"
+    shape["stt_wire_rate"] = "int"
+    return shape
+
+
+def contract_shape_digest(contract: dict) -> str:
+    return hashlib.sha256(json.dumps(contract_shape(contract), sort_keys=True).encode()).hexdigest()
+
+
+# One entry per contract ``version``: the sha256 of its shape (``contract_shape``). A shape
+# change must add a NEW version here and bump ``version`` in docs/supervised-contract.json.
+CONTRACT_SHAPES = {
+    2: "4e0b62b2746f8e3c5906662bcb6a462f2b6b1c852ab509a8b9f3668e3a77a181",
+}
+
+
+def test_contract_version_is_pinned_to_its_shape():
+    assert len(set(CONTRACT_SHAPES.values())) == len(CONTRACT_SHAPES), "two versions, one shape"
+    assert CONTRACT["version"] == max(CONTRACT_SHAPES) == 2
+    assert contract_shape_digest(CONTRACT) == CONTRACT_SHAPES[CONTRACT["version"]], (
+        "docs/supervised-contract.json changed shape: bump its `version` and pin the new "
+        "shape under that version in CONTRACT_SHAPES"
+    )
+
+
+def test_contract_shape_ignores_data_but_not_structure():
+    data_only = json.loads(json.dumps(CONTRACT))
+    data_only["error_codes"]["stt"].append("SomeNewCode")
+    data_only["stt_wire_rate"] = 24000
+    assert contract_shape_digest(data_only) == contract_shape_digest(CONTRACT)
+    new_field = json.loads(json.dumps(CONTRACT))
+    new_field["serve"]["ready"]["fields"]["extra"] = ["string"]
+    assert contract_shape_digest(new_field) != contract_shape_digest(CONTRACT)
+    new_emitter = json.loads(json.dumps(CONTRACT))
+    new_emitter["error_codes"]["other"] = []
+    assert contract_shape_digest(new_emitter) != contract_shape_digest(CONTRACT)
+
+
 def test_tts_codes_equal_what_supervise_can_emit():
     emittable = {v for k, v in vars(supervise).items() if k.startswith("CODE_")}
     assert TTS_CODES == emittable
@@ -270,6 +318,21 @@ def test_stt_codes_equal_the_live_upstream_package_when_installed():
     stt_supervise = pytest.importorskip("stt_server.supervise")
     live = {v for k, v in vars(stt_supervise).items() if k.startswith("CODE_")}
     assert live == upstream_stt().error_codes == STT_CODES
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PIPECAT_STT_SERVER_SITE"),
+    reason="opt-in: set PIPECAT_STT_SERVER_SITE to an installed pipecat-local-stt-server release",
+)
+def test_recorded_stt_excerpt_is_verbatim_upstream_source():
+    """The recorded excerpt is a verbatim copy of the release it names (no CI job has that
+    source; run it locally when re-recording, see ``tests/_stt_upstream.py``)."""
+    site = Path(os.environ["PIPECAT_STT_SERVER_SITE"])
+    version = upstream_stt().version
+    assert (site / f"pipecat_local_stt_server-{version}.dist-info").is_dir(), (
+        f"{site} does not hold pipecat-local-stt-server {version}"
+    )
+    assert excerpt_lines_missing_from(site) == []
 
 
 def test_swift_supervised_error_codes_are_the_union_of_both_lists():

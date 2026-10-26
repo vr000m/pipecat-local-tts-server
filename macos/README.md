@@ -66,7 +66,8 @@ for running both.
   is open.
 - **Ownership.** The app only signals, stops or deletes processes it started.
   An External service has no Stop, Delete, Reset, Get or Install; it offers
-  Try it and the Copy items. **Quit leaves it running**
+  Try it (for STT, the test clip only, never the microphone) and the Copy items.
+  **Quit leaves it running**
   (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
 - **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the
   same ports, so a running agent whose hello matches shows as External. If
@@ -85,12 +86,15 @@ for running both.
 
 ## Menu bar
 
-- **Running**: the main menu lists only started services, grouped into Text
-  to Speech and Speech to Text, each with its address, a copy button and Stop.
+- **Running**: the main menu lists the services the app started and the External
+  ones it adopted, grouped into Text to Speech and Speech to Text, each with its
+  address and a copy button; Stop only on the app's own (External rows show
+  `External · <agent label or address>`).
 - **Add Models**: every model, by type, with Get, Start and download progress.
   Python and model weights are fetched on first Get; nothing is bundled.
 - **Right-click** any service: **Copy URL**, **Copy Pipecat Service**,
-  **Copy Environment Variables**, Start/Stop, **Delete Model…**. Deleting
+  **Copy Environment Variables**, Start/Stop, **Delete Model…** (an External
+  service gets the Copy items, Test and Show Details only). Deleting
   removes the model's Python environment and, unless another installed variant
   still uses them, its weights. The detail page's **Delete…** offers **Keep
   Model Files** or **Delete Everything**. Weights live in the shared Hugging
@@ -98,7 +102,8 @@ for running both.
   downloads them again after a delete.
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
-  microphone) and see whether the transcript matches its sentence.
+  microphone) and see whether the transcript matches its sentence. An External
+  STT server gets the clip only: the app never sends it live microphone audio.
   Right-click a running service for **Test Voice** (speaks a line naming the
   model) or **Test Transcription** (the clip); both open the details view,
   which shows the result.

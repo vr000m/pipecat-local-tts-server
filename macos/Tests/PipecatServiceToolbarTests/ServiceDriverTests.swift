@@ -644,7 +644,7 @@ import Testing
         let host = FakeHost()
         let driver = makeDriver(FakeProcess(), host: host)
         await driver.refresh()
-        driver.externalFound(epoch: driver.state.externalEpoch, info: Self.toneInfo)
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
         #expect(driver.state.phase == .external(8665, Self.toneInfo))
         #expect(driver.state.server == nil && driver.state.native == nil)
         #expect(host.tryIt.isEmpty, "Try it opens on demand, not at adoption")
@@ -666,7 +666,7 @@ import Testing
         await driver.refresh()
         let epoch = driver.state.externalEpoch
         driver.remove(deleteModel: false)  // Delete during the probe
-        driver.externalFound(epoch: epoch, info: Self.toneInfo)
+        driver.discovered(.found(driver.service, epoch: epoch, info: Self.toneInfo))
         #expect(!driver.state.phase.isExternal)
     }
 
@@ -674,13 +674,13 @@ import Testing
         let host = FakeHost()
         let driver = makeDriver(FakeProcess(), host: host)
         await driver.refresh()
-        driver.externalFound(epoch: driver.state.externalEpoch, info: Self.toneInfo)
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
         driver.tryItRequested()
         let epoch = driver.state.externalEpoch
-        driver.externalLost(epoch: epoch, reason: .refused)
-        driver.externalLost(epoch: epoch, reason: .timeout)
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .refused))
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .timeout))
         #expect(driver.state.phase.isExternal && host.tryIt == ["open 8665"])
-        driver.externalLost(epoch: epoch, reason: .refused)
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .refused))
         await until { driver.state.phase == .installed }
         #expect(driver.state.phase == .installed, "\(driver.state.phase)")
         #expect(host.tryIt == ["open 8665", "close"], "the Try it session was not torn down: \(host.tryIt)")
@@ -691,15 +691,14 @@ import Testing
         let host = FakeHost()
         let driver = makeDriver(FakeProcess(), host: host)
         await driver.refresh()
-        driver.externalFound(epoch: driver.state.externalEpoch, info: Self.toneInfo)
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
         let epoch = driver.state.externalEpoch
         await driver.quit()
         let before = driver.state
         // Each event below is still current after quit, so only the quit guard refuses it.
         let lost = LifecycleEvent.externalLost(epoch: epoch, reason: .mismatch)
         #expect(ServiceLifecycle.isCurrent(lost, in: before) && ServiceLifecycle.isCurrent(.tryItRequested, in: before))
-        driver.externalLost(epoch: epoch, reason: .mismatch)
-        driver.discovered(.lost(.tone, epoch: epoch, reason: .mismatch))
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .mismatch))
         driver.tryItRequested()
         #expect(driver.state == before && driver.state.phase.isExternal)
         #expect(host.tryIt.isEmpty)
@@ -709,8 +708,7 @@ import Testing
         let idle = fresh.state
         await fresh.quit()
         #expect(ServiceLifecycle.isCurrent(.externalFound(epoch: fresh.state.externalEpoch, info: Self.toneInfo), in: fresh.state))
-        fresh.externalFound(epoch: fresh.state.externalEpoch, info: Self.toneInfo)
-        fresh.discovered(.found(.tone, epoch: fresh.state.externalEpoch, info: Self.toneInfo))
+        fresh.discovered(.found(fresh.service, epoch: fresh.state.externalEpoch, info: Self.toneInfo))
         #expect(fresh.state.phase == idle.phase, "an External adoption landed after quit began")
     }
 
@@ -856,7 +854,7 @@ import Testing
         let externalHost = FakeHost()
         let external = makeDriver(FakeProcess(), host: externalHost)
         await external.refresh()
-        external.externalFound(epoch: external.state.externalEpoch, info: Self.toneInfo)
+        external.discovered(.found(external.service, epoch: external.state.externalEpoch, info: Self.toneInfo))
         external.tryItRequested()
 
         let process = FakeProcess()
@@ -893,7 +891,7 @@ import Testing
         let host = FakeHost()
         let driver = makeDriver(FakeProcess(), host: host)
         await driver.refresh()
-        driver.externalFound(epoch: driver.state.externalEpoch, info: ExternalInfo(hello: hello))
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: ExternalInfo(hello: hello)))
         guard case .external = driver.state.phase else {
             Issue.record("\(driver.state.phase)")
             return

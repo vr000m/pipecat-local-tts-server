@@ -55,10 +55,12 @@ public enum ExternalPresentation {
     }
 
     /// Which row actions an External service offers. The app never stops, deletes or
-    /// installs a server it did not start. Every view that shows an External row reads its
-    /// buttons from here (`ServiceModel.externalActions`): the running row and the menu
-    /// (Stop, Copy URL), the catalog row (Get / Install), Delete Model (`canDeleteModel`),
-    /// the detail view (Open Try It) and the STT Try it card (Record). `reset` is pinned for
+    /// installs a server it did not start. The views read these flags through
+    /// `ServiceModel.externalActions` where an External row could show the button: the running
+    /// row (Copy URL, Stop), the menu (the Copy items, Stop, Test), the catalog row (one Get
+    /// button for `get || install`), Delete Model (`canDeleteModel`), the detail view's Open
+    /// Try It (`tryIt`) and the STT Try it card's Record (`microphone`). The detail view's
+    /// External arm has no Stop, Delete, Get or Install button to gate. `reset` is pinned for
     /// completeness: Reset is app-wide and gated by `LifecycleState.blocksReset`.
     public struct Actions: Equatable, Sendable {
         public var stop: Bool
