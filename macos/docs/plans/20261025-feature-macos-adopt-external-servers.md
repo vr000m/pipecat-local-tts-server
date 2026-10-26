@@ -428,7 +428,7 @@ Context lifecycle:
 - [x] Phase 2: Discovery and the External lifecycle (code and tests; the panel `.onAppear`/`.onDisappear` hook is UNVERIFIED and needs a manual check)
 - [x] Phase 3: External services in the menu (code, tests and `just app-smoke`; the panel `.onAppear`/`.onDisappear` check is still a manual step, a `panel visible: <bool>` log line was added to make it checkable)
 - [x] Phase 4: STT through the upstream CLI, plus Parakeet and Nemotron (code, tests, E2E 9/9 with one known issue: Kyutai mid-decode cancel; STT weights are unpinned until the next STT release)
-- [ ] Phase 5: Discovery file (conditional on onoats-bot)
+- [x] Phase 5: Discovery file (conditional on onoats-bot) — NOT BUILT (no-op): the plan's default; build `services.json` only if onoats-bot asks for it
 - [ ] Phase 6: Docs and an out-of-process smoke
 
 ## Findings
