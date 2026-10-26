@@ -40,7 +40,7 @@ class CatalogEntry:
     streaming: bool
     # ``expectedBackendName``: the ``backend.name`` the entry's ``server.hello`` reports
     expected_backend_name: str
-    # ``runtime: .sttHelper(engine:requirements:)`` (STT helper engines only)
+    # ``runtime: .sttHelper(engine:requirements:)`` (STT engines only)
     engine: str | None = None
     requirements: tuple[str, ...] = ()
 

@@ -216,7 +216,7 @@ public actor EnvironmentManager {
     }
 
     /// Reads `prefetch --check --json` output: one `check` row per snapshot, then
-    /// a `summary`. The TTS server and the STT helper write the same events
+    /// a `summary`. The TTS server and the upstream STT server write the same events
     /// (`docs/supervised-contract.json`, enforced by `tests/test_supervised_contract.py`).
     static func cacheStatus(checkOutput lines: [String]) -> ModelCacheStatus? {
         let events = lines.compactMap(ServerCLIEvent.parse)

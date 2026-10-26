@@ -360,7 +360,7 @@ public enum ServiceCatalog {
         case .nemotron:
             ServiceInfo(
                 service: .nemotron, kind: .stt, expectedBackendName: "nemotron", displayName: "Nemotron",
-                tagline: "NVIDIA's multilingual streaming model",
+                tagline: "NVIDIA's multilingual speech recognition model",
                 runtime: .sttHelper(engine: "nemotron", requirements: ["pipecat-local-stt-server[nemotron]==0.4.0"]),
                 port: 9865, modelRepo: "mlx-community/nemotron-3.5-asr-streaming-0.6b", licence: .other,
                 streaming: false, symbol: "brain")

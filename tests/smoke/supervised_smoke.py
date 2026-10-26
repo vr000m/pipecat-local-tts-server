@@ -277,7 +277,7 @@ def _busy_port(ctx: Ctx, backend: str, model: str | None, port: int, rep: Report
         code = child.wait(ctx.args.busy_bound)
         elapsed = time.monotonic() - t0
         if ev is not None:
-            errors += event_errors("serve", ev)
+            errors += event_errors("serve", ev, emitter="tts")
             if ev.get("event") != "error" or ev.get("code") != "EADDRINUSE":
                 errors.append(f"expected error{{code: EADDRINUSE}}, got {ev}")
         if code is None:

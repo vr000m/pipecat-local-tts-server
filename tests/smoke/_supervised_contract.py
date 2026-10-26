@@ -117,7 +117,7 @@ def ready_errors(
     contract: dict[str, Any] | None = None,
 ) -> list[str]:
     """``event_errors`` for a ``ready`` line plus the values the supervisor relies on."""
-    errors = event_errors("serve", event, contract)
+    errors = event_errors("serve", event, contract, emitter="tts")
     if errors:
         return errors
     if event["event"] != "ready":
@@ -146,7 +146,7 @@ def prefetch_errors(events: list[dict[str, Any]], *, check: bool, backend: str) 
     ``complete``. Either way the terminal line names ``backend``.
     """
     contract = load_contract()
-    errors = [e for ev in events for e in event_errors("prefetch", ev, contract)]
+    errors = [e for ev in events for e in event_errors("prefetch", ev, contract, emitter="tts")]
     if errors:
         return errors
     names = [ev["event"] for ev in events]
