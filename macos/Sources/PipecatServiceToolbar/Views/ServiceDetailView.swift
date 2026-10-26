@@ -95,7 +95,8 @@ struct ServiceDetailView: View {
             // No Stop, Delete, Get or Install: the app did not start this server and leaves it running.
             Label(
                 model.externalFailures > 0
-                    ? "Not responding" : "Running outside the app (\(model.externalSource)). Quit leaves it running.",
+                    ? "Not responding right now. Running outside the app (\(model.externalSource)); Quit leaves it running."
+                    : "Running outside the app (\(model.externalSource)). Quit leaves it running.",
                 systemImage: "network"
             )
             .font(.system(size: 12))

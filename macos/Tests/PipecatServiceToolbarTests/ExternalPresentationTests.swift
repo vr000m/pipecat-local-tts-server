@@ -61,7 +61,7 @@ import Testing
             #expect(
                 ExternalPresentation.statusLine(
                     port: 8665, launchdLabel: Self.label, hasLaunchdFamily: true, failures: failures)
-                    == "Not responding")
+                    == "External · not responding")
         }
     }
 

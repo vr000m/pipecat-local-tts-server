@@ -136,13 +136,18 @@
             }),
             ("running-external", { app in
                 busyState(app)
-                app.model(.tone).setPreviewState(phase: .external(8665, ExternalInfo(backendName: "tone", rate: 24000)))
-                app.model(.kyutai).setPreviewState(phase: .external(9565, ExternalInfo(backendName: "kyutai")))
+                app.model(.tone).setPreviewState(
+                    phase: .external(Service.tone.info.port, ExternalInfo(backendName: "tone", rate: 24000)))
+                app.model(.kyutai).setPreviewState(
+                    phase: .external(Service.kyutai.info.port, ExternalInfo(backendName: "kyutai")))
             }),
             ("detail-external", { app in
                 busyState(app)
                 app.model(.phonon).setPreviewState(
-                    phase: .external(9365, ExternalInfo(backendName: "phonon", model: "mlx-community/phonon", rate: 24000)))
+                    phase: .external(
+                        Service.phonon.info.port,
+                        ExternalInfo(
+                            backendName: "phonon", model: Service.phonon.info.expectedModel, rate: 24000)))
                 app.page = .detail(.phonon, from: .running)
             }),
             ("detail-port-busy", { app in

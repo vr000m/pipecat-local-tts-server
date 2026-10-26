@@ -18,10 +18,11 @@ public enum ExternalPresentation {
     /// "not responding" while the failed re-probe count (`LifecycleState.externalFailures`) is above zero.
     public static func isNotResponding(failures: Int) -> Bool { failures > 0 }
 
-    /// The one-line status for the row: `External · <source>` or `Not responding`.
+    /// The one-line status for the row: `External · <source>`, or `External · not responding`
+    /// during the re-probe window (the row still says the server is not the app's).
     public static func statusLine(port: Int, launchdLabel: String?, hasLaunchdFamily: Bool, failures: Int) -> String {
         isNotResponding(failures: failures)
-            ? "Not responding"
+            ? "External · not responding"
             : "External · " + source(port: port, launchdLabel: launchdLabel, hasLaunchdFamily: hasLaunchdFamily)
     }
 
