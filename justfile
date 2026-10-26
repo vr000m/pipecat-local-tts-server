@@ -449,7 +449,7 @@ smoke-supervised-all *args:
 # macOS menu bar app ("Pipecat Service Toolbar", macos/). See macos/README.md.
 # ---------------------------------------------------------------------------
 
-# Build macos/build/Pipecat Service Toolbar.app (wheel + pinned uv + uv.lock pins + STT helper, ad-hoc signed).
+# Build macos/build/Pipecat Service Toolbar.app (wheel + pinned uv + uv.lock pins, ad-hoc signed).
 # Set SIGN_IDENTITY="Developer ID Application: …" to sign for distribution.
 app-build:
     macos/scripts/build_app.sh

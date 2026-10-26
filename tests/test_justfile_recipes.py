@@ -385,3 +385,80 @@ def test_app_open_quits_the_bundle_id_the_build_used():
     body = _recipe_body("app-open")
     assert "CFBundleIdentifier" in body, body
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
+
+
+# --- Phase 6: docs + out-of-process smoke contract -------------------------
+
+_MACOS = REPO_ROOT / "macos"
+_UI_SMOKE = _MACOS / "scripts" / "ui_smoke.sh"
+_ARCH_DOC = _MACOS / "docs" / "architecture.md"
+_HELPER_ERA = (
+    "pipecat_app_helper",
+    "PIPECAT_TOOLBAR_HELPER",
+    "MODEL_REVISIONS",
+    "sttModelRevisions",
+    "serve-stt",
+)
+_REAL_AGENT_PORTS = ("8965", "9565", "9665", "9765", "9865")
+
+
+def _helper_era_files() -> list[Path]:
+    files = [
+        _MACOS / "README.md",
+        REPO_ROOT / "AGENTS.md",
+        JUSTFILE,
+        README,
+        *sorted((_MACOS / "docs").glob("*.md")),
+    ]
+    return [f for f in files if f.is_file()]
+
+
+@pytest.mark.parametrize("path", _helper_era_files(), ids=lambda p: p.name)
+def test_no_helper_era_mentions(path: Path) -> None:
+    text = path.read_text()
+    found = [s for s in _HELPER_ERA if s in text]
+    assert not found, f"{path.relative_to(REPO_ROOT)} still mentions {found}"
+
+
+def test_app_smoke_recipe_points_at_ui_smoke() -> None:
+    text = JUSTFILE.read_text()
+    m = re.search(r"^app-smoke\b[^\n]*\n((?:[ \t]+[^\n]*\n?)+)", text, re.M)
+    assert m is not None, "app-smoke recipe missing from justfile"
+    assert "ui_smoke.sh" in m.group(1)
+    assert _UI_SMOKE.is_file()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_ui_smoke_parses() -> None:
+    r = subprocess.run(["bash", "-n", str(_UI_SMOKE)], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+
+
+def test_ui_smoke_recognises_external_phase() -> None:
+    # The bootstrap phase-line regex must accept the `external` phase.
+    lines = [
+        ln for ln in _UI_SMOKE.read_text().splitlines() if "notInstalled" in ln and "running" in ln
+    ]
+    assert lines, "phase-line regex not found in ui_smoke.sh"
+    assert any("external" in ln for ln in lines)
+
+
+def test_ui_smoke_skips_when_canonical_port_held() -> None:
+    text = _UI_SMOKE.read_text()
+    assert re.search(r"\bskip", text, re.I), "no skip path in ui_smoke.sh"
+
+
+def test_ui_smoke_never_names_real_agent_ports() -> None:
+    code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
+    hits = [ln for ln in code if any(re.search(rf"\b{p}\b", ln) for p in _REAL_AGENT_PORTS)]
+    assert not hits, f"ui_smoke.sh hardcodes real agent ports: {hits}"
+
+
+def test_architecture_known_followups_lists_deferred_discovery() -> None:
+    text = _ARCH_DOC.read_text()
+    m = re.search(r"^## Known follow-ups\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    assert m is not None, "Known follow-ups section missing"
+    body = m.group(1).lower()
+    assert "unix" in body and "socket" in body
+    assert "lan" in body
+    assert "token" in body

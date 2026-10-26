@@ -8,9 +8,8 @@ keeps coming back.
 ## What is exposed today
 
 - TTS (`tts_server serve --supervised --host 127.0.0.1 --port P`), STT
-  (`pipecat_app_helper.py serve-stt`, which calls `stt_server.server.serve`
-  without `auth_token`) and Apple Speech (`STTWebSocketServer`, in-process) all
-  accept any local connection.
+  (`python -m stt_server serve --supervised`, started without an auth token) and
+  Apple Speech (`STTWebSocketServer`, in-process) all accept any local connection.
 - Requests carrying a browser `Origin` are refused, so a web page cannot reach
   them; any local process running as any user can. `stt_server` logs a
   warning about this on every start ("TCP listener is running without
@@ -32,8 +31,8 @@ everywhere else:
    `0600` under `~/Library/Application Support/Pipecat Service Toolbar/`, or in
    the Keychain. It must survive app updates and be rotatable.
 2. **Pass it to every server.** `serveArguments` gains `--auth-token-file` for
-   TTS; the helper's `serve-stt` gains the same flag and forwards it to
-   `serve(auth_token=)`; `STTWebSocketServer` gains a header check (it has none).
+   TTS; the `stt_server serve` arguments gain that CLI's bearer-token option;
+   `STTWebSocketServer` gains a header check (it has none).
 3. **Send it from the app's own clients.** Try it (`TTSClient`, `STTClient`)
    adds the `Authorization` header.
 4. **Every Pipecat consumer changes — the breaking part.** The detail page's

@@ -17,24 +17,24 @@ flowchart LR
     end
     subgraph Py["Per-service venvs (uv-managed CPython 3.12)"]
         TTS["python -m tts_server serve --supervised"]
-        HLP["pipecat_app_helper.py serve-stt<br/>(Whisper / Kyutai)"]
+        STT["python -m stt_server serve --supervised<br/>(Whisper / Kyutai / Parakeet / Nemotron)"]
     end
     BOT["Pipecat app<br/>LocalTTSService / LocalWebSocketSTTService"]
 
     UI --> AM --> EM
-    AM --> SUP --> TTS & HLP
+    AM --> SUP --> TTS & STT
     AM --> AS
-    BOT -- "ws://127.0.0.1:port" --> TTS & HLP & AS
+    BOT -- "ws://127.0.0.1:port" --> TTS & STT & AS
 ```
 
 | Layer | Where | Responsibility |
 |---|---|---|
 | Catalog | `PipecatToolbarCore/Service.swift` | Each service's kind, runtime, port, model, licence and copy strings. |
-| Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints and the STT helper: bundle first, then the overrides below, then the repo checkout. |
+| Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints: bundle first, then the overrides below, then the repo checkout. |
 | Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports: every component above the folder must resolve, symlinks included, to exactly that root or `<root>/<backend>`, so a symlinked backend directory can't carry a deletion outside it. Builds every command line by runtime. |
 | Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
 | Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus a loaded `pipecat.tts-server.<backend>` launchd agent): the "port busy" failure in the README's Problems section. |
-| Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, the STT helper's "all but docs"). STT repos are sized at the helper's `MODEL_REVISIONS` commit, which `ServiceCatalog.sttModelRevisions` repeats. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)` and the STT pins with the helper's. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
+| Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision (STT repos excepted) and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, an "all but docs" filter for the STT repos, an approximation: upstream STT `prefetch` fetches the whole repo or the config-named weights). STT repos are sized at their `main`, as they are not pinned. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)`. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
 | Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift`, `AppLifecycle.swift` | The per-service state machine and the app-wide one, UI-free. `ServiceLifecycle.reduce(_ state: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect]` mutates only the state it is handed and does no I/O; it makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it). On quit each layer stops its own work: `ServiceDriver.quit()` first stops new reads and intents, then the reducer's `shutdownRequested` cancels an Apple Speech install (the app runs it; a Python install is the manager's); `EnvironmentManager.shutdown()` stops the install or prefetch step subprocess in flight and every probe, sets `shuttingDown` so no later step or probe starts (the interrupted install unwinds), and waits up to 20 s for busy families; the bootstrap's own `uv build`/`uv export` are stopped through a `ProcessRegistry`. `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. `AppLifecycle.reduce(_ phase: inout AppPhase, _ event: AppEvent) -> [AppEffect]` owns bootstrap, Reset and quit the same way ([App lifecycle](#app-lifecycle)). |
 | Protocols | `TTSClient.swift`, `TTSRequestMachine.swift`, `TTSRequestDriver.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, the TTS Try it request lifecycle (a pure state machine and the driver that runs it on a connection), plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
 | State | `AppModel`, `ServiceModel` (`@MainActor @Observable`) | Page navigation, delete confirmation. `AppModel` is `AppLifecycle`'s adapter: it sends the events, runs the effects (the bootstrap and Reset jobs, the quit shutdown) and reads the derived flags (`AppPhase.allowsReset`, `acceptsServiceActions`) the views enable their buttons from. `ServiceModel` is a thin adapter over its `ServiceDriver`: it publishes the driver's state, forwards intents, and is the driver's `ServiceHost` (the environment manager, paths, Try it sessions, Apple Speech). |
@@ -57,7 +57,6 @@ built `.app` always uses its bundle.
 | `PIPECAT_TOOLBAR_UV` | The `uv` binary (else `~/.local/bin`, `~/.cargo/bin`, Homebrew, `PATH`). |
 | `PIPECAT_TOOLBAR_WHEEL` | The TTS server wheel (used only if the file exists). |
 | `PIPECAT_TOOLBAR_CONSTRAINTS` | The `uv.lock` constraints file installed with that wheel. |
-| `PIPECAT_TOOLBAR_HELPER` | The STT helper script (`macos/Helper/pipecat_app_helper.py`). |
 | `PIPECAT_TOOLBAR_STT_CONSTRAINTS` | The folder of hash-pinned `stt-<engine>.txt` constraints (else `macos/constraints/` of the checkout). Outside the bundle a missing file installs unpinned; a bundled build refuses the install instead (`Tools.constraints(for:)` throws). |
 | `PIPECAT_TOOLBAR_REPO` | The repo checkout to build the wheel from when no wheel is given. |
 | `PIPECAT_TOOLBAR_E2E` | Set to `1` to run the end-to-end tests (real installs). |
@@ -69,7 +68,7 @@ Each service has one of three `ServiceRuntime` values:
 | Runtime | Install | Serve | Services |
 |---|---|---|---|
 | `ttsServer(extra:)` | `uv pip install "pipecat-local-tts-server[extra] @ <bundled wheel>"` with `uv.lock` constraints, then `python -m tts_server prefetch --json` | `python -m tts_server serve --supervised` | 8 TTS backends |
-| `sttHelper(engine:requirements:)` | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `helper prefetch --repo R --json` (at the repo's pinned commit) | `helper serve-stt --engine whisper\|kyutai` | Whisper, Kyutai |
+| `sttHelper(engine:requirements:)` (the case name predates the helper's removal) | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `python -m stt_server prefetch --backend B --model R --json` (weights follow the repo's `main`) | `python -m stt_server serve --supervised --backend B` (`B` is the entry's expected backend name; Whisper is `mlx`) | Whisper, Kyutai, Parakeet, Nemotron |
 | `appleSpeech` | `AssetInventory` model download | `STTWebSocketServer` in-process | Apple Speech |
 
 On first use, all Python services share one uv-managed CPython 3.12, stored under
@@ -211,6 +210,34 @@ phase, with no `default` (a new phase or event fails to compile), the Reset
 button against the reducer, the action gate, plus the concrete sequences (Try
 Again twice, Reset twice, quit during a Reset or a bootstrap).
 
+## External servers
+
+- **Adopt first.** `ExternalDiscovery` probes every catalog port (loopback TCP;
+  Apple Speech never) with `ExternalProbe`, a `server.hello` with no `Origin`
+  header. A hello whose backend name and model match the entry (`ServiceInfo.entry(for:port:)`)
+  moves the service to `.external(port, info)`; the app starts its own server only
+  when nothing answers (Start runs the same probe first, so a server that appears
+  between probe and launch is adopted, not reported busy). One pass runs at
+  bootstrap (the Phase 6 smoke reads its `<service>: external(<port>, ...)` log
+  line), then one on every panel open and every 15 s while it stays open. A
+  discovery result is applied only if its `externalEpoch` is current.
+- **Ownership invariant.** The app only signals, stops or deletes processes it
+  started. `.external` carries no pid and holds `server == nil && native == nil`;
+  the reducer issues no stop, launch, install or remove effect for it, so Stop,
+  Delete, Get, Install and Reset are not offered (`ExternalPresentation.Actions`),
+  and Quit leaves it running ("Quit" when `ServiceCounts.owned == 0`, else
+  "Stop All & Quit"). The only effects it may issue are read-only probes
+  (`probeExternal`, `probePortOwner`, Try it).
+- **Support floor.** STT is app-started through `pipecat-local-stt-server==0.4.0`;
+  older STT servers are adopted by hello only.
+- **Beside LaunchAgents.** `just tts-install` and `just stt-*` agents use the same
+  ports, so they show as External; the source line is the agent's label when
+  `PortProbe.owner` confirms the `launchctl print` pid equals the `lsof` pid, else
+  `127.0.0.1:<port>`. An app-started server and an agent that contend for one port
+  fail with `.portBusy`, naming what answered.
+- **Not discovered:** Unix sockets, LAN endpoints, token-protected servers (shown
+  as needing a token).
+
 ## Known follow-ups
 
 Left as they are on purpose, across both lifecycles and their adapters:
@@ -229,6 +256,10 @@ Left as they are on purpose, across both lifecycles and their adapters:
   handshake, not quit state (power-off moves the phase without a terminate,
   which must still wait), and a second terminate while the reply is owed
   returns `.terminateNow`.
+- External discovery covers loopback TCP on the catalog ports only. Left for
+  later: Unix-socket discovery (the servers' `--socket-path` mode), LAN endpoints,
+  and token storage (a non-loopback server requires a bearer token; the app stores
+  none, so such a server is shown as needing a token).
 - Out of scope: the TTS 24000 Hz fallback rate when a ready line has none; the
   STT Try it phase logic; the loopback token.
 - Native Apple Speech server: a listener failure after it reported ready is not
@@ -262,8 +293,10 @@ Every Python server, and the native server, follows one contract.
    10 s. Quitting the app stops all servers in parallel; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. Once the child is reaped its pid may be reused, so a stop after that signals the group only while no process holds the pid (a group with members keeps its id reserved); a live process on it is another one and is left alone. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
 
 `tts_server` implements this natively (`serve --supervised`,
-`tts_server/supervise.py`). The STT engines get it from the helper, which wraps
-`stt_server.server.serve()` without modifying that package.
+`tts_server/supervise.py`). The STT engines get it from the upstream
+`pipecat-local-stt-server==0.4.0` CLI (`python -m stt_server serve --supervised`,
+`prefetch --json`); the app no longer wraps `stt_server`. Older STT versions lack
+it, so an STT server on one is adopted by its hello but never app-started.
 
 ## Protocols
 
@@ -405,7 +438,7 @@ Installed and Available.
 2. Fetches the pinned `uv` release and verifies its SHA-256.
 3. Compiles a release build.
 4. Renders the icon from the vector catmark (`--render-icon`).
-5. Copies `uv`, the wheel, the constraints, the helper and the checked-in STT
+5. Copies `uv`, the wheel, the constraints and the checked-in STT
    constraints (`macos/constraints/stt-*.txt`) into `Contents/Resources`.
 6. Codesigns inside-out with the hardened runtime. The only entitlement is
    microphone input, for STT Try it.
@@ -426,19 +459,19 @@ the bare file name.
   requirement in `Service.swift`, regenerate them (network needed):
   `uv run python macos/scripts/compile_stt_constraints.py`. The TTS export from
   `uv.lock` stays `--no-hashes`.
-- **STT weights.** The helper's `MODEL_REVISIONS` pins each STT model repo to a
-  commit; `prefetch` downloads that commit and `serve-stt` loads it (Whisper is
-  handed the snapshot folder, Kyutai fetches each file at the commit), and
-  `prefetch --check` reports a snapshot of another commit as not cached.
-- **Fingerprints.** Neither pin is part of `Tools.fingerprint(for:)` (the TTS
-  wheel name, or an STT engine's requirement list), so adding or refreshing
-  them never marks an existing environment outdated. A pin refresh reaches an
-  existing environment only with its next package reinstall.
+- **STT weights are not pinned.** Upstream `pipecat-local-stt-server` 0.4.0 has no
+  revision option, so `prefetch` and `serve` follow each STT repo's `main`. The STT
+  repo is adding pins in its next release; until the app moves to it, do not claim a
+  pinned STT commit.
+- **Fingerprints.** The pin of Phonon's weights is not part of
+  `Tools.fingerprint(for:)` (the TTS wheel name, or an STT engine's requirement
+  list), so refreshing it never marks an existing environment outdated. A pin refresh
+  reaches an existing environment only with its next package reinstall.
 
 ### Supervised contract
 
 The app reads the same JSON lines from two independent emitters: `tts_server`
-(`serve --supervised`, `prefetch --json`) and the STT helper. Their events,
+(`serve --supervised`, `prefetch --json`) and the upstream `stt_server` CLI. Their events,
 fields, types and error codes are fixed in `docs/supervised-contract.json`;
 `tests/test_supervised_contract.py` runs both emitters on stub inputs and checks
 each line against it, and checks the Swift decoder (`ServerCLIEvent`), the error
@@ -450,8 +483,8 @@ codes (`SupervisedErrorCode`) and the stt wire rate (`STTWire.rate`) against it.
 |---|---|
 | Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, a removal during quit keeping what a sibling may use, a reaped child's reused pid never signalled, the Try it request machine over every (state, event) cell (`Fixtures/tts_request_machine_table.txt`) and over random interleavings against a model server with its invariants asserted, real server frames driving it (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the driver's silence timeout, the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403); `TTSRequestDriver` on one connection through a normal request, a busy refusal then retry, Stop mid-flight, Stop between append and commit, a refused voice and a dropped connection (reconnecting), and Stop while connecting. |
-| End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny and Kyutai against the built bundle, then serve and use each. |
-| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases, the download-size snapshot table (against `prefetch_specs(model)`, the STT helper's filter and its `MODEL_REVISIONS` pins) and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server and the STT helper on stub inputs and checks every JSON line, error code, the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, the helper's default models and model pins against `Service.swift`, and the STT constraints against each engine's requirements. |
+| End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny, Kyutai, Parakeet (needs `ffmpeg`) and Nemotron against the built bundle, then serve and use each. |
+| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and `PrefetchEvent.swift` and checks their backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases, the download-size snapshot table (against `prefetch_specs(model)`) and supervised error codes against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server on stub inputs and replays recorded `stt_server` 0.4.0 lines (`tests/fixtures/stt_supervised_lines.jsonl`), checking every JSON line, per-emitter error code (`ModelInvalidError` is STT-only), the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, and the STT constraints against each engine's requirements. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 
 ## Security notes
@@ -469,8 +502,8 @@ codes (`SupervisedErrorCode`) and the stt wire rate (`STTWire.rate`) against it.
   - `uv` is pinned to a version and SHA-256.
   - TTS packages follow `uv.lock`; STT packages are hash-pinned to the last
     transitive dependency (see Pins).
-  - Phonon's and every STT model's weights are pinned to a commit. Other TTS
-    repos follow `main`, as `serve` does.
+  - Phonon's weights are pinned to a commit. Other TTS repos and every STT
+    repo follow `main` (STT: upstream 0.4.0 has no revision option).
 - **Logs.** The app never writes audio or transcripts to disk itself. Each
   service's log file holds what that server prints at INFO level, plus the
   app's start and stop markers.

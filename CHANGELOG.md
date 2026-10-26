@@ -5,6 +5,44 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Pipecat Service Toolbar adopts running servers (External).** At launch and while
+  the panel is open (every 15 s) the app probes the catalog ports (loopback TCP) with
+  a `server.hello` and shows a matching server it did not start as **External**;
+  it starts its own only when none answers. External rows offer Try it and Copy but
+  no Stop, Delete, Get, Install or Reset, show the LaunchAgent label when `launchctl`
+  confirms it holds the port (else `127.0.0.1:<port>`), and **Quit leaves them
+  running** ("Stop All & Quit" appears only when the app started a server). The app
+  only signals, stops or deletes processes it started. An app-started server and a
+  `just tts-install` / `just stt-*` agent on one port still contend: the app reports
+  the port busy and names what answered. Unix sockets, LAN endpoints and
+  token-protected servers are not discovered.
+- **Parakeet (9765) and Nemotron (9865)** STT services, matching the
+  `pipecat.stt-server.parakeet` / `nemotron` agent ports. Parakeet needs `ffmpeg` on
+  the machine (Homebrew `/opt/homebrew/bin` or `/usr/local/bin`; the app adds those to
+  Parakeet's server `PATH` only); without it the server exits with `BackendStartError:
+  FFmpeg is not installed or not in your PATH`.
+- `macos/scripts/ui_smoke.sh` starts a tone server outside the app on 8665, checks the
+  bootstrap log reports it as External and that it is still running after Quit
+  (skipped when 8665 is held).
+
+### Changed
+
+- Pipecat Service Toolbar: STT now runs through the upstream
+  `pipecat-local-stt-server==0.4.0` CLI (`python -m stt_server serve --supervised`,
+  `prefetch --json`); the bundled `pipecat_app_helper.py`, `PIPECAT_TOOLBAR_HELPER`
+  and the helper's cooperative cancel are removed. An STT server on an older version
+  is adopted by its hello, but an app-started STT server needs 0.4.0.
+- STT model weights are **not pinned to a commit** in this release (upstream 0.4.0 has
+  no revision option; the app follows each repo's `main`). The STT repo is adding
+  pins in its next release. Kyutai barge-in waits for the in-flight decode until
+  upstream cancels per frame.
+- `docs/supervised-contract.json` lists error codes per emitter; `ModelInvalidError`
+  is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
+
 ## [0.7.0] - 2026-10-25
 
 ### Added
@@ -53,9 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing; an install step no longer waits on a grandchild holding its pipes.
   STT environments install against checked-in, hash-pinned constraints
   (`macos/constraints/stt-<engine>.txt`, `--require-hashes`) and load model weights
-  pinned to a commit, which `prefetch` downloads and `serve-stt` loads; neither pin
-  marks an existing environment outdated. The supervised/prefetch JSON lines both
-  emitters write (this server and the STT helper) are fixed in
+  pinned to a commit, which `prefetch` downloads and `serve-stt` loads (no longer true:
+  see Unreleased, STT weights are not pinned). The supervised/prefetch JSON lines both
+  emitters write (this server and the STT helper, since replaced by the upstream CLI) are fixed in
   `docs/supervised-contract.json` and drift-tested from both sides.
   `HF_TOKEN` reaches only `prefetch` and `serve`, never `uv`. The Apple Speech
   server caps clients at 8 and decodes one at a time, and survives Stop with a
@@ -88,10 +126,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and clock seams; `ServiceModel` is now a thin `@Observable` adapter and the Swift
   tests depend on Core only. Add Models' download size now counts every snapshot an
   install fetches at its pinned revision (Phonon's pin, dia's codec, pocket_tts's
-  voice embeddings, the STT helper's file filter at its `MODEL_REVISIONS` pin, which
-  `ServiceCatalog.sttModelRevisions` repeats) from `ServiceCatalog.snapshots(for:)`,
-  which a lean drift test compares with each backend's `prefetch_specs(model)` and
-  with the helper's pins.
+  voice embeddings, an "all but docs" filter for the STT repos) from
+  `ServiceCatalog.snapshots(for:)`, which a lean drift test compares with each
+  backend's `prefetch_specs(model)`.
 - `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
   (both still `RuntimeError` subclasses).
 - `TTSServer.listening_port()` returns `None` for a Unix socket instead of a

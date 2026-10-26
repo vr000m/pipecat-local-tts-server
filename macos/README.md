@@ -5,7 +5,7 @@
 A native macOS menu bar app that downloads speech models (text to speech and
 speech to text) and serves each one on a fixed loopback port. Point a Pipecat
 app at the port and it uses the model with no cloud API. It has no Dock icon.
-Servers stop when the app quits, even if it crashes. Quitting also cancels running installs and downloads.
+Servers the app started stop when it quits, even if it crashes; servers it didn't start are left running. Quitting also cancels running installs and downloads.
 
 ## Quickstart
 
@@ -30,6 +30,8 @@ then **Start**.
 | **Apple Speech** (default STT) | STT | 9465 | SpeechAnalyzer (built in) | macOS |
 | Whisper | STT | 9565 | `mlx-community/whisper-large-v3-turbo` | MIT |
 | Kyutai STT | STT | 9665 | `kyutai/stt-1b-en_fr-mlx` | CC-BY-4.0 |
+| Parakeet | STT | 9765 | `mlx-community/parakeet-tdt-0.6b-v3` | CC-BY-4.0 |
+| Nemotron | STT | 9865 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | NVIDIA open model licence (`license:other`) |
 | **Kokoro** (default TTS) | TTS | 8765 | `mlx-community/Kokoro-82M-bf16` | Apache-2.0 |
 | Phonon | TTS | 9365 | `gradium/phonon-31m-en` | Apache-2.0 |
 | Pocket TTS | TTS | 8965 | `mlx-community/pocket-tts` | CC-BY-4.0 |
@@ -51,8 +53,33 @@ can run side by side. Variants share their family's Python environment.
 
 TTS services speak this repo's protocol (`tts_server`). STT services speak the
 protocol of [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server).
-Any client of either works unchanged. TTS ports match the `just tts-install`
-launchd agents, so run one or the other, not both.
+Any client of either works unchanged. The ports match the `just tts-install`
+and `just stt-*` launchd agents; see [Servers you didn't start](#servers-you-didnt-start)
+for running both.
+
+## Servers you didn't start
+
+- **Adopt first.** The app probes each catalog port (loopback TCP only) with a
+  `server.hello`. A running server whose backend and model match a catalog entry
+  is adopted and shown as **External**; the app starts its own only when
+  nothing answers. Discovery runs once at launch, then every 15 s while the panel
+  is open.
+- **Ownership.** The app only signals, stops or deletes processes it started.
+  An External service has no Stop, Delete, Reset, Get or Install; it offers
+  Try it and the Copy items. **Quit leaves it running**
+  (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
+- **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the
+  same ports, so a running agent shows as External. If an app-started server and
+  an agent contend for one port, the app reports the port busy and names what
+  answered (the agent's label, when `launchctl` confirms it holds the port).
+- **Every server on a well-known port.** The app can own every TTS and STT server
+  while other apps probe the same catalog ports.
+- **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
+  server that needs a bearer token is shown as needing one; the app stores none.
+- **Support floor.** STT starts through `pipecat-local-stt-server==0.4.0`'s own CLI
+  (`python -m stt_server serve --supervised`). An STT agent on an older version
+  is still adopted by its hello, but an app-started STT server needs 0.4.0.
+
 
 ## Menu bar
 
@@ -114,12 +141,17 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
 - **TTS**: `uv pip install "pipecat-local-tts-server[<backend>] @ <bundled wheel>"`,
   pinned to `uv.lock`, then `python -m tts_server prefetch` and
   `serve --supervised`.
-- **Whisper, Kyutai**: PyPI packages hash-pinned to the last transitive
-  dependency (`constraints/stt-<engine>.txt`, `uv pip install --require-hashes`;
-  a bundled app missing that file refuses the install rather than resolve
-  unpinned) and model weights pinned to a commit, run by the bundled
-  `Helper/pipecat_app_helper.py`. Kyutai runs as a `moshi_mlx` backend inside
-  `stt_server`.
+- **Whisper, Kyutai, Parakeet, Nemotron**: PyPI packages hash-pinned to the last
+  transitive dependency (`constraints/stt-<engine>.txt`, `uv pip install
+  --require-hashes`; a bundled app missing that file refuses the install rather
+  than resolve unpinned), run by the upstream CLI (`python -m stt_server prefetch`
+  and `serve --supervised`). STT model weights are **not** pinned to a commit in
+  this release: upstream 0.4.0 has no revision option, so the app follows each
+  repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
+  `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
+  it the server exits with `BackendStartError: FFmpeg is not installed or not in
+  your PATH`.
 - **Apple Speech**: SpeechAnalyzer in the app process, behind a Swift
   WebSocket server that speaks the same STT protocol.
 - **Supervision**: every server prints a JSON `ready` line and exits when the
@@ -157,6 +189,9 @@ are reserved per client, so the bundled app's install does not count). Once:
 `just app-smoke` (`scripts/ui_smoke.sh`) needs no Accessibility or Screen Recording
 grant, so it cannot open the panel or click. It launches the app with your real
 support and log folders (installing nothing) and refuses while another copy runs.
+Its last step starts a tone server outside the app on 8665, checks the bootstrap
+log reports it as External, and checks it is still running after Quit; it skips
+that step when 8665 is held or the repo `.venv` is missing.
 Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
 
 1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.
@@ -190,7 +225,7 @@ target (`ServiceLifecycleTests`, `ServiceDriverTests`, `AppLifecycleTests`). Dow
 `uv run pytest tests/test_macos_catalog_drift.py` fails until they match.
 
 Unbundled runs find their tools through `PIPECAT_TOOLBAR_UV`, `PIPECAT_TOOLBAR_WHEEL`,
-`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_HELPER`, `PIPECAT_TOOLBAR_STT_CONSTRAINTS`
+`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_STT_CONSTRAINTS`
 and `PIPECAT_TOOLBAR_REPO` (see
 [Architecture](docs/architecture.md#development-overrides)); a built app uses its bundle.
 
@@ -201,8 +236,9 @@ constraints (network needed; `tests/test_supervised_contract.py` fails until you
 uv run python macos/scripts/compile_stt_constraints.py   # writes macos/constraints/stt-<engine>.txt
 ```
 
-To move an STT model pin, update `MODEL_REVISIONS` in `Helper/pipecat_app_helper.py`
-with the repo's commit sha (`https://huggingface.co/api/models/<repo>` → `sha`).
+STT model weights are not pinned (see How it works); to move to the STT version
+that adds revision pins, bump `ServiceCatalog.sttServerRequirement` and regenerate
+the constraints.
 
 Build knobs (environment variables read by `macos/scripts/`):
 
