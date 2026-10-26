@@ -64,8 +64,7 @@ verified here.
 
 - **Support floor:** STT >= 0.4.0 (the first release with the upstream supervised
   CLI the app launches), TTS >= 0.7.0 (the first release with `serve --supervised`,
-  `prefetch` and the supervised contract; `CHANGELOG.md` lists it as Unreleased, so
-  it must be released before this ships). The hello check does not enforce the floor
+  `prefetch` and the supervised contract; released as v0.7.0). The hello check does not enforce the floor
   (a 0.3.3 STT server's hello passes it, and is adopted); the floor states what the
   app launches and tests. A hello without `backend.name` is unsupported.
 - **Protocol v0.1 compatibility is non-negotiable.** Client-side probing only; no
@@ -393,7 +392,7 @@ Context lifecycle:
 - No change to wire protocol v0.1 on either server.
 - Code reviewed and approved; tests passing; docs updated.
 
-<!-- reviewed: 2026-10-26 @ 03a8839f1da81a1962d8e4c6e1ef7a3c78369dc3 -->
+<!-- reviewed: 2026-10-26 @ c71d3948adbc85373b606e58a6b2d403d3fc4096 -->
 
 <!-- /review-plan writes the review marker above this line. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
