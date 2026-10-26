@@ -23,7 +23,7 @@ public struct ServiceCounts: Equatable, Sendable {
 
     public init(_ states: [LifecycleState]) {
         running = states.filter(Self.isRunning).count
-        owned = states.filter { $0.phase == .running }.count
+        owned = states.filter { $0.server != nil || $0.native != nil }.count
         installed = states.filter(\.isInstalled).count
         active = states.filter(\.isActive).count
         startable = states.filter { !$0.isActive && ($0.isInstalled || $0.isInstalling) }.count

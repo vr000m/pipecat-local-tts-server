@@ -2008,11 +2008,17 @@ final class ConcurrencyGauge: @unchecked Sendable {
     /// The label is set only on a pid match: a loaded agent whose pid is not the port's holder (a
     /// second server on the port, or an agent that is down) does not own the row.
     @Test func theLabelNeedsThePidToMatchTheLsofHolder() {
+        let label = "pipecat.stt-server"
         let output = Self.printOutput(pid: 4242)
-        let lsof: Int32 = 4242
-        #expect(PortProbe.launchctlPid(output) == lsof)
-        let otherHolder: Int32 = 99
-        #expect(PortProbe.launchctlPid(output) != otherHolder)
+        // Match: the agent holds the port.
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: output, lsofPid: 4242) == label)
+        // A different holder, no holder, an agent that is loaded but down, a failed `launchctl print`.
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: output, lsofPid: 99) == nil)
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: output, lsofPid: nil) == nil)
+        #expect(
+            PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: Self.printOutput(pid: nil), lsofPid: 4242)
+                == nil)
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 113, launchctlLines: output, lsofPid: 4242) == nil)
     }
 
     /// Against a real listener (this process, on an ephemeral port) for a service with no LaunchAgent

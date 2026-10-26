@@ -64,12 +64,21 @@ public enum PortProbe {
                 executable: URL(filePath: "/bin/launchctl"),
                 arguments: ["print", "gui/\(getuid())/\(label)"],
                 environment: ProcessEnvironment.base()))
-        if let result = await collect(launchctl), result.status == 0, let pid = owner.pid,
-            launchctlPid(result.stdout) == pid
-        {
-            owner.launchdLabel = label
+        if let result = await collect(launchctl) {
+            owner.launchdLabel = launchdLabel(
+                label, launchctlStatus: result.status, launchctlLines: result.stdout, lsofPid: owner.pid)
         }
         return owner
+    }
+
+    /// The agent's label, only when `launchctl print` succeeded and its pid is the one `lsof`
+    /// found holding the port. A loaded agent that does not hold the port (it is between
+    /// restarts, or something else took the port) must not be blamed.
+    static func launchdLabel(_ label: String, launchctlStatus: Int32, launchctlLines: [String], lsofPid: Int32?)
+        -> String?
+    {
+        guard launchctlStatus == 0, let lsofPid, launchctlPid(launchctlLines) == lsofPid else { return nil }
+        return label
     }
 
     /// The service's own `pid = N` line in `launchctl print` output: the first one at the

@@ -941,9 +941,11 @@ import Testing
     }
 
     /// {every event kind} x {every phase}: `externalEpoch` moves only on a transition into or out
-    /// of External, or on Stop, Delete and quit; no other event touches it.
+    /// of External, or on Start, Install, Stop, Delete and quit; no other event touches it.
     @Test func theExternalEpochSurvivesEveryNonTransitionEvent() {
-        let advancing: Set<LifecycleEvent.Kind> = [.stopRequested, .shutdownRequested, .shutdownServers, .removeRequested]
+        let advancing: Set<LifecycleEvent.Kind> = [
+            .startRequested, .installRequested, .stopRequested, .shutdownRequested, .shutdownServers, .removeRequested,
+        ]
         for kind in LifecycleEvent.Kind.allCases {
             for phase in Self.phases where (kind != .portOwnerFound && kind != .startProbeResult) || phase == .starting {
                 var s = Self.tagged(phase, for: kind)
@@ -1074,6 +1076,58 @@ import Testing
             &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
         #expect(effects.last == .probePortOwner(port: 9465, probe: s.epoch))
         #expect(!effects.contains { if case .probeExternal = $0 { true } else { false } })
+    }
+
+    /// A discovery probe that began before Start answers about an older moment than the Start
+    /// path's own probe. Once Start has settled (here: the port is another server's), the late
+    /// discovery answer must not turn the failure into an adoption.
+    @Test func aDiscoveryResultFromBeforeStartIsStaleOnceStartHasSettled() {
+        var s = Self.state(.installed, server: nil)
+        let discoveryEpoch = s.externalEpoch
+        let start = ServiceLifecycle.reduce(
+            &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        guard case .probeExternal(_, let probe)? = start.last else {
+            Issue.record("\(start)")
+            return
+        }
+        #expect(s.externalEpoch > discoveryEpoch)
+        let owner = ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: .mismatch(Self.kokoroHello)))
+        guard case .probePortOwner(_, let ownerProbe)? = owner.last else {
+            Issue.record("\(owner)")
+            return
+        }
+        _ = ServiceLifecycle.reduce(&s, .portOwnerFound(PortProbe.Owner(), probe: ownerProbe))
+        guard case .failed = s.phase else {
+            Issue.record("\(s.phase)")
+            return
+        }
+        let late = ServiceLifecycle.reduce(&s, .externalFound(epoch: discoveryEpoch, info: Self.externalInfo))
+        #expect(late.isEmpty)
+        guard case .failed = s.phase else {
+            Issue.record("a stale discovery result adopted: \(s.phase)")
+            return
+        }
+    }
+
+    @Test func installingMakesAnEarlierDiscoveryResultStale() {
+        var s = Self.state(.notInstalled, server: nil)
+        s.environment = .missing
+        let discoveryEpoch = s.externalEpoch
+        _ = ServiceLifecycle.reduce(&s, .installRequested(managerAvailable: true))
+        #expect(s.externalEpoch > discoveryEpoch)
+        #expect(ServiceLifecycle.reduce(&s, .externalFound(epoch: discoveryEpoch, info: Self.externalInfo)).isEmpty)
+        #expect(!s.phase.isExternal)
+    }
+
+    /// Apple Speech runs in the app and has no port to adopt: not even a direct event can make it External.
+    @Test func appleSpeechIsNeverExternal() {
+        for phase in Self.phases {
+            var s = Self.state(phase, info: Service.appleSpeech.info, server: nil)
+            let before = s
+            let effects = ServiceLifecycle.reduce(
+                &s, .externalFound(epoch: s.externalEpoch, info: Self.externalInfo))
+            #expect(effects.isEmpty && s == before, "\(phase)")
+        }
     }
 
     @Test func startProbeAdoptGoesExternal() {

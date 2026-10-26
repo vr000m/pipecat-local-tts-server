@@ -745,7 +745,9 @@ public enum ServiceLifecycle {
             }
 
         case .externalFound(_, let info):
-            guard !s.shuttingDown, s.server == nil, s.native == nil, s.install == nil, s.removal == nil else { return [] }
+            guard !s.shuttingDown, s.server == nil, s.native == nil, s.install == nil, s.removal == nil,
+                s.runtime != .appleSpeech
+            else { return [] }
             switch s.phase {
             case .notInstalled, .installed, .failed, .checking, .external: return adopt(&s, info)
             case .unavailable, .needsModel, .installing, .starting, .running, .stopping, .removing: return []
@@ -972,11 +974,14 @@ public enum ServiceLifecycle {
 }
 
 extension LifecycleEvent.Kind {
-    /// Stop, quit and Delete advance `LifecycleState.externalEpoch` when they change anything
-    /// (the transitions into and out of `.external` advance it on their own).
+    /// Start, Install, Stop, quit and Delete advance `LifecycleState.externalEpoch` when they
+    /// change anything (the transitions into and out of `.external` advance it on their own).
+    /// Start and Install begin an owned activity that settles a fresher answer about the port
+    /// than any discovery probe that began before them, so such a probe must not land after.
     var changesExternalEpoch: Bool {
         switch self {
-        case .stopRequested, .shutdownRequested, .shutdownServers, .removeRequested: true
+        case .startRequested, .installRequested, .stopRequested, .shutdownRequested, .shutdownServers,
+            .removeRequested: true
         default: false
         }
     }

@@ -13,7 +13,9 @@ import Testing
     }
 
     static let external = state(ServiceLifecycleTests.external)
-    static let running = state(.running)
+    /// A server of ours: the reducer sets `server` on launch, and Quit stops what holds one.
+    static let running = ServiceLifecycleTests.state(.running)
+    static let starting = ServiceLifecycleTests.state(.starting)
     static let installed = state(.installed)
     static let notInstalled = state(.notInstalled, requested: false, environment: .missing)
 
@@ -51,6 +53,18 @@ import Testing
         let counts = ServiceCounts([Self.external, Self.running])
         #expect(counts.running == 2 && counts.owned == 1)
         #expect(counts.summary(bootstrapping: false) == "2 services running")
+    }
+
+    /// Quit stops a server that is still loading or winding down, so the title says so.
+    @Test func aStartingOrStoppingServerOfOursIsOwned() {
+        #expect(ServiceCounts([Self.starting]).owned == 1)
+        #expect(ServiceCounts([Self.starting]).quitTitle == "Stop All & Quit")
+        let stopping = ServiceLifecycleTests.state(.stopping)
+        #expect(ServiceCounts([stopping]).quitTitle == "Stop All & Quit")
+        // A starting service that only holds a probe (a busy port, no server of ours) is not.
+        var probing = ServiceLifecycleTests.state(.starting, server: nil)
+        probing.probe = 3
+        #expect(ServiceCounts([probing]).owned == 0 && ServiceCounts([probing]).quitTitle == "Quit")
     }
 
     @Test func installedFollowsTheAppsOwnEnvironmentForAnExternalService() {

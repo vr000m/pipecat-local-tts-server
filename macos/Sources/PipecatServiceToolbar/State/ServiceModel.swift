@@ -75,7 +75,7 @@ final class ServiceModel: Identifiable {
     var isBusy: Bool { driver.state.isBusy }
 
     /// The Python services own an environment and model files that can be deleted.
-    var canDeleteModel: Bool { info.runtime.usesPython && isInstalled && phase != .removing }
+    var canDeleteModel: Bool { info.runtime.usesPython && isInstalled && phase != .removing && !phase.isExternal }
 
     var installFraction: Double? { info.runtime == .appleSpeech ? assetProgress : download?.fraction }
     var diskBytes: Int64? { cache.map(\.sizeBytes).flatMap { $0 > 0 ? $0 : nil } }
