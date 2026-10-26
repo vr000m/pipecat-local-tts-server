@@ -226,9 +226,10 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
   started. `.external` carries no pid and holds `server == nil && native == nil`;
   the reducer issues no stop, launch, install or remove effect for it (the effects
   allowed in `.external` are `.cancelProbe`, `.openTryIt` and `.tearDown`, plus a
-  state re-read; the read-only owner lookup that confirms an agent's label is not a
-  reducer effect: `ServiceModel.refreshExternalOwner` calls `PortProbe.owner` on each
-  discovery pass), and the views do not offer
+  state re-read; the reducer never issues `.probePortOwner` for `.external`; the
+  read-only owner lookup that confirms an agent's label is
+  `ServiceModel.refreshExternalOwner` calling `PortProbe.owner` on each discovery
+  pass, outside the reducer), and the views do not offer
   Stop, Delete, Get, Install or Reset (each External row reads its buttons from
   `ExternalPresentation.Actions`). STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
