@@ -208,9 +208,9 @@ struct RunningRow: View {
                 Text(verbatim: "127.0.0.1:\(model.port)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
-            case .external(let port, _):
+            case .external:
                 StatusDot(color: model.externalFailures > 0 ? .orange : .green)
-                Text(verbatim: model.externalFailures > 0 ? "Not responding" : "External · 127.0.0.1:\(port)")
+                Text(verbatim: model.externalStatusLine)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             case .starting:
@@ -511,9 +511,9 @@ struct CatalogSubtitle: View {
             case .running:
                 StatusDot(color: .green)
                 Text(verbatim: "Running on :\(model.port)").foregroundStyle(.secondary)
-            case .external(let port, _):
-                StatusDot(color: .green)
-                Text(verbatim: "External on :\(port)").foregroundStyle(.secondary)
+            case .external:
+                StatusDot(color: model.externalFailures > 0 ? .orange : .green)
+                Text(verbatim: model.externalStatusLine).foregroundStyle(.secondary)
             case .stopping:
                 Text("Stopping…").foregroundStyle(.secondary)
             case .removing:

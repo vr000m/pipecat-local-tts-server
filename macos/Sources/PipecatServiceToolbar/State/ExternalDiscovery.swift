@@ -83,6 +83,10 @@ final class ExternalDiscovery {
                 driver.externalLost(epoch: epoch, reason: reason)
             }
         }
+        for service in app.services {
+            await service.refreshExternalOwner()
+            guard !Task.isCancelled, !stopped else { return }
+        }
         for service in app.services where service.phase.isExternal {
             Log.app.info("external \(service.service.rawValue, privacy: .public): \(String(describing: service.phase), privacy: .public)")
         }

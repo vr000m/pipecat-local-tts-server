@@ -67,6 +67,41 @@ final class ServiceModel: Identifiable {
     var isRunning: Bool { ServiceCounts.isRunning(driver.state) }
     /// Consecutive failed re-probes of an External server ("not responding" while below the threshold).
     var externalFailures: Int { driver.state.externalFailures }
+    /// The LaunchAgent label `PortProbe.owner` confirmed holds the External server's port
+    /// (pid matched); nil until looked up or when unconfirmed. Reset when the service leaves External.
+    private(set) var externalLaunchdLabel: String?
+    /// Whether the owner lookup ran for the current adoption.
+    private var externalOwnerLooked = false
+    /// The row's status line for an External service (`ExternalPresentation`, Core).
+    var externalStatusLine: String {
+        guard case .external(let port, _) = phase else { return "" }
+        return ExternalPresentation.statusLine(
+            port: port, launchdLabel: externalLaunchdLabel, hasLaunchdFamily: info.launchdLabel != nil,
+            failures: externalFailures)
+    }
+    /// The source alone (label or `127.0.0.1:<port>`), for the detail view.
+    var externalSource: String {
+        guard case .external(let port, _) = phase else { return "" }
+        return ExternalPresentation.source(
+            port: port, launchdLabel: externalLaunchdLabel, hasLaunchdFamily: info.launchdLabel != nil)
+    }
+    /// The External row's actions, nil when the service is not External.
+    var externalActions: ExternalPresentation.Actions? { ExternalPresentation.Actions.forPhase(phase) }
+
+    /// Looks up (once per adoption) who holds an External server's port, to confirm the
+    /// LaunchAgent label. Read-only: `lsof` and `launchctl print`, never a signal.
+    func refreshExternalOwner() async {
+        guard case .external(let port, _) = phase else {
+            externalLaunchdLabel = nil
+            externalOwnerLooked = false
+            return
+        }
+        guard !externalOwnerLooked, info.launchdLabel != nil else { return }
+        externalOwnerLooked = true
+        let owner = await PortProbe.owner(of: port, backend: service)
+        guard case .external(let now, _) = phase, now == port else { return }
+        externalLaunchdLabel = owner.launchdLabel
+    }
     // The lifecycle's own reading of its state (Core, tested with the reducer).
     /// Started by the user: shown in the main menu.
     var isActive: Bool { driver.state.isActive }

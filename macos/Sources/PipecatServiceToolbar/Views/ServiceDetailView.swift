@@ -91,11 +91,11 @@ struct ServiceDetailView: View {
             wideButton("Start Server", systemImage: "play.fill", tint: .green) { model.start() }
         case .running:
             wideButton("Stop Server", systemImage: "stop.fill", tint: .secondary) { model.stop() }
-        case .external(let port, _):
+        case .external:
             // No Stop, Delete, Get or Install: the app did not start this server and leaves it running.
             Label(
                 model.externalFailures > 0
-                    ? "Not responding" : "Running outside the app on 127.0.0.1:\(port). Quit leaves it running.",
+                    ? "Not responding" : "Running outside the app (\(model.externalSource)). Quit leaves it running.",
                 systemImage: "network"
             )
             .font(.system(size: 12))
@@ -103,7 +103,7 @@ struct ServiceDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            if model.ttsTryIt == nil, model.sttTryIt == nil {
+            if model.externalActions?.tryIt == true, model.ttsTryIt == nil, model.sttTryIt == nil {
                 wideButton("Open Try It", systemImage: "play.circle", tint: .accentColor) { model.requestTryIt() }
             }
         case .starting:

@@ -123,6 +123,7 @@ final class AppModel {
     /// pass now and every 15 s while it is open.
     func panelVisibilityChanged(_ visible: Bool) {
         guard phase != .shuttingDown else { return }
+        Log.app.info("panel visible: \(visible, privacy: .public)")
         discovery.setPanelVisible(visible)
     }
 
