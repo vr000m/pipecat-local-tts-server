@@ -7,24 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-27
+
 ### Changed
 
+- `serve` now holds a bearer token to one rule: visible ASCII only (no internal whitespace,
+  newlines or non-ASCII), whether it comes from `--auth-token-file` or `PIPECAT_TTS_AUTH_TOKEN`.
+  **Upgrade note:** a token with internal whitespace or other characters outside visible ASCII,
+  which `serve` used to accept, now makes it exit 1 (a launchd agent would restart every 10 s),
+  so re-issue such a token with visible ASCII only.
 - Pipecat Service Toolbar: the External probe waits 2 s for a server's hello (was 5 s). Measured
   across every TTS backend mid-synthesis and every STT engine while its model loads, the slowest
   hello was 187 ms.
 
 ### Fixed
 
-- `serve --auth-token-file` no longer treats an empty or whitespace-only token file as "no
-  auth": it exits 1 at startup (as `ConfigError` under `--supervised`), as does a token with
-  internal whitespace or non-visible-ASCII characters, or a non-UTF-8 file. `status` still reads
-  leniently. `scripts/install_tts_agent.sh` validates the file before writing the plist with the
-  same reader and a file/directory policy (owner-only regular file, no symlink, no group/other
-  bits, directories owned by you or root that no other user can write; group write only on root-owned
-  ones). An empty `--auth-token-file ""` value is refused
-  too instead of reading as "no file", and so is a set-but-blank `PIPECAT_TTS_AUTH_TOKEN` (or one
-  that is not visible ASCII); an unset or empty one still means no auth. Closes #23; mirrors the
-  STT server's fix.
+- `serve` no longer runs with auth silently off on an empty token. An empty or whitespace-only
+  `--auth-token-file`, an empty `--auth-token-file ""` value, a non-UTF-8 token file, and a
+  set-but-blank `PIPECAT_TTS_AUTH_TOKEN` all exit 1 at startup (as `ConfigError` under
+  `--supervised`), before the model loads. An unset or empty `PIPECAT_TTS_AUTH_TOKEN` still means
+  no auth, and `status` still reads its token leniently. Closes #23; mirrors the STT server's fix.
+- `scripts/install_tts_agent.sh` validates `PIPECAT_TTS_AUTH_TOKEN_FILE` before it writes or loads
+  anything, with the same reader plus a file policy: an absolute path to an owner-only regular file
+  (no symlink, no group/other bits) in directories owned by you or root that no other user can
+  write (group write only on root-owned ones). The plist records the symlink-free path that was
+  checked.
 - Pipecat Service Toolbar: an External row's LaunchAgent label is cut in the middle, not at the
   end, so `pipecat.stt-server.kyutai` / `…parakeet` / `…nemotron` stay distinguishable in the
   panel, and hovering the line shows the whole label.
@@ -644,7 +651,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...v0.6.1
