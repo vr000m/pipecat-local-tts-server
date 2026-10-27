@@ -209,7 +209,7 @@ struct RunningRow: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             case .external:
-                StatusDot(color: model.externalFailures > 0 ? .orange : .green)
+                StatusDot(color: model.isExternalNotResponding ? .orange : .green)
                 Text(verbatim: model.externalStatusLine)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -520,7 +520,7 @@ struct CatalogSubtitle: View {
                 StatusDot(color: .green)
                 Text(verbatim: "Running on :\(model.port)").foregroundStyle(.secondary)
             case .external:
-                StatusDot(color: model.externalFailures > 0 ? .orange : .green)
+                StatusDot(color: model.isExternalNotResponding ? .orange : .green)
                 Text(verbatim: model.externalStatusLine).foregroundStyle(.secondary)
             case .stopping:
                 Text("Stopping…").foregroundStyle(.secondary)

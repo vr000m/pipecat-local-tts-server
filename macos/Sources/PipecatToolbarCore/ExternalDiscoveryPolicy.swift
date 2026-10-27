@@ -53,13 +53,10 @@ public enum ExternalDiscoveryPolicy {
         }
     }
 
-    /// Whether discovery probes a service in `phase`: only where a found can be accepted.
+    /// Whether discovery probes a service in `phase`: only where a found can be accepted
+    /// (`ServiceLifecycle.acceptsDiscovery`, the reducer's own test).
     public static func probes(_ service: Service, in phase: ServicePhase) -> Bool {
-        guard service.info.runtime != .appleSpeech else { return false }
-        switch phase {
-        case .notInstalled, .installed, .failed, .checking, .external: return true
-        case .unavailable, .needsModel, .installing, .starting, .running, .stopping, .removing: return false
-        }
+        service.info.runtime != .appleSpeech && ServiceLifecycle.acceptsDiscovery(phase)
     }
 
     /// The events for `observations`, in order. An outcome never moves an owned service.
@@ -89,7 +86,7 @@ public enum ExternalDiscoveryPolicy {
 
     /// One discovery pass: probes each eligible catalog port once, all at once, and returns
     /// the events. A probe that finished after cancellation is dropped, so a cancelled pass
-    /// (quit, panel closed) returns nothing it could not trust.
+    /// (quit; closing the panel lets a pass finish) returns nothing it could not trust.
     public static func pass(snapshots: [Snapshot], prober: any HelloProber) async -> [Directive] {
         let targets = snapshots.filter { probes($0.service, in: $0.phase) }
         let observations = await withTaskGroup(of: Observation?.self) { group in

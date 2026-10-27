@@ -66,6 +66,22 @@ import Testing
         }
     }
 
+    /// Discovery probes exactly the phases where the reducer's `externalFound` adopts, over every
+    /// `ServicePhase` case (`ServiceLifecycleTests.phases`), for every service. The found carries a
+    /// hello unlike the one an External phase already holds, so adopting is visible there too.
+    @Test func theProbedPhasesAreTheOnesTheReducerAdoptsFrom() {
+        let fresh = ExternalInfo(backendName: "tone", model: "fresh", rate: 16000, protocolVersion: "0.1")
+        for service in Service.allCases {
+            for phase in ServiceLifecycleTests.phases {
+                var s = ServiceLifecycleTests.state(phase, info: service.info, server: nil)
+                s.externalEpoch = 3
+                _ = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: fresh))
+                let adopted = s.phase == .external(service.info.port, fresh)
+                #expect(adopted == Policy.probes(service, in: phase), "\(service) \(phase)")
+            }
+        }
+    }
+
     @Test func anOwnedServiceGetsNoEventWhateverTheOutcome() {
         let outcomes: [ExternalProbe.Outcome] = [
             .adopt(Service.tone.info, Self.toneHello), .mismatch(Self.kokoroHello), .needsToken, .silent, .timeout,

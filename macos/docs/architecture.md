@@ -481,9 +481,14 @@ the bare file name.
   revision option, so `prefetch` and `serve` follow each STT repo's `main`. Until the
   app moves to an STT release that has one (and passes it), do not claim a pinned STT
   commit.
-- **Fingerprints.** The pin of Phonon's weights is not part of
+- **TTS weights.** Two snapshots are pinned to a commit, the same pins the backend
+  modules pass (`ServiceCatalog.snapshots(for:)`, drift-tested against
+  `prefetch_specs(model)`): Phonon's weights and Pocket TTS's voice embeddings
+  (`kyutai/pocket-tts-without-voice-cloning`). Every other TTS repo, Pocket TTS's
+  model and Dia's codec included, follows `main`.
+- **Fingerprints.** Neither TTS weight pin is part of
   `Tools.fingerprint(for:)` (the TTS wheel name, or an STT engine's requirement
-  list), so refreshing it never marks an existing environment outdated. A pin refresh
+  list), so refreshing one never marks an existing environment outdated. A pin refresh
   reaches an existing environment only with its next package reinstall.
 
 ### Supervised contract
@@ -525,8 +530,9 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
   - `uv` is pinned to a version and SHA-256.
   - TTS packages follow `uv.lock`; STT packages are hash-pinned to the last
     transitive dependency (see Pins).
-  - Phonon's weights are pinned to a commit. Other TTS repos and every STT
-    repo follow `main` (STT: upstream 0.4.0 has no revision option).
+  - Phonon's weights and Pocket TTS's voice embeddings are pinned to a commit.
+    Other TTS repos (Dia's codec included) and every STT repo follow `main`
+    (STT: upstream 0.4.0 has no revision option).
 - **Logs.** The app never writes audio or transcripts to disk itself. Each
   service's log file holds what that server prints at INFO level, plus the
   app's start and stop markers.

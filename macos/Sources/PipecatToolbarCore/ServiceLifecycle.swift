@@ -442,10 +442,10 @@ public struct LifecycleState: Equatable, Sendable {
     /// the system downloading does not attach to it again.
     public var declinedSystemDownload = false
     /// Gates discovery events (`externalFound`, `externalLost`): `reduce` bumps it on every
-    /// transition into or out of `.external` and when Stop, Delete or quit changes anything,
-    /// so a probe that started earlier can not resurrect or demote a service. No other event
-    /// touches it. `ExternalDiscovery` reads it when it starts a probe and the outcome
-    /// carries it back.
+    /// transition into or out of `.external` and when Start, Install, Stop, Delete or quit
+    /// changes anything (`LifecycleEvent.Kind.changesExternalEpoch`), so a probe that started
+    /// earlier can not resurrect or demote a service. No other event touches it.
+    /// `ExternalDiscovery` reads it when it starts a probe and the outcome carries it back.
     public var externalEpoch = 0
     /// Consecutive failed re-probes (refused or timeout) of the External server; reset by a
     /// found. The `externalFailureThreshold`th moves the service to checking.
@@ -509,8 +509,9 @@ extension LifecycleState {
         case .installed, .needsModel, .starting, .running, .stopping: true
         case .unavailable, .notInstalled, .checking: false
         case .installing, .removing: requested
-        // The app's own environment, not the external server: the row is installed here only if it is.
-        case .external: environment != .missing
+        // The app's own install, not the external server: installed here only if the user installed
+        // this service (as `installedPhase` reads it; a sibling variant can build the shared environment).
+        case .external: requested && environment != .missing
         case .failed(let failure): failure.isRuntime || requested
         }
     }
@@ -530,9 +531,20 @@ extension LifecycleState {
 
 public enum ServiceLifecycle {
     /// Failed re-probes (refused or timeout) in a row before an External service is
-    /// re-read. 3 x the 15 s period (45 s) is meant to outlast a KeepAlive restart; the
-    /// cold-start measurement that confirms it is still open (plan Findings, Phase 1 (b)).
+    /// re-read. It counts discovery passes, not time: with the panel left open the passes
+    /// are 15 s apart (about 45 s, meant to outlast a KeepAlive restart), but the bootstrap
+    /// pass and every panel open add one, so reopening the panel reaches it sooner. The
+    /// cold-start measurement that would confirm 45 s is still open (plan Findings, Phase 1 (b)).
     public static let externalFailureThreshold = 3
+
+    /// The phases a discovery `externalFound` adopts from; `ExternalDiscoveryPolicy.probes`
+    /// probes exactly these (the others are owned, or not yet readable).
+    public static func acceptsDiscovery(_ phase: ServicePhase) -> Bool {
+        switch phase {
+        case .notInstalled, .installed, .failed, .checking, .external: true
+        case .unavailable, .needsModel, .installing, .starting, .running, .stopping, .removing: false
+        }
+    }
 
     /// The install a user's Install runs, from the environment and the phase.
     public static func installMode(environment: EnvironmentStatus, phase: ServicePhase) -> InstallMode {
@@ -783,12 +795,9 @@ public enum ServiceLifecycle {
 
         case .externalFound(_, let info):
             guard !s.shuttingDown, s.server == nil, s.native == nil, s.install == nil, s.removal == nil,
-                s.runtime != .appleSpeech
+                s.runtime != .appleSpeech, acceptsDiscovery(s.phase)
             else { return [] }
-            switch s.phase {
-            case .notInstalled, .installed, .failed, .checking, .external: return adopt(&s, info)
-            case .unavailable, .needsModel, .installing, .starting, .running, .stopping, .removing: return []
-            }
+            return adopt(&s, info)
 
         case .externalLost(_, let reason):
             guard case .external = s.phase else { return [] }

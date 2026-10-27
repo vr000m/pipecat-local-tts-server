@@ -29,16 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FFmpeg is not installed or not in your PATH`.
 - `macos/scripts/ui_smoke.sh` starts a tone server outside the app on 8665, checks the
   bootstrap log reports it as External and that it is still running after Quit
-  (skipped when 8665 is held).
+  (skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or the
+  repo `.venv` cannot import `tts_server`).
 
 ### Changed
 
 - Pipecat Service Toolbar: STT now runs through the upstream
   `pipecat-local-stt-server==0.4.0` CLI (`python -m stt_server serve --supervised`,
   `prefetch --json`); the bundled `pipecat_app_helper.py`, `PIPECAT_TOOLBAR_HELPER`
-  and the helper's cooperative cancel are removed. An STT server on an older version
-  is adopted by its hello, but an app-started STT server needs 0.4.0.
-- STT model weights are **not pinned to a commit** in this release: in
+  and the helper's cooperative cancel are removed, with the helper's `MODEL_REVISIONS`
+  pins and `ServiceCatalog.sttModelRevisions` (0.7.0 listed both). An STT server on an
+  older version is adopted by its hello, but an app-started STT server needs 0.4.0.
+- STT model weights are **not pinned to a commit** in this release (0.7.0 pinned them
+  through the helper): in
   `pipecat-local-stt-server` 0.4.0 (tag `v0.4.0`, commit `44843732`) `serve` and
   `prefetch` take no revision option and every backend's snapshot uses the repo's
   `main`, so the app follows `main`. In 0.4.0, Kyutai's cancel only stops a decode that
@@ -95,9 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing; an install step no longer waits on a grandchild holding its pipes.
   STT environments install against checked-in, hash-pinned constraints
   (`macos/constraints/stt-<engine>.txt`, `--require-hashes`) and load model weights
-  pinned to a commit, which `prefetch` downloads and `serve-stt` loads (no longer true:
-  see Unreleased, STT weights are not pinned). The supervised/prefetch JSON lines both
-  emitters write (this server and the STT helper, since replaced by the upstream CLI) are fixed in
+  pinned to a commit, which `prefetch` downloads and `serve-stt` loads; neither pin
+  marks an existing environment outdated. The supervised/prefetch JSON lines both
+  emitters write (this server and the STT helper) are fixed in
   `docs/supervised-contract.json` and drift-tested from both sides.
   `HF_TOKEN` reaches only `prefetch` and `serve`, never `uv`. The Apple Speech
   server caps clients at 8 and decodes one at a time, and survives Stop with a
@@ -133,8 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   voice embeddings, the STT helper's file filter at its `MODEL_REVISIONS` pin, which
   `ServiceCatalog.sttModelRevisions` repeats) from `ServiceCatalog.snapshots(for:)`,
   which a lean drift test compares with each backend's `prefetch_specs(model)` and
-  with the helper's pins. (Since changed: the STT helper, `MODEL_REVISIONS` and
-  `sttModelRevisions` are gone; see Unreleased.)
+  with the helper's pins.
 - `_clear_stale_unix_socket` raises `SocketInUseError` / `SocketPathConflictError`
   (both still `RuntimeError` subclasses).
 - `TTSServer.listening_port()` returns `None` for a Unix socket instead of a

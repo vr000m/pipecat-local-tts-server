@@ -67,6 +67,8 @@ final class ServiceModel: Identifiable {
     var isRunning: Bool { ServiceCounts.isRunning(driver.state) }
     /// Consecutive failed re-probes of an External server ("not responding" while below the threshold).
     var externalFailures: Int { driver.state.externalFailures }
+    /// The External server missed a re-probe (`ExternalPresentation.isNotResponding`, Core).
+    var isExternalNotResponding: Bool { ExternalPresentation.isNotResponding(failures: externalFailures) }
     /// The LaunchAgent label `PortProbe.owner` confirmed holds the External server's port
     /// (pid matched); nil until looked up or when unconfirmed. Reset when the service leaves External.
     private(set) var externalLaunchdLabel: String?

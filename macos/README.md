@@ -74,8 +74,6 @@ for running both.
   whatever holds the port does not identify as that service (a different
   backend or model, no hello, or a token), Start reports the port busy, naming
   the holder when `launchctl` confirms it (the agent's label).
-- **Every server on a well-known port.** The app can own every TTS and STT server
-  while other apps probe the same catalog ports.
 - **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
   server that needs a bearer token is not adopted (Start then reports the port busy
   because it wants a token); the app stores no token.
@@ -198,7 +196,8 @@ grant, so it cannot open the panel or click. It launches the app with your real
 support and log folders (installing nothing) and refuses while another copy runs.
 Its last step starts a tone server outside the app on 8665, checks the bootstrap
 log reports it as External, and checks it is still running after Quit; it skips
-that step when 8665 is held or the repo `.venv` is missing.
+that step when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
+the repo `.venv` cannot import `tts_server`.
 Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
 
 1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.

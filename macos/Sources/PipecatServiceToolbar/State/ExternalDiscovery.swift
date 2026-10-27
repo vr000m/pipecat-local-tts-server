@@ -67,7 +67,7 @@ final class ExternalDiscovery {
                 service: $0.service, epoch: $0.driver.state.externalEpoch, phase: $0.driver.state.phase)
         }
         let directives = await ExternalDiscoveryPolicy.pass(snapshots: snapshots, prober: prober)
-        // A cancelled pass (panel closed, quit) may hold outcomes of cancelled probes.
+        // A cancelled pass (quit; closing the panel lets it finish) may hold outcomes of cancelled probes.
         guard !Task.isCancelled, !stopped else { return }
         for directive in directives {
             // The same event the policy's tests reduce (`Directive.event`), through the driver's quit guard.

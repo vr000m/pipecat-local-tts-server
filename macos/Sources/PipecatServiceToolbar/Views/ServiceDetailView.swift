@@ -95,7 +95,7 @@ struct ServiceDetailView: View {
             // No Stop, Delete, Get or Install button here (`ExternalPresentation.Actions` has them all
             // false): the app did not start this server and leaves it running. Only Open Try It is gated.
             Label(
-                model.externalFailures > 0
+                model.isExternalNotResponding
                     ? "Not responding right now. Running outside the app (\(model.externalSource)); Quit leaves it running."
                     : "Running outside the app (\(model.externalSource)). Quit leaves it running.",
                 systemImage: "network"

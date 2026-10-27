@@ -75,6 +75,29 @@ import Testing
         #expect(counts.running == 1 && counts.active == 1, "still running, just not installed here")
     }
 
+    /// An External variant whose sibling built the shared environment was never installed by the
+    /// user (`requested` false): it is not installed here, so Delete is not offered and a sibling's
+    /// removal does not list it among those that stay.
+    @Test func anUnrequestedExternalVariantIsNotInstalledEvenWithTheSharedEnvironment() {
+        let sharedOnly = Self.state(ServiceLifecycleTests.external, requested: false)
+        #expect(sharedOnly.environment != .missing)
+        #expect(!sharedOnly.isInstalled)
+        #expect(ServiceCounts([sharedOnly]).installed == 0)
+        #expect(Self.external.isInstalled, "requested and the environment exists")
+    }
+
+    /// The rows (`AppModel.startable`) and the count read the same predicate.
+    @Test func startableCountsExactlyTheStatesIsStartableAccepts() {
+        for phase in ServiceLifecycleTests.phases {
+            for requested in [true, false] {
+                let s = Self.state(phase, requested: requested)
+                let expected = !s.isActive && (s.isInstalled || s.isInstalling)
+                #expect(ServiceCounts.isStartable(s) == expected, "\(phase) requested=\(requested)")
+                #expect(ServiceCounts([s]).startable == (expected ? 1 : 0), "\(phase) requested=\(requested)")
+            }
+        }
+    }
+
     @Test func startableIsInstalledAndNotActive() {
         #expect(ServiceCounts([Self.installed, Self.notInstalled, Self.external, Self.running]).startable == 1)
         let downloading = Self.state(.installing(.model))

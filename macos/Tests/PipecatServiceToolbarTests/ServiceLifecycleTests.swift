@@ -648,7 +648,9 @@ import Testing
                 let installed: Bool
                 let busy: Bool
                 switch phase {
-                case .starting, .running, .stopping, .external: (active, installed) = (true, true)
+                case .starting, .running, .stopping: (active, installed) = (true, true)
+                // The app's own install (the environment is ready here), as `installedPhase` reads it.
+                case .external: (active, installed) = (true, requested)
                 case .installed, .needsModel: (active, installed) = (false, true)
                 case .installing, .removing: (active, installed) = (false, requested)
                 case .failed(let f): (active, installed) = (f.isRuntime, f.isRuntime || requested)

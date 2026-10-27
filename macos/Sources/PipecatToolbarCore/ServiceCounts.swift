@@ -26,7 +26,7 @@ public struct ServiceCounts: Equatable, Sendable {
         owned = states.filter { $0.server != nil || $0.native != nil }.count
         installed = states.filter(\.isInstalled).count
         active = states.filter(\.isActive).count
-        startable = states.filter { !$0.isActive && ($0.isInstalled || $0.isInstalling) }.count
+        startable = states.filter(Self.isStartable).count
         installing = states.filter(\.isInstalling).count
         blocksReset = states.contains { $0.blocksReset }
     }
@@ -37,6 +37,11 @@ public struct ServiceCounts: Equatable, Sendable {
         case .running, .external: true
         default: false
         }
+    }
+
+    /// Installed (or downloading) and not active: what the menu offers to start.
+    public static func isStartable(_ s: LifecycleState) -> Bool {
+        !s.isActive && (s.isInstalled || s.isInstalling)
     }
 
     public var badge: Badge {

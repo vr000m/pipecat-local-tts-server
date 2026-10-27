@@ -82,9 +82,9 @@ final class AppModel {
     var anyActive: Bool { counts.active > 0 }
 
     /// Installed (or downloading) services that aren't running: what the main
-    /// menu offers to start when nothing is running.
+    /// menu offers to start when nothing is running (`ServiceCounts.isStartable`, Core).
     func startable(_ kind: ServiceKind) -> [ServiceModel] {
-        services.filter { $0.kind == kind && !$0.isActive && ($0.isInstalled || $0.isInstalling) }
+        services.filter { $0.kind == kind && ServiceCounts.isStartable($0.driver.state) }
     }
     var anyStartable: Bool { counts.startable > 0 }
     var running: [ServiceModel] { services.filter(\.isRunning) }
