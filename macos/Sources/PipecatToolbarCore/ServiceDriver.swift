@@ -59,7 +59,8 @@ public protocol ServiceHost: AnyObject {
     func closeTryIt()
 }
 
-/// The driver's process, port, clock and Apple Speech seams; the defaults are the real ones. The hello probe
+/// The driver's process, port, clock and Apple Speech seams; the process and port defaults are the
+/// real ones, the Apple Speech defaults are inert stubs the app replaces. The hello probe
 /// is the one seam on `ServiceHost` instead (`probeExternal`: the app's shared prober).
 public struct ServiceDependencies: Sendable {
     public var isPortFree: @Sendable (Int) -> Bool = { PortProbe.isFree($0) }
