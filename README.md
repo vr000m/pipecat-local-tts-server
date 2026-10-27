@@ -234,8 +234,8 @@ client 401 or leak the server secret to a remote host). A plaintext
 `--auth-token` flag is intentionally unsupported (`ps` exposure) — use
 `--auth-token-file`. `serve` refuses a token file that is empty, holds anything but one
 visible-ASCII token, or is not UTF-8 (it would otherwise run with auth silently off) and exits 1;
-the installer also requires an owner-only regular file (no symlink) in directories only you or
-root can write. A token-less server bound to a non-loopback TCP address logs
+the installer also requires an owner-only regular file (no symlink) in directories owned by you or
+root that nobody else can write (group write only on root-owned ones). A token-less server bound to a non-loopback TCP address logs
 a cleartext-remote warning; a Unix socket does not. Sending a bearer over
 cleartext `ws://` to a remote host also warns client-side — use `wss://` or a
 Unix socket.

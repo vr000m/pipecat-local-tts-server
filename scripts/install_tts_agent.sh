@@ -26,7 +26,8 @@
 #                        renderer rejects an install where it is set without the file.
 #                        The file is validated before anything is written: an absolute path to a
 #                        regular file (not a symlink) you own with no group/other mode bits, in
-#                        directories only you or root can write, holding one visible-ASCII token
+#                        directories owned by you or root that nobody else can write (group write
+#                        only on root-owned ones), holding one visible-ASCII token
 #                        (an empty file would silently disable auth, so it is refused).
 #   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
 #                        the agent's plist EnvironmentVariables so it survives launchd.
@@ -69,8 +70,8 @@ cmd="${1:-install}"
 # tts_server.env.read_token_file(strict=True) at every start, so an agent this
 # accepts is one the server starts), and the file/directory policy is
 # tts_server.env.check_token_file_policy (absolute path, not a symlink, a regular
-# file you own with no group/other bits, in a directory chain only you or root
-# can write). Runs before anything is written or loaded.
+# file you own with no group/other bits, in a directory chain owned by you or root
+# that nobody else can write; group write only on root-owned directories). Runs before anything is written or loaded.
 #
 # Validated == recorded: the policy checks the symlink-free resolved path, and this
 # sets AUTH_TOKEN_FILE to that path, which is what the plist then carries. A

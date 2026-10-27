@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   internal whitespace or non-visible-ASCII characters, or a non-UTF-8 file. `status` still reads
   leniently. `scripts/install_tts_agent.sh` validates the file before writing the plist with the
   same reader and a file/directory policy (owner-only regular file, no symlink, no group/other
-  bits, directories only you or root can write). Mirrors the STT server's fix (#23).
+  bits, directories owned by you or root that no other user can write; group write only on root-owned
+  ones). An empty `--auth-token-file ""` value is refused
+  too instead of reading as "no file". Closes #23; mirrors the STT server's fix.
 - Pipecat Service Toolbar: an External row's LaunchAgent label is cut in the middle, not at the
   end, so `pipecat.stt-server.kyutai` / `…parakeet` / `…nemotron` stay distinguishable in the
   panel, and hovering the line shows the whole label.

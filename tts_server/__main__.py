@@ -115,6 +115,12 @@ def _resolve_auth_token(token_file: str | None, *, client: bool = False) -> str 
     # Serve is strict: an empty or malformed token file raises ``ConfigError``
     # rather than reading as ``None`` (auth silently off). The probe stays lenient
     # about an empty file.
+    # ``--auth-token-file ""`` (e.g. an unset shell variable) is still "a token file was
+    # asked for": on serve it must not fall through to the env var / no auth.
+    if token_file == "" and not client:
+        raise ConfigError(
+            "--auth-token-file was given an empty path; pass the token file's path or omit the flag"
+        )
     if token_file:
         return read_token_file(token_file, strict=not client)
     if client:

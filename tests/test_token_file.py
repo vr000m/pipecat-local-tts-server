@@ -97,6 +97,17 @@ def test_resolve_auth_token_is_strict_for_serve_and_lenient_for_the_probe(tmp_pa
     assert _resolve_auth_token(str(f)) == SECRET
 
 
+def test_an_empty_token_file_path_is_refused_on_serve_not_ignored(monkeypatch):
+    """``--auth-token-file ""`` (an unset shell variable) must not fall through to no auth."""
+    from tts_server.__main__ import _resolve_auth_token
+
+    monkeypatch.delenv("PIPECAT_TTS_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("TTS_WS_TOKEN", raising=False)
+    with pytest.raises(ConfigError, match="empty path"):
+        _resolve_auth_token("")
+    assert _resolve_auth_token("", client=True) is None  # the probe stays lenient
+
+
 # --- the installer's file and directory policy ---------------------------------------
 
 
@@ -147,6 +158,7 @@ def test_policy_refuses_a_directory_a_missing_file_and_a_relative_path(tmp_path)
         check_token_file_policy("relative/token")
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root-owned paths are always trusted")
 def test_policy_refuses_a_file_owned_by_someone_else(tmp_path):
     f = _ok_file(tmp_path)
     with pytest.raises(ConfigError, match="owned by uid"):
@@ -154,6 +166,7 @@ def test_policy_refuses_a_file_owned_by_someone_else(tmp_path):
 
 
 @pytest.mark.parametrize("mode, match", [(0o777, "any user"), (0o770, "group-writable")])
+@pytest.mark.skipif(os.getuid() == 0, reason="a root-owned group-writable directory is trusted")
 def test_dir_chain_refuses_a_writable_parent(tmp_path, mode, match):
     d = tmp_path / "shared"
     d.mkdir()
@@ -171,6 +184,7 @@ def test_dir_chain_exempts_a_sticky_directory(tmp_path):
     check_token_dir_chain(f)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root-owned paths are always trusted")
 def test_dir_chain_refuses_a_directory_owned_by_another_user(tmp_path):
     f = _ok_file(tmp_path)
     with pytest.raises(ConfigError, match="owned by uid"):
@@ -184,6 +198,13 @@ def _run(argv, env=None, **kw):
     return subprocess.run(  # noqa: S603
         argv, capture_output=True, text=True, timeout=30, env=env, cwd=REPO, **kw
     )
+
+
+def test_serve_exits_1_on_an_empty_token_file_path():
+    r = _run([sys.executable, "-m", "tts_server", "serve", "--backend", "tone",
+              "--host", "127.0.0.1", "--port", "0", "--auth-token-file", ""])  # fmt: skip
+    assert r.returncode == 1, r.stderr
+    assert "empty path" in r.stderr
 
 
 @pytest.mark.parametrize("content", ["\n", f"{SECRET} extra"])

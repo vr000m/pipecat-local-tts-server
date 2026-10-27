@@ -151,18 +151,21 @@ class ConfigError(ValueError):
 
 
 def check_token_chars(token: str, what: str) -> str:
-    """Refuse a token that can never match an ``Authorization`` header.
+    """Refuse a token that cannot be relied on to match an ``Authorization`` header.
 
     ``token`` is already stripped and non-empty. Raises ``ConfigError`` naming
     ``what`` (the source, never the value) for internal whitespace, a control
-    character or a non-ASCII character: only visible ASCII (0x21-0x7E) survives
-    an HTTP header and the byte-for-byte bearer comparison.
+    character or a non-ASCII character. Only visible ASCII (0x21-0x7E) survives
+    every HTTP client, proxy and header parser unchanged: a client that sent the
+    exact same bytes could still match (an internal space or tab does over a direct
+    connection), so this is a strictness policy, not a statement that such a token
+    is impossible.
     """
     if any(not 0x21 <= ord(c) <= 0x7E for c in token):
         raise ConfigError(
             f"{what} must hold one token of visible ASCII characters "
-            "(no internal whitespace, newlines or non-ASCII); anything else can never "
-            "match an Authorization header"
+            "(no internal whitespace, newlines or non-ASCII); anything else may be "
+            "altered or rejected on its way into an Authorization header"
         )
     return token
 
@@ -173,7 +176,7 @@ def read_token_file(path: str | os.PathLike[str], *, strict: bool = False) -> st
     Strict (the ``serve`` path) refuses what would otherwise silently misbehave:
     an empty or whitespace-only file (the token would be ``None`` and auth
     disabled), a token with internal whitespace or a non-visible-ASCII character
-    (it can never match a header), and a non-UTF-8 file. Non-strict (the ``status``
+    (``check_token_chars``), and a non-UTF-8 file. Non-strict (the ``status``
     probe) keeps the lenient ``None`` for an empty file. Raises ``ConfigError``;
     messages never include the token.
     """
@@ -243,16 +246,25 @@ def check_token_file_policy(path: str | os.PathLike[str], *, uid: int | None = N
     directory chain ``check_token_dir_chain`` accepts. Returns the symlink-free
     path that was checked: the installer must record THAT path, because a symlinked
     directory component in the path as written lives outside the checked chain and
-    could be repointed after the check. Raises ``ConfigError``.
+    could be repointed after the check. The file itself is inspected at that
+    resolved path (not the path as written), so the file that was checked is the
+    file that is returned and recorded. Raises ``ConfigError``.
     """
     uid = os.getuid() if uid is None else uid
     p = os.fspath(path)
     if not os.path.isabs(p):
         raise _refuse(p, "must be an absolute path", "pass the full path to the file")
+    # Resolve the directories first and inspect the file there: lstat() on ``p`` would
+    # follow a symlinked directory, and a later resolve could land somewhere else.
+    resolved = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
     try:
-        st = os.lstat(p)
+        st = os.lstat(resolved)
     except FileNotFoundError:
-        raise _refuse(p, "does not exist", "create it (install -m 600 /dev/null PATH)") from None
+        raise _refuse(
+            p,
+            "does not exist",
+            "create it holding a token (umask 077; openssl rand -hex 32 > PATH)",
+        ) from None
     except OSError as exc:
         raise _refuse(p, f"cannot be inspected ({exc.strerror})", "check the path") from exc
     if stat.S_ISLNK(st.st_mode):
@@ -263,4 +275,4 @@ def check_token_file_policy(path: str | os.PathLike[str], *, uid: int | None = N
         raise _refuse(p, f"is owned by uid {st.st_uid}, not you (uid {uid})", f"chown {uid} '{p}'")
     if st.st_mode & 0o077:
         raise _refuse(p, "is readable or writable by group/other", f"chmod 600 '{p}'")
-    return os.path.join(check_token_dir_chain(p, uid=uid), os.path.basename(p))
+    return os.path.join(check_token_dir_chain(resolved, uid=uid), os.path.basename(resolved))

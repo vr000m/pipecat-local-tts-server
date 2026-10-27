@@ -48,7 +48,7 @@ empty/whitespace-only file, a token with anything outside visible ASCII (0x21-0x
 non-UTF-8 file exits 1 at startup (`ConfigError` under `--supervised`) instead of silently
 disabling auth; `status` stays lenient. The installer (`scripts/install_tts_agent.sh`) runs the
 same reader plus a file/directory policy (`check_token_file_policy`: absolute path, not a symlink,
-a regular file you own with no group/other mode bits, in directories only you or root can write)
+a regular file you own with no group/other mode bits, in directories owned by you or root that no other user can write, group write allowed only on root-owned ones such as macOS's admin-group directories)
 before it writes anything.
 
 ## Environment variables
