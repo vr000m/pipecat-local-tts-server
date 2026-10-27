@@ -49,13 +49,19 @@ public protocol ServiceHost: AnyObject {
     /// Lets the service's siblings re-read the environment it changed.
     func familyChanged() async
     func openTryIt(port: Int)
+    /// One hello probe of a loopback catalog port (`ExternalProbe`), for the Start path
+    /// and the `EADDRINUSE` chain. A cancelled probe's outcome is not to be trusted
+    /// (the driver drops it by tag).
+    func probeExternal(port: Int) async -> ExternalProbe.Outcome
     /// Stops Try it's audio (the server is going down).
     func detachTryIt()
     /// Drops the Try it session.
     func closeTryIt()
 }
 
-/// Every seam the driver runs effects through; the defaults are the real ones.
+/// The driver's process, port, clock and Apple Speech seams; the process and port defaults are the
+/// real ones, the Apple Speech defaults are inert stubs the app replaces. The hello probe
+/// is the one seam on `ServiceHost` instead (`probeExternal`: the app's shared prober).
 public struct ServiceDependencies: Sendable {
     public var isPortFree: @Sendable (Int) -> Bool = { PortProbe.isFree($0) }
     public var portOwner: @Sendable (Int, Service) async -> PortProbe.Owner = { await PortProbe.owner(of: $0, backend: $1) }
@@ -124,10 +130,21 @@ public final class ServiceDriver {
 
     // MARK: - Events
 
-    /// Applies `event` and returns the effects to run (the reducer's output).
+    /// The one rule for every event: it reaches the reducer only through `dispatch` or
+    /// `dispatchAwaiting`, and the effects the reducer returns always run, in order (none is
+    /// dropped because an event's effects are empty "by reasoning"). `dispatch` runs the
+    /// leading immediate effects now and the rest in a task; `dispatchAwaiting` runs them all
+    /// before it returns, for callers that must order what follows after them. Both return the
+    /// effects (already running) for a caller that also inspects them.
     @discardableResult
-    public func send(_ event: LifecycleEvent) -> [LifecycleEffect] {
-        ServiceLifecycle.reduce(&state, event)
+    private func dispatch(_ event: LifecycleEvent) -> [LifecycleEffect] {
+        let effects = ServiceLifecycle.reduce(&state, event)
+        execute(effects)
+        return effects
+    }
+
+    private func dispatchAwaiting(_ event: LifecycleEvent) async {
+        await run(ServiceLifecycle.reduce(&state, event))
     }
 
     /// Runs the leading effects that need no suspension now, the rest in a task.
@@ -154,69 +171,91 @@ public final class ServiceDriver {
     /// newer read, or anything else that moved the epoch, makes this one stale).
     public func refresh() async {
         guard !quitting else { return }
-        await run(send(.refreshRequested))
+        await dispatchAwaiting(.refreshRequested)
     }
 
     /// The read issued under `epoch`: every result carries it. After quit
-    /// began, none starts and none lands.
+    /// began, none starts and none lands. One already stale when it runs (a later event
+    /// moved the epoch: Start right after a completed Stop) does not start its slow cache
+    /// probe; its results would be dropped anyway (`ServiceLifecycle.isCurrent`).
     private func read(epoch: Int) async {
-        guard !quitting else { return }
+        guard !quitting, epoch == state.epoch else { return }
         if info.runtime == .appleSpeech {
             let phase = await dependencies.appleSpeechPhase()
             guard !quitting else { return }
-            execute(send(.refreshed(phase, epoch: epoch)))
+            dispatch(.refreshed(phase, epoch: epoch))
             return
         }
         guard let environment else { return }
         let status = environment.environmentStatus(service)
         let requested = status != .missing && environment.isRequested(service)
         guard requested, case .ready = status else {
-            execute(
-                send(
-                    .refreshed(
-                        ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: nil),
-                        environment: status, requested: requested, cache: requested ? .none : .some(nil), epoch: epoch)))
+            dispatch(
+                .refreshed(
+                    ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: nil),
+                    environment: status, requested: requested, cache: requested ? .none : .some(nil), epoch: epoch))
             return
         }
         // The environment is current while the (slow) cache probe runs.
-        send(.environmentRead(status, epoch: epoch))
+        dispatch(.environmentRead(status, epoch: epoch))
         let cache = await environment.modelCacheStatus(service, includeOutdated: false)
         guard !quitting else { return }
-        execute(
-            send(
-                .refreshed(
-                    ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: cache?.cached),
-                    environment: status, requested: requested, cache: .some(cache), epoch: epoch)))
+        dispatch(
+            .refreshed(
+                ServiceLifecycle.installedPhase(environment: status, requested: requested, cached: cache?.cached),
+                environment: status, requested: requested, cache: .some(cache), epoch: epoch))
     }
 
     public func environmentChanged() async {
-        await run(send(.environmentChanged(environment?.environmentStatus(service))))
+        await dispatchAwaiting(.environmentChanged(environment?.environmentStatus(service)))
     }
 
     public func install() {
         guard !quitting else { return }
-        execute(send(.installRequested(managerAvailable: environment != nil)))
+        dispatch(.installRequested(managerAvailable: environment != nil))
     }
-    public func cancelInstall() { execute(send(.cancelInstallRequested)) }
+    public func cancelInstall() { dispatch(.cancelInstallRequested) }
 
     public func start() {
         guard !quitting else { return }
-        execute(
-            send(
-                .startRequested(
-                    appAvailable: host != nil, managerAvailable: environment != nil,
-                    portFree: dependencies.isPortFree(info.port))))
+        dispatch(
+            .startRequested(
+                appAvailable: host != nil, managerAvailable: environment != nil,
+                portFree: dependencies.isPortFree(info.port)))
     }
 
-    public func stop() { execute(send(.stopRequested)) }
+    public func stop() { dispatch(.stopRequested) }
+
+    // MARK: - External discovery
+
+    /// The one path from discovery into the reducer (`externalFound` / `externalLost`): sends
+    /// `directive.event`, the same event the policy's tests reduce. Each directive carries the
+    /// `state.externalEpoch` read when its probe started; the reducer drops it if that moved.
+    /// Refused after quit began, and for another service's directive.
+    public func discovered(_ directive: ExternalDiscoveryPolicy.Directive) {
+        guard !quitting, directive.service == service else { return }
+        dispatch(directive.event)
+    }
+
+    /// The Start-path probe `tag` finished (the `.probeExternal` effect calls this).
+    public func startProbeResult(tag: Int, outcome: ExternalProbe.Outcome) {
+        guard !quitting else { return }
+        dispatch(.startProbeResult(tag: tag, outcome: outcome))
+    }
+
+    /// Opens Try it on an External row (a no-op in every other phase).
+    public func tryItRequested() {
+        guard !quitting else { return }
+        dispatch(.tryItRequested)
+    }
 
     /// Before removal, and for app quit (through `quit()`): stop and wait. It also cancels an
     /// Apple Speech model install and waits (at most `installDrain`) for it to
     /// unwind; a Python install is the environment manager's to stop. A port
     /// probe in flight is cancelled and waited for (its `lsof` never outlives quit).
     public func shutdown() async {
-        await run(send(.shutdownRequested))
-        await run(send(.shutdownServers))
+        await dispatchAwaiting(.shutdownRequested)
+        await dispatchAwaiting(.shutdownServers)
         let running = Array(probes.values)
         for probe in running { probe.cancel() }
         for probe in running { await probe.value }
@@ -224,17 +263,21 @@ public final class ServiceDriver {
 
     /// App quit: from here on nothing new starts (see `quitting`), then `shutdown()`.
     public func quit() async {
-        quitting = true
+        beginQuit()
         await shutdown()
     }
 
-    public func dismissFailure() { execute(send(.dismissFailure)) }
+    /// Sets `quitting` now, before the asynchronous `quit()` runs: the app calls it in the same
+    /// main-actor turn as Quit, so a probe or read continuation already queued can't start work.
+    public func beginQuit() { quitting = true }
+
+    public func dismissFailure() { dispatch(.dismissFailure) }
 
     /// Uninstalls the service and, with `deleteModel`, the model files no installed
     /// sibling shares. The family environment goes with its last installed variant.
     public func remove(deleteModel: Bool) {
         guard !quitting else { return }
-        execute(send(.removeRequested(deleteModel: deleteModel, managerAvailable: environment != nil)))
+        dispatch(.removeRequested(deleteModel: deleteModel, managerAvailable: environment != nil))
     }
 
     // MARK: - Effects
@@ -252,9 +295,18 @@ public final class ServiceDriver {
             probes[probe] = Task {
                 let owner = await portOwner(port, service)
                 self.probes[probe] = nil
-                // A cancelled probe (Stop, quit) reports nothing.
-                guard !Task.isCancelled else { return }
-                self.send(.portOwnerFound(owner, probe: probe))
+                // A cancelled probe (Stop, quit) reports nothing, nor one that ends after quit
+                // began (as `startProbeResult`).
+                guard !Task.isCancelled, !self.quitting else { return }
+                self.dispatch(.portOwnerFound(owner, probe: probe))
+            }
+        case .probeExternal(let port, let probe):
+            probes[probe] = Task {
+                let outcome = await self.host?.probeExternal(port: port)
+                self.probes[probe] = nil
+                // A cancelled probe (Stop, quit) reports `.silent`/`.timeout`: drop it, never trust it.
+                guard let outcome, !Task.isCancelled else { return }
+                self.startProbeResult(tag: probe, outcome: outcome)
             }
         case .cancelProbe(let probe):
             probes[probe]?.cancel()
@@ -271,7 +323,7 @@ public final class ServiceDriver {
             Task { [weak self] in
                 try? await sleep(timeout)
                 guard let self else { return }
-                self.execute(self.send(.readyTimedOut(id)))
+                self.dispatch(.readyTimedOut(id))
             }
         case .openTryIt(let port):
             host?.openTryIt(port: port)
@@ -310,18 +362,18 @@ public final class ServiceDriver {
             guard let server else { return }
             _ = await server.stop(grace: dependencies.stopGrace)
         case .resumeRemoval(let deleteModel, let removal):
-            await run(send(.removalResumed(deleteModel: deleteModel, removal: removal)))
+            await dispatchAwaiting(.removalResumed(deleteModel: deleteModel, removal: removal))
         case .shutdown: await shutdown()
         case .removeEnvironment(let deleteModel, let removal):
             guard let environment else { return }
             do {
                 try await environment.remove(service, deleteModel: deleteModel, known: state.cache)
             } catch {
-                send(.removalFailed(error.localizedDescription, removal: removal))
+                await dispatchAwaiting(.removalFailed(error.localizedDescription, removal: removal))
                 return
             }
             ServiceLog.install.info("\(self.service.rawValue, privacy: .public): removed (model files: \(deleteModel))")
-            await run(send(.removalFinished(removal: removal)))
+            await dispatchAwaiting(.removalFinished(removal: removal))
         default:
             performImmediate(effect)
         }
@@ -340,14 +392,14 @@ public final class ServiceDriver {
                 guard let self else { return }
                 self.installTask = nil
                 self.assetProgress = nil
-                await self.run(self.send(.appleSpeechInstallEnded(.finished, install: tag)))
+                await self.dispatchAwaiting(.appleSpeechInstallEnded(.finished, install: tag))
             } catch {
                 guard let self else { return }
                 self.installTask = nil
                 self.assetProgress = nil
                 let outcome: InstallOutcome =
                     Task.isCancelled ? .cancelled : .failed(stage: .model, message: error.localizedDescription, logTail: [])
-                await self.run(self.send(.appleSpeechInstallEnded(outcome, install: tag)))
+                await self.dispatchAwaiting(.appleSpeechInstallEnded(outcome, install: tag))
             }
         }
     }
@@ -369,7 +421,7 @@ public final class ServiceDriver {
                     switch event {
                     case .stage(let s):
                         stage = s
-                        self.send(.installStage(s, install: tag))
+                        self.dispatch(.installStage(s, install: tag))
                         self.installDetail = ""
                     case .log(let line):
                         self.installDetail = Self.summarize(uvLine: line) ?? self.installDetail
@@ -384,7 +436,7 @@ public final class ServiceDriver {
                 self.installTask = nil
                 self.download = nil
                 ServiceLog.install.info("\(service.rawValue, privacy: .public): install finished")
-                await self.run(self.send(.installEnded(.finished, then: then, install: tag)))
+                await self.dispatchAwaiting(.installEnded(.finished, then: then, install: tag))
             } catch {
                 guard let self else { return }
                 self.installTask = nil
@@ -402,7 +454,7 @@ public final class ServiceDriver {
                             "\(service.rawValue, privacy: .public): install failed: \(error.localizedDescription, privacy: .public)")
                     }
                 }
-                await self.run(self.send(.installEnded(outcome, then: then, install: tag)))
+                await self.dispatchAwaiting(.installEnded(outcome, then: then, install: tag))
             }
         }
     }
@@ -411,7 +463,7 @@ public final class ServiceDriver {
 
     private func launchNative(port: Int) {
         guard let paths = host?.servicePaths, let native = dependencies.makeNativeServer() else {
-            send(.launchFailed("Apple Speech is unavailable."))
+            dispatch(.launchFailed("Apple Speech is unavailable."))
             return
         }
         let sink = LogSink(url: paths.appLog(service))
@@ -428,35 +480,35 @@ public final class ServiceDriver {
             }
         }
         nativeServer = native
-        execute(send(.nativeLaunched(id)))
+        dispatch(.nativeLaunched(id))
         let now = dependencies.now
         Task {
             do {
                 let bound = try await native.start(port: port)
-                let effects = self.send(.nativeBound(id, port: bound, pid: ProcessInfo.processInfo.processIdentifier, at: now()))
-                if effects.contains(.discardNative(id)) { return native.stop() }
-                self.execute(effects)
+                let effects = self.dispatch(.nativeBound(id, port: bound, pid: ProcessInfo.processInfo.processIdentifier, at: now()))
+                // `discardNative` runs as a no-op: the instance this launch bound is stopped here.
+                if effects.contains(.discardNative(id)) { native.stop() }
             } catch {
                 if self.state.native == id { self.nativeServer = nil }
-                self.send(.nativeFailed(id, error.localizedDescription))
+                self.dispatch(.nativeFailed(id, error.localizedDescription))
             }
         }
     }
 
     private func launch(port: Int) {
         guard let paths = host?.servicePaths, let args = environment?.serveArguments(for: info, port: port) else {
-            send(.launchFailed("This build is missing the STT helper."))
+            dispatch(.launchFailed("This service cannot be started by the app."))
             return
         }
         let sub = dependencies.makeProcess(
-            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.huggingFace(), holdStdin: true))
+            .init(executable: paths.python(service), arguments: args, environment: ProcessEnvironment.serve(service), holdStdin: true))
         let sink = LogSink(url: paths.appLog(service))
         sink.write("---- \(Date().formatted(.iso8601)) starting \(service.rawValue) on \(ServiceCatalog.host):\(port)")
         do {
             try sub.run()
         } catch {
             sink.close()
-            send(.launchFailed(error.localizedDescription))
+            dispatch(.launchFailed(error.localizedDescription))
             return
         }
         nextID += 1
@@ -464,7 +516,7 @@ public final class ServiceDriver {
         server = sub
         logSink = sink
         ServiceLog.server.info("\(self.service.rawValue, privacy: .public): started pid \(sub.pid) on port \(port)")
-        execute(send(.launched(id)))
+        dispatch(.launched(id))
         watch(sub, id: id, port: port)
     }
 
@@ -488,10 +540,9 @@ public final class ServiceDriver {
                 guard let event = ServerCLIEvent.parse(line) else { continue }
                 if event.event == "ready" {
                     let rate = event.rate ?? (self.info.kind == .tts ? 24000 : STTWire.rate)
-                    self.execute(
-                        self.send(.ready(id, port: event.port ?? port, pid: event.pid ?? sub.pid, rate: rate, model: event.model, at: now())))
+                    self.dispatch(.ready(id, port: event.port ?? port, pid: event.pid ?? sub.pid, rate: rate, model: event.model, at: now()))
                 } else if event.event == "error" {
-                    self.send(.supervisedError(id, SupervisedError(code: event.code, message: event.message)))
+                    self.dispatch(.supervisedError(id, SupervisedError(code: event.code, message: event.message)))
                 }
             }
         }
@@ -512,7 +563,7 @@ public final class ServiceDriver {
                 "\(self.service.rawValue, privacy: .public): exited status \(status) (requested: \(self.state.stopRequested))")
             server = nil
         }
-        execute(send(.exited(id, status: status, logTail: Array(log.suffix(8)))))
+        dispatch(.exited(id, status: status, logTail: Array(log.suffix(8))))
     }
 
     /// Returns when `task` ends or `limit` passed, whichever is first (a task

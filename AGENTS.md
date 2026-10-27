@@ -75,6 +75,8 @@ traffic. The UDS (default mode `0o600`, parent-dir guarded) is the trust boundar
 ```sh
 uv run pytest                              # full suite (needs an env with extras)
 uv run pytest tests/test_kokoro_backend.py # mlx-gated synthesis (Apple Silicon only)
+# opt-in: the recorded STT excerpt vs that release's real source (after re-recording it)
+PIPECAT_STT_SERVER_SITE=<dir with stt_server/ + its dist-info> uv run pytest tests/test_supervised_contract.py -k verbatim
 ```
 
 CI splits into a **lean** job (client-only, asserts no mlx/numpy import; runs an
@@ -83,7 +85,8 @@ explicit allow-list of lean test files — extend it when adding a lean test), a
 verifies every backend extra resolves and its module imports — kokoro / voxtral_tts
 / pocket_tts / dia / qwen3_tts / fish_tts / phonon — does not run synthesis), and a
 **macOS app** job (`test-macos-app`, macos-15: `swift build` + `swift test --package-path
-macos`, with the lean env synced for the live tone-server test). See
+macos`, with the lean env synced for the live tone-server test; it also runs the
+`ui_smoke.sh` job-signal tests under the stock `/bin/bash` 3.2). See
 `.github/workflows/test.yml`.
 
 A separate **release** workflow (`.github/workflows/release.yml`) runs only when a
@@ -109,9 +112,9 @@ Publishing (OIDC — no token). A plain merge or tag push does not trigger it.
 | `just smoke-voxtral_tts` / `smoke-pocket_tts` / `smoke-dia` / `smoke-qwen3_tts` / `smoke-fish_tts` / `smoke-phonon` | Per-backend live smoke (WAV round-trip + TTFB/cadence, or rate assertion for the non-streaming backends). |
 | `just smoke-multiconn` / `smoke-reconnect` | Multi-connection fairness / reconnect smoke. |
 | `just smoke-supervised [backend] [args]` / `smoke-supervised-all` | App-path smoke (`tests/smoke/supervised_smoke.py`): the macOS app's exact `prefetch --json --check` → `serve --supervised` on an ephemeral loopback port → `ready` line → TCP synth → busy-port `EADDRINUSE` → stdin-EOF stop, with the app's scrubbed env. Default `tone`; `-all` loops `BACKENDS`. Never downloads unless `--download`; `--python <env>` tests an app-installed env. |
-| `just app-build` / `app-open` | Build (and launch) `macos/build/Pipecat Service Toolbar.app`: server wheel + pinned uv + `uv.lock` constraints + STT helper, ad-hoc signed (`SIGN_IDENTITY` for Developer ID). |
+| `just app-build` / `app-open` | Build (and launch) `macos/build/Pipecat Service Toolbar.app`: server wheel + pinned uv + `uv.lock` constraints + the checked-in STT constraints, ad-hoc signed (`SIGN_IDENTITY` for Developer ID). |
 | `just app-run` / `app-test` | Run the menu bar app unbundled (`swift run`) / Swift tests (`PIPECAT_TOOLBAR_E2E=1` adds the real install tests and the Apple Speech wire test). |
-| `just app-smoke` | Unattended UI smoke (`macos/scripts/ui_smoke.sh`, no Accessibility grant): `--snapshot` render, bundle launch + bootstrap, quit and SIGTERM leave no children. Clicking through the panel stays manual (`macos/README.md`). |
+| `just app-smoke` | Unattended UI smoke (`macos/scripts/ui_smoke.sh`, no Accessibility grant): `--snapshot` render, bundle launch + bootstrap, quit and SIGTERM leave no children, and an out-of-process tone server on 8665 is adopted as External and survives Quit (skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or the repo `.venv` cannot import `tts_server`). Clicking through the panel stays manual (`macos/README.md`). |
 | `just smoke-multiconn-voxtral_tts` / `-pocket_tts` / `-qwen3_tts` / `-fish_tts` / `-phonon` | Per-backend multi-connection fairness smoke. |
 
 Smoke scripts start their own server on a `mktemp` socket and tear it down — they
@@ -164,6 +167,6 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
 - `scripts/render_tts_plist.py` — plist renderer for launchd agents (pure `plistlib`, injection-safe, fail-closed auth).
 - `scripts/install_tts_agent.sh` — env-keyed `launchctl bootstrap` lifecycle wrapper.
 - `scripts/profiling/` — RTF/latency benchmarks (perf baseline for new backends).
-- `tts_server/supervise.py` / `tts_server/prefetch.py` — supervised-mode JSON channel and the `prefetch` subcommand (lean; hf imported lazily). Their events and error codes are fixed in `docs/supervised-contract.json`, shared with the macOS app's STT helper and drift-tested by `tests/test_supervised_contract.py` — change the contract file with any event/field/code change.
-- `macos/` — "Pipecat Service Toolbar", a native SwiftUI menu bar app that installs TTS backends and STT engines (Apple Speech, Whisper, Kyutai) with an embedded `uv` and serves them on loopback ports. Its catalog (`Sources/PipecatToolbarCore/Service.swift`) is a drift-tested copy of the port map. STT environments install against `macos/constraints/stt-<engine>.txt` (hash-pinned; regenerate with `uv run python macos/scripts/compile_stt_constraints.py` after changing an STT requirement). See `macos/README.md` and `macos/docs/`.
+- `tts_server/supervise.py` / `tts_server/prefetch.py` — supervised-mode JSON channel and the `prefetch` subcommand (lean; hf imported lazily). Their events and error codes are fixed in `docs/supervised-contract.json`, shared with the macOS app (its TTS and upstream `stt_server` emitters) and drift-tested by `tests/test_supervised_contract.py` — change the contract file with any event/field/code change.
+- `macos/` — "Pipecat Service Toolbar", a native SwiftUI menu bar app that installs TTS backends and STT engines (Apple Speech, Whisper, Kyutai, Parakeet, Nemotron) with an embedded `uv` and serves them on loopback ports. STT launches through `pipecat-local-stt-server==0.5.0`'s own CLI (`python -m stt_server serve --supervised`); upstream pins the default STT models' weights to a Hub commit (the app passes no revision flag; any other `--model` follows `main`); Parakeet needs `ffmpeg`. It probes the catalog ports with a `server.hello` first and adopts a matching running server as External (never stopped or deleted, no per-service Get/Install; the app-wide Reset deletes only the app's own envs and layout file and does not touch it; Quit leaves it running); it only signals processes it started. TCP only, no Unix-socket discovery. Its catalog (`Sources/PipecatToolbarCore/Service.swift`) is a drift-tested copy of the port map. STT environments install against `macos/constraints/stt-<engine>.txt` (hash-pinned; regenerate with `uv run python macos/scripts/compile_stt_constraints.py` after changing an STT requirement). See `macos/README.md` and `macos/docs/`.
 - `docs/protocol.md`, `docs/dev_plans/` — wire spec, development plans.

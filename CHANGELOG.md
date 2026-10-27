@@ -5,6 +5,55 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.8.0] - 2026-10-27
+
+### Added
+
+- **Pipecat Service Toolbar adopts running servers (External).** At launch and while
+  the panel is open (every 15 s) the app probes the catalog ports (loopback TCP) with
+  a `server.hello` and shows a matching server it did not start as **External**;
+  it starts its own only when none answers. External rows offer Try it (for STT, the
+  test clip only, never the microphone) and Copy but no per-service Stop, Delete, Get
+  or Install (the app-wide Reset deletes only the app's own environments and layout
+  file, never signals an External server, and is not blocked by one), show the
+  LaunchAgent label when `launchctl`
+  confirms it holds the port (else `127.0.0.1:<port>`), and **Quit leaves them
+  running** ("Stop All & Quit" appears only when the app started a server). The app
+  only signals, stops or deletes processes it started. An app-started server and a
+  `just tts-install` / `just stt-*` agent on one port: a matching agent is adopted;
+  a holder that does not identify as that service makes Start report the port busy,
+  naming it when `launchctl` confirms it. Unix sockets, LAN endpoints and
+  token-protected servers are not discovered.
+- **Parakeet (9765) and Nemotron (9865)** STT services, matching the
+  `pipecat.stt-server.parakeet` / `nemotron` agent ports, installed against their own
+  hash-pinned `macos/constraints/stt-parakeet.txt` / `stt-nemotron.txt` (regenerate with
+  `uv run python macos/scripts/compile_stt_constraints.py`). Parakeet needs `ffmpeg` on
+  the machine (Homebrew `/opt/homebrew/bin` or `/usr/local/bin`; the app adds those to
+  Parakeet's server `PATH` only); without it the server exits with `BackendStartError:
+  FFmpeg is not installed or not in your PATH`.
+- `macos/scripts/ui_smoke.sh` starts a tone server outside the app on 8665, checks the
+  bootstrap log reports it as External and that it is still running after Quit
+  (skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or the
+  repo `.venv` cannot import `tts_server`).
+
+### Changed
+
+- Pipecat Service Toolbar: STT now runs through the upstream
+  `pipecat-local-stt-server==0.5.0` CLI (`python -m stt_server serve --supervised`,
+  `prefetch --json`); the bundled `pipecat_app_helper.py`, `PIPECAT_TOOLBAR_HELPER`
+  and the helper's cooperative cancel are removed, with the helper's `MODEL_REVISIONS`
+  pins and `ServiceCatalog.sttModelRevisions` (0.7.0 listed both). An STT server on an
+  older version is adopted by its hello, but an app-started STT server needs 0.5.0.
+- STT model weights are pinned by upstream, not by the app: `pipecat-local-stt-server`
+  0.5.0 pins the four default models (Whisper large-v3-turbo, Kyutai 1B, Parakeet,
+  Nemotron) to a recorded Hub commit in code (`prefetch --json` reports it as
+  `revision`). It has no revision flag, so the app passes none; any other `--model`
+  (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`.
+- `docs/supervised-contract.json` lists error codes per emitter (contract `version` 2;
+  version 1 had one flat list); `ModelInvalidError` is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
+
 ## [0.7.0] - 2026-10-25
 
 ### Added
@@ -573,7 +622,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.5.0...v0.6.0

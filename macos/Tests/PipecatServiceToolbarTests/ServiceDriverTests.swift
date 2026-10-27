@@ -175,6 +175,14 @@ import Testing
         let serviceEnvironment: (any ServiceEnvironment)?
         let servicePaths: AppPaths?
         var tryIt: [String] = []
+        /// Every port `probeExternal` was asked about.
+        var externalProbes: [Int] = []
+        /// What the hello probe answers: by default a server that is not ours (kokoro on a tone port),
+        /// so a busy-port Start ends in the owner lookup and the busy failure as before.
+        var externalOutcome: ExternalProbe.Outcome = .mismatch(
+            try! HelloFixtures.frame(HelloFixtures.json(for: .kokoro)))
+        /// Replaces `externalOutcome` with a probe the test controls.
+        var externalHandler: (@MainActor (Int) async -> ExternalProbe.Outcome)?
 
         init(environment: any ServiceEnvironment = FakeEnvironment()) {
             serviceEnvironment = environment
@@ -183,15 +191,21 @@ import Testing
         }
         func familyChanged() async {}
         func openTryIt(port: Int) { tryIt.append("open \(port)") }
+        func probeExternal(port: Int) async -> ExternalProbe.Outcome {
+            externalProbes.append(port)
+            if let externalHandler { return await externalHandler(port) }
+            return externalOutcome
+        }
         func detachTryIt() { tryIt.append("detach") }
         func closeTryIt() { tryIt.append("close") }
     }
 
     @MainActor final class Flag { var value = false }
 
-    /// Polls (on the main actor) until `condition` holds or 2 s pass.
+    /// Polls (on the main actor) until `condition` holds or 10 s pass: a hang guard, not a
+    /// measurement (the condition is an event; a slow shared CI runner can take seconds).
     func until(_ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(10)
         while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
@@ -225,28 +239,70 @@ import Testing
         let start = clock.now
         await driver.shutdown()
         #expect(ended.value, "shutdown returned with the install still running")
-        #expect(clock.now - start < .seconds(2))
+        // A hang guard well short of the install's 30 s: the cancel, not the sleep, ended it.
+        #expect(clock.now - start < .seconds(20))
         #expect(driver.state.phase == .installing(.model), "a cancel during quit shows nothing")
     }
 
-    /// An install that ignores cancellation holds quit for at most `installDrain`.
+    /// An install that ignores cancellation holds quit for at most `installDrain`: shutdown
+    /// sleeps (the injected sleep, so no wall clock) for exactly that limit and returns with
+    /// the install still running.
     @Test func shutdownWaitsForAStuckInstallOnlySoLong() async {
         var deps = ServiceDependencies()
         deps.installDrain = .milliseconds(200)
+        let slept = Sleeps()
+        deps.sleep = { slept.append($0) }  // the limit elapses at once
+        let gate = InstallGate()
+        let ended = Flag()
         deps.appleSpeechInstall = { _ in
-            // Ignores cancellation without spinning: a cancelled task's own sleep throws at once,
-            // which would busy-loop and starve a small runner's task pool (and the drain timer).
-            let deadline = ContinuousClock.now + .seconds(3)
-            while ContinuousClock.now < deadline {
-                await Task.detached { try? await Task.sleep(for: .milliseconds(20)) }.value
-            }
+            await gate.wait()  // ignores cancellation
+            ended.value = true
         }
         let driver = ServiceDriver(info: Service.appleSpeech.info, dependencies: deps)
         driver.install()
-        let clock = ContinuousClock()
-        let start = clock.now
+        await until { gate.started }
+        #expect(gate.started, "the install never began")
         await driver.shutdown()
-        #expect(clock.now - start < .seconds(2))
+        #expect(!ended.value, "shutdown waited for the install instead of its drain limit")
+        #expect(slept.all == [.milliseconds(200)], "the drain did not wait installDrain")
+        gate.open()
+        await until { ended.value }
+    }
+
+    /// Durations the injected `sleep` was asked for.
+    final class Sleeps: @unchecked Sendable {
+        private let lock = NSLock()
+        private var durations: [Duration] = []
+        func append(_ duration: Duration) { lock.withLock { durations.append(duration) } }
+        var all: [Duration] { lock.withLock { durations } }
+    }
+
+    /// An install body that waits, ignoring cancellation, until the test opens it.
+    final class InstallGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var isOpen = false
+        private var began = false
+        var started: Bool { lock.withLock { began } }
+        func wait() async {
+            await withCheckedContinuation { c in
+                let now: Bool = lock.withLock {
+                    began = true
+                    if isOpen { return true }
+                    waiter = c
+                    return false
+                }
+                if now { c.resume() }
+            }
+        }
+        func open() {
+            let pending: CheckedContinuation<Void, Never>? = lock.withLock {
+                isOpen = true
+                defer { waiter = nil }
+                return waiter
+            }
+            pending?.resume()
+        }
     }
 
     // MARK: - Server lifecycle through the driver
@@ -331,9 +387,11 @@ import Testing
         let process = FakeProcess()
         let host = FakeHost()
         let answered = Flag()
+        let began = Flag()
         let driver = makeDriver(process, host: host) {
             $0.isPortFree = { _ in false }
             $0.portOwner = { _, _ in
+                await MainActor.run { began.value = true }
                 try? await Task.sleep(for: .milliseconds(100))
                 await MainActor.run { answered.value = true }
                 return PortProbe.Owner(pid: 1)
@@ -342,6 +400,8 @@ import Testing
         await driver.refresh()
         driver.start()
         #expect(driver.state.phase == .starting)
+        await until { began.value }  // the hello probe answered; the owner lookup is the one stopped
+        #expect(began.value)
         driver.stop()
         await until { answered.value }
         await until { driver.state.phase == .installed }
@@ -592,4 +652,391 @@ import Testing
     }
 
     @MainActor final class Counter { var value = 0 }
+
+    // MARK: - External: discovery entry points and the Start-path probe
+
+    static let toneHello = try! HelloFixtures.frame(HelloFixtures.json(for: .tone))
+    static let toneInfo = ExternalInfo(hello: toneHello)
+
+    /// A hello probe that waits 30 s and, if it ever finished, would adopt: records how it ended.
+    @MainActor final class SlowHello {
+        var started = false
+        var ended = false
+        var cancelled = false
+        func run() async -> ExternalProbe.Outcome {
+            started = true
+            try? await Task.sleep(for: .seconds(30))
+            cancelled = Task.isCancelled
+            ended = true
+            return .adopt(Service.tone.info, ServiceDriverTests.toneHello)
+        }
+    }
+
+    /// A tone driver on a busy port: the Start-path probe asks the host.
+    func busyDriver(_ host: FakeHost, processes: Processes = Processes([])) -> ServiceDriver {
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in false }
+        deps.portOwner = { _, _ in PortProbe.Owner(pid: 1, command: "other") }
+        deps.makeProcess = { _ in processes.next() }
+        let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
+        driver.host = host
+        return driver
+    }
+
+    @Test func discoveryAdoptsAnExternalServerAndOpensNoTryItUntilAsked() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
+        #expect(driver.state.phase == .external(8665, Self.toneInfo))
+        #expect(driver.state.server == nil && driver.state.native == nil)
+        #expect(host.tryIt.isEmpty, "Try it opens on demand, not at adoption")
+        driver.tryItRequested()
+        #expect(host.tryIt == ["open 8665"])
+    }
+
+    @Test func tryItRequestedDoesNothingOutsideExternal() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        driver.tryItRequested()
+        #expect(host.tryIt.isEmpty && driver.state.phase == .installed)
+    }
+
+    @Test func aLateFoundBehindTheEpochDoesNotResurrectTheService() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        let epoch = driver.state.externalEpoch
+        driver.remove(deleteModel: false)  // Delete during the probe
+        driver.discovered(.found(driver.service, epoch: epoch, info: Self.toneInfo))
+        #expect(!driver.state.phase.isExternal)
+    }
+
+    @Test func threeFailedProbesTearDownTheSessionAndReReadTheService() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
+        driver.tryItRequested()
+        let epoch = driver.state.externalEpoch
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .refused))
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .timeout))
+        #expect(driver.state.phase.isExternal && host.tryIt == ["open 8665"])
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .refused))
+        await until { driver.state.phase == .installed }
+        #expect(driver.state.phase == .installed, "\(driver.state.phase)")
+        #expect(host.tryIt == ["open 8665", "close"], "the Try it session was not torn down: \(host.tryIt)")
+    }
+
+    /// After quit began, every discovery entry point refuses, like the other intents.
+    @Test func discoveryEntryPointsRefuseWhenQuitting() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
+        let epoch = driver.state.externalEpoch
+        await driver.quit()
+        let before = driver.state
+        // Each event below is still current after quit, so only the quit guard refuses it.
+        let lost = LifecycleEvent.externalLost(epoch: epoch, reason: .mismatch)
+        #expect(ServiceLifecycle.isCurrent(lost, in: before) && ServiceLifecycle.isCurrent(.tryItRequested, in: before))
+        driver.discovered(.lost(driver.service, epoch: epoch, reason: .mismatch))
+        driver.tryItRequested()
+        #expect(driver.state == before && driver.state.phase.isExternal)
+        #expect(host.tryIt.isEmpty)
+
+        let fresh = makeDriver(FakeProcess(), host: host)
+        await fresh.refresh()
+        let idle = fresh.state
+        await fresh.quit()
+        #expect(ServiceLifecycle.isCurrent(.externalFound(epoch: fresh.state.externalEpoch, info: Self.toneInfo), in: fresh.state))
+        fresh.discovered(.found(fresh.service, epoch: fresh.state.externalEpoch, info: Self.toneInfo))
+        #expect(fresh.state.phase == idle.phase, "an External adoption landed after quit began")
+    }
+
+    /// A Start-path probe still in flight when quit begins: its tag stays current (quit leaves a
+    /// `.starting` service with no server alone), so only the quit guard keeps its result out.
+    @Test func startProbeResultRefusesWhenQuitting() async {
+        let host = FakeHost()
+        host.externalHandler = { _ in
+            try? await Task.sleep(for: .seconds(30))  // cancelled by quit
+            return .unreachable
+        }
+        let processes = Processes([])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        await until { !host.externalProbes.isEmpty }
+        await driver.quit()
+        let before = driver.state
+        guard let tag = before.probe else {
+            Issue.record("no Start-path probe in flight: \(before.phase)")
+            return
+        }
+        #expect(before.phase == .starting)
+        #expect(ServiceLifecycle.isCurrent(.startProbeResult(tag: tag, outcome: .unreachable), in: before))
+        driver.startProbeResult(tag: tag, outcome: .unreachable)
+        #expect(driver.state == before, "a Start-path probe result landed after quit began")
+        #expect(processes.launches == 0, "quit must not launch a server")
+    }
+
+    /// Discovery has one path into the reducer (`discovered`), the same `Directive.event` the
+    /// policy tests reduce; a directive for another service is refused.
+    @Test func discoveredSendsTheDirectivesEventToItsOwnServiceOnly() async {
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        let idle = driver.state
+        driver.discovered(.found(.kokoro, epoch: idle.externalEpoch, info: Self.toneInfo))
+        #expect(driver.state == idle, "another service's directive changed this one")
+        let directive = ExternalDiscoveryPolicy.Directive.found(.tone, epoch: idle.externalEpoch, info: Self.toneInfo)
+        var expected = idle
+        _ = ServiceLifecycle.reduce(&expected, directive.event)
+        driver.discovered(directive)
+        #expect(driver.state == expected && driver.state.phase.isExternal)
+    }
+
+    // MARK: Start path through the driver
+
+    @Test func startOnABusyPortAdoptsTheServerThatAnswers() async {
+        let host = FakeHost()
+        host.externalOutcome = .adopt(Service.tone.info, Self.toneHello)
+        let processes = Processes([])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        #expect(driver.state.phase == .starting)
+        await until { driver.state.phase.isExternal }
+        #expect(driver.state.phase == .external(8665, Self.toneInfo))
+        #expect(host.externalProbes == [8665])
+        #expect(processes.launches == 0, "the app launched a server next to the one it adopted")
+        #expect(driver.state.probe == nil)
+    }
+
+    @Test func startOnABusyPortWithNothingListeningLaunchesTheAppsServer() async {
+        let host = FakeHost()
+        host.externalOutcome = .unreachable
+        let process = FakeProcess()
+        let processes = Processes([process])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        await until { driver.state.server != nil }
+        #expect(processes.launches == 1 && driver.state.phase == .starting)
+    }
+
+    @Test func startOnABusyPortHeldByAnotherServerFailsBusyNamingIt() async {
+        let host = FakeHost()  // answers kokoro on the tone port by default
+        let processes = Processes([])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed(let failure) = driver.state.phase, case .portBusy(let owner, let found) = failure.kind else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(owner.pid == 1)
+        #expect(found == .server(backend: "kokoro", model: "mlx-community/Kokoro-82M-bf16"))
+        #expect(failure.message.contains("kokoro"))
+        #expect(processes.launches == 0)
+    }
+
+    /// A read issued while the owner lookup runs is orphaned when the lookup answers (busy
+    /// failure); the reducer drops it (`dropsOrphanedRead`), so the service is left with no read
+    /// pending, and the orphaned read's answer, landing after, does not replace the failure.
+    @Test func aBusyFailureDropsTheReadItOrphansAndKeepsItsPhase() async {
+        let environment = ArmableEnvironment()
+        let host = FakeHost(environment: environment)  // answers kokoro: the owner lookup follows
+        let answer = Flag()
+        let asked = Flag()
+        let driver = makeDriver(FakeProcess(), host: host) {
+            $0.isPortFree = { _ in false }
+            $0.portOwner = { _, _ in
+                await MainActor.run { asked.value = true }
+                while !(await MainActor.run { answer.value }) { try? await Task.sleep(for: .milliseconds(5)) }
+                return PortProbe.Owner(pid: 1, command: "other")
+            }
+        }
+        await driver.refresh()
+        driver.start()
+        await until { asked.value }
+        #expect(asked.value, "the owner lookup never started")
+        environment.arm()
+        let inFlight = Task { await driver.refresh() }  // blocks in the cache probe
+        await until { driver.state.reading != nil }
+        answer.value = true
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        let failed = driver.state.phase
+        guard case .failed(let failure) = failed, case .portBusy = failure.kind else {
+            Issue.record("\(failed)")
+            return
+        }
+        #expect(driver.state.reading == nil, "the busy failure kept the orphaned read")
+        environment.slow.release()
+        await inFlight.value
+        #expect(driver.state.phase == failed, "the orphaned read replaced the failure: \(driver.state.phase)")
+        #expect(driver.state.reading == nil)
+    }
+
+    /// Start on a busy port while a read is in flight: the probe drops the read, the adoption
+    /// issues one, and the driver runs it, so the External row is re-read.
+    @Test func aStartPathAdoptionRereadsTheService() async {
+        let environment = ArmableEnvironment()
+        let host = FakeHost(environment: environment)
+        let answer = Flag()
+        host.externalHandler = { _ in
+            while !answer.value { try? await Task.sleep(for: .milliseconds(5)) }
+            return .adopt(Service.tone.info, ServiceDriverTests.toneHello)
+        }
+        let driver = busyDriver(host)
+        await driver.refresh()
+        environment.arm()
+        let inFlight = Task { await driver.refresh() }  // blocks in the cache probe
+        await until { driver.state.reading != nil }
+        driver.start()
+        #expect(driver.state.phase == .starting && driver.state.reading == nil, "the probe kept the read")
+        answer.value = true
+        await until { driver.state.phase.isExternal }
+        #expect(driver.state.phase.isExternal && driver.state.reading != nil, "the adoption issued no read")
+        environment.slow.release()
+        await inFlight.value
+        await until { driver.state.reading == nil }
+        #expect(driver.state.reading == nil && driver.state.phase.isExternal, "\(driver.state.phase)")
+    }
+
+    @Test func stopCancelsTheHelloProbeAndItsAdoptNeverLands() async {
+        let hello = SlowHello()
+        let host = FakeHost()
+        host.externalHandler = { _ in await hello.run() }
+        let driver = busyDriver(host)
+        await driver.refresh()
+        driver.start()
+        await until { hello.started }
+        #expect(hello.started)
+        driver.stop()
+        await until { hello.ended }
+        #expect(hello.ended && hello.cancelled, "Stop left the hello probe running")
+        await until { driver.state.phase == .installed }
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(driver.state.phase == .installed, "\(driver.state.phase)")
+    }
+
+    @Test func deleteCancelsTheHelloProbeAndItsAdoptNeverLands() async {
+        let hello = SlowHello()
+        // An environment the removal really removes, so `.notInstalled` is reached (an
+        // event to await, not a timeout the wait runs out).
+        let environment = ScriptedEnvironment(.ready(ScriptedEnvironment.marker))
+        environment.release()
+        let host = FakeHost(environment: environment)
+        host.externalHandler = { _ in await hello.run() }
+        let driver = busyDriver(host)
+        await driver.refresh()
+        driver.start()
+        await until { hello.started }
+        driver.remove(deleteModel: false)
+        await until { hello.ended }
+        #expect(hello.ended && hello.cancelled, "Delete left the hello probe running")
+        await until { driver.state.phase == .notInstalled }
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(!driver.state.phase.isExternal, "\(driver.state.phase)")
+    }
+
+    /// Quit cancels the hello probe and returns only once it has ended; its adopt is dropped.
+    @Test func quitCancelsAndWaitsForTheHelloProbe() async {
+        let hello = SlowHello()
+        let host = FakeHost()
+        host.externalHandler = { _ in await hello.run() }
+        let driver = busyDriver(host)
+        await driver.refresh()
+        driver.start()
+        await until { hello.started }
+        await driver.shutdown()
+        #expect(hello.ended && hello.cancelled, "shutdown returned with the hello probe still running")
+        #expect(!driver.state.phase.isExternal && driver.state.server == nil, "\(driver.state.phase)")
+    }
+
+    /// Quit sets the flag in its own turn (`beginQuit`, before the asynchronous `quit()` runs): a
+    /// hello probe that then answers `.unreachable` (nothing listens) launches nothing.
+    @Test func aProbeAnswerAfterBeginQuitLaunchesNothing() async {
+        let host = FakeHost()
+        let started = Flag()
+        let release = Flag()
+        host.externalHandler = { _ in
+            started.value = true
+            while !release.value { try? await Task.sleep(for: .milliseconds(5)) }
+            return .unreachable
+        }
+        let processes = Processes([])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        await until { started.value }
+        #expect(started.value && driver.state.phase == .starting)
+        driver.beginQuit()
+        release.value = true
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(processes.launches == 0, "a probe answer after Quit began launched a server")
+        #expect(driver.state.server == nil, "\(driver.state.phase)")
+    }
+
+    // MARK: Quit leaves External services alone
+
+    /// An External service next to one the app started: Quit stops only ours.
+    @Test func quitStopsTheOwnedServerAndLeavesTheExternalOne() async {
+        let externalHost = FakeHost()
+        let external = makeDriver(FakeProcess(), host: externalHost)
+        await external.refresh()
+        external.discovered(.found(external.service, epoch: external.state.externalEpoch, info: Self.toneInfo))
+        external.tryItRequested()
+
+        let process = FakeProcess()
+        let ownedHost = FakeHost()
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in true }
+        deps.makeProcess = { _ in process }
+        let owned = ServiceDriver(info: Service.kokoro.info, dependencies: deps)
+        owned.host = ownedHost
+        await owned.refresh()
+        owned.start()
+        process.emit(#"{"event":"ready","port":9265,"rate":24000,"pid":77}"#)
+        await until { owned.state.phase == .running }
+        #expect(owned.state.phase == .running)
+
+        await external.quit()
+        await owned.quit()
+        #expect(process.stops == 1, "Quit did not stop the server the app started")
+        #expect(external.state.phase == .external(8665, Self.toneInfo) && external.state.server == nil)
+        #expect(externalHost.tryIt == ["open 8665"], "Quit tore down or detached the External row's session")
+        #expect(external.state.externalFailures == 0)
+    }
+
+    /// Live: adopts a real tone server (on its own ephemeral port, never the catalog's) and asserts
+    /// Quit leaves it running and answering.
+    @Test(.enabled(if: TTSRequestDriverLiveTests.enabled))
+    func quitLeavesAnAdoptedLiveToneServerRunning() async throws {
+        let (server, port) = try await TTSRequestDriverLiveTests.startTone()
+        defer { server.kill() }
+        let hello = try await HelloFixtures.liveHello(port: port)
+        // The hello of a real tone server maps to the tone entry on the tone port.
+        #expect(HelloFixtures.entry(for: hello, port: Service.tone.info.port)?.service == .tone)
+
+        let host = FakeHost()
+        let driver = makeDriver(FakeProcess(), host: host)
+        await driver.refresh()
+        driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: ExternalInfo(hello: hello)))
+        guard case .external = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(driver.state.server == nil && driver.state.native == nil)
+
+        await driver.quit()
+        #expect(driver.state.phase.isExternal)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(server.isRunning, "Quit signalled a server the app did not start")
+        let again = try await HelloFixtures.liveHello(port: port)
+        #expect(again.backendName == "tone")
+    }
 }

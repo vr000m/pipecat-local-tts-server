@@ -1,6 +1,7 @@
 # Task: STT services and the Pipecat Service Toolbar (phase 2)
 
 **Status**: Complete on `feature/macos-menubar-app`
+**Superseded in part**: the bundled STT helper (`Helper/pipecat_app_helper.py`, `serve-stt`) was removed by [adopt-external-servers](20261025-feature-macos-adopt-external-servers.md); STT now runs through `pipecat-local-stt-server`'s own CLI, and Parakeet (9765) and Nemotron (9865) were added.
 **Component**: macos
 **Branch**: `feature/macos-menubar-app` (PR #20)
 **Created**: 2026-10-23

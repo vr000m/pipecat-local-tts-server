@@ -23,7 +23,7 @@
             }
             if let i = args.firstIndex(of: "--serve-apple-speech"), i + 1 < args.count, let port = Int(args[i + 1]) {
                 Task {
-                    let server = STTWebSocketServer(identity: .init(name: "apple_speech", model: "SpeechTranscriber")) { pcm, language in
+                    let server = STTWebSocketServer(identity: .init(name: Service.appleSpeech.info.expectedBackendName, model: ServiceInfo.appleSpeechModel)) { pcm, language in
                         try await AppleSpeech.transcribe(pcm16: pcm, language: language)
                     }
                     server.onLog = { print($0) }
@@ -73,7 +73,7 @@
             let direct = try await AppleSpeech.transcribe(pcm16: pcm, language: nil)
             print("direct (\(clock.now - start)): \(direct)")
 
-            let server = STTWebSocketServer(identity: .init(name: "apple_speech", model: "SpeechTranscriber")) { pcm, language in
+            let server = STTWebSocketServer(identity: .init(name: Service.appleSpeech.info.expectedBackendName, model: ServiceInfo.appleSpeechModel)) { pcm, language in
                 try await AppleSpeech.transcribe(pcm16: pcm, language: language)
             }
             let port = try await server.start(port: 0)

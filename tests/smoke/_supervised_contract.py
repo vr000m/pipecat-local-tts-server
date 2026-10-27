@@ -42,8 +42,20 @@ def load_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def event_errors(scope: str, event: Any, contract: dict[str, Any] | None = None) -> list[str]:
-    """Every way ``event`` departs from its ``contract[scope]`` entry ([] = conforms)."""
+def known_error_codes(contract: dict[str, Any], emitter: str) -> set[str]:
+    """The ``error.code`` values of one emitter (``tts`` / ``stt``).
+
+    There is no "either emitter" default: a TTS line carrying an STT-only code (or the
+    reverse) is a contract violation, so every caller names the emitter it checks."""
+    return set(contract["error_codes"][emitter])
+
+
+def event_errors(
+    scope: str, event: Any, contract: dict[str, Any] | None = None, *, emitter: str
+) -> list[str]:
+    """Every way ``event`` departs from its ``contract[scope]`` entry ([] = conforms).
+
+    An ``error`` line's ``code`` must be one of ``emitter``'s codes (``tts`` or ``stt``)."""
     contract = contract if contract is not None else load_contract()
     if not isinstance(event, dict):
         return [f"{scope}: not a JSON object: {event!r}"]
@@ -65,7 +77,11 @@ def event_errors(scope: str, event: Any, contract: dict[str, Any] | None = None)
         allowed = allowed_types.get(key)
         if allowed is not None and not any(_JSON_TYPES[t](value) for t in allowed):
             errors.append(f"{name}.{key} = {value!r} is not {allowed}")
-    if name == "error" and "code" in event and event["code"] not in contract["error_codes"]:
+    if (
+        name == "error"
+        and "code" in event
+        and event["code"] not in known_error_codes(contract, emitter)
+    ):
         errors.append(f"error.code {event['code']!r} is not a contract error code")
     return errors
 
@@ -100,7 +116,7 @@ def ready_errors(
     contract: dict[str, Any] | None = None,
 ) -> list[str]:
     """``event_errors`` for a ``ready`` line plus the values the supervisor relies on."""
-    errors = event_errors("serve", event, contract)
+    errors = event_errors("serve", event, contract, emitter="tts")
     if errors:
         return errors
     if event["event"] != "ready":
@@ -129,7 +145,7 @@ def prefetch_errors(events: list[dict[str, Any]], *, check: bool, backend: str) 
     ``complete``. Either way the terminal line names ``backend``.
     """
     contract = load_contract()
-    errors = [e for ev in events for e in event_errors("prefetch", ev, contract)]
+    errors = [e for ev in events for e in event_errors("prefetch", ev, contract, emitter="tts")]
     if errors:
         return errors
     names = [ev["event"] for ev in events]

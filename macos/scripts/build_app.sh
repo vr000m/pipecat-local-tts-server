@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build "Pipecat Service Toolbar.app": the SwiftUI menu bar app plus everything
 # it needs to install speech services on demand: a pinned uv, this repo's TTS
-# server wheel, a constraints file exported from uv.lock, the STT helper and the
+# server wheel, a constraints file exported from uv.lock and the
 # STT environments' hash-pinned constraints (macos/constraints/).
 # Python itself is NOT bundled; uv installs a managed CPython on first use.
 #
@@ -48,9 +48,8 @@ iconutil -c icns "$ICONSET" -o "$WORK/AppIcon.icns"
 
 step "Assembling $(basename "$APP")"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Resources/wheels" "$APP/Contents/Resources/helper"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Resources/wheels"
 cp "$BIN_DIR/$EXE" "$APP/Contents/MacOS/$EXE"
-cp "$MACOS_DIR/Helper/pipecat_app_helper.py" "$APP/Contents/Resources/helper/"
 cp "$SCRIPTS/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo 1)" "$APP/Contents/Info.plist"

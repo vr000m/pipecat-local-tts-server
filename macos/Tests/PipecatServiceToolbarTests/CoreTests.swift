@@ -29,6 +29,7 @@ import Testing
             .tone: 8665, .kokoro: 8765, .voxtralTTS: 8865, .pocketTTS: 8965,
             .dia: 9065, .qwen3TTS: 9165, .fishTTS: 9265, .phonon: 9365,
             .appleSpeech: 9465, .whisper: 9565, .kyutai: 9665,
+            .parakeet: 9765, .nemotron: 9865,
             // Variants: the family's port + 1, 2, ...
             .phononQ8: 9366, .phononQ4: 9367,
             .whisperLargeV3: 9566, .whisperMedium: 9567, .whisperSmall: 9568, .whisperBase: 9569, .whisperTiny: 9570,
@@ -45,7 +46,7 @@ import Testing
         #expect(families.map(\.rawValue).sorted() == [
             "dia", "fish_tts", "kokoro", "phonon", "pocket_tts", "qwen3_tts", "tone", "voxtral_tts",
         ])
-        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai])
+        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai, .parakeet, .nemotron])
     }
 
     @Test func runtimes() {
@@ -76,6 +77,88 @@ import Testing
         #expect(Service.fishTTS.info.licence.isRestrictive)
         #expect(!Service.kokoro.info.licence.isRestrictive)
         #expect(!Service.kyutai.info.licence.isRestrictive)
+    }
+
+    @Test func parakeetAndNemotronEntries() {
+        let parakeet = Service.parakeet.info, nemotron = Service.nemotron.info
+        #expect(parakeet.kind == .stt && nemotron.kind == .stt)
+        #expect(parakeet.port == 9765 && nemotron.port == 9865)
+        #expect(parakeet.modelRepo == "mlx-community/parakeet-tdt-0.6b-v3")
+        #expect(nemotron.modelRepo == "mlx-community/nemotron-3.5-asr-streaming-0.6b")
+        #expect(Service.parakeet.family == .parakeet && Service.nemotron.family == .nemotron)
+        #expect(Service.parakeet.variants == [.parakeet] && Service.nemotron.variants == [.nemotron])
+        #expect(parakeet.needsModelDownload && nemotron.needsModelDownload)
+        #expect(parakeet.pipecatService() == #"LocalWebSocketSTTService(host="127.0.0.1", port=9765)"#)
+        // Each engine has its own environment and its own constraints file.
+        guard case .sttHelper(let pEngine, let pReqs) = parakeet.runtime,
+              case .sttHelper(let nEngine, let nReqs) = nemotron.runtime
+        else {
+            Issue.record("parakeet and nemotron run the STT server")
+            return
+        }
+        #expect(pEngine == "parakeet" && nEngine == "nemotron")
+        #expect(pReqs.contains("pipecat-local-stt-server[parakeet]==0.5.0"))
+        #expect(nReqs.contains("pipecat-local-stt-server[nemotron]==0.5.0"))
+        let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-envs-\(UUID().uuidString.prefix(8))")
+        let paths = AppPaths(
+            supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
+            hubDir: root.appending(path: "hub"), derivedModelsDir: root.appending(path: "derived"))
+        let envs = Set([Service.whisper, .kyutai, .parakeet, .nemotron].map { paths.envDir($0).path })
+        #expect(envs.count == 4)
+    }
+
+    @Test func everySTTEnvironmentPinsTheSameServerRelease() {
+        #expect(ServiceCatalog.sttServerRequirement == "pipecat-local-stt-server==0.5.0")
+        for service in ServiceCatalog.services(of: .stt) {
+            guard case .sttHelper(_, let reqs) = service.info.runtime else { continue }
+            #expect(reqs.contains { $0.hasPrefix("pipecat-local-stt-server") && $0.hasSuffix("==0.5.0") }, "\(service)")
+        }
+    }
+
+    /// Two real lines from the released 0.5.0 `stt_server` (the Python test checks them
+    /// against the contract): the app's decoder reads them.
+    @Test func recordedUpstreamLinesDecode() throws {
+        let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appending(path: "tests/fixtures/stt_supervised_lines.jsonl")
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(lines.count == 2)
+        let ready = try #require(ServerCLIEvent.parse(lines[0]))
+        #expect(ready.event == "ready" && ready.backend == "echo" && ready.model == nil)
+        #expect(ready.host == "127.0.0.1" && ready.port == 18773 && ready.rate == 16000 && ready.pid == 53758)
+        let error = try #require(ServerCLIEvent.parse(lines[1]))
+        #expect(error.event == "error" && error.errorCode == .addressInUse)
+    }
+
+    @Test func supervisedErrorCodesIncludeModelInvalid() {
+        #expect(SupervisedErrorCode(rawValue: "ModelInvalidError") == .modelInvalid)
+        #expect(SupervisedErrorCode.allCases.count == 8)
+    }
+
+    @Test func otherLicenceLabel() {
+        #expect(WeightsLicence.other.label == "Custom licence")
+        #expect(!WeightsLicence.other.detail.isEmpty)
+        #expect(Service.nemotron.info.licence == .other)
+        #expect(Service.parakeet.info.licence == .ccBy4)
+        #expect(!Service.nemotron.info.licence.isRestrictive)
+    }
+
+    /// An STT default model is sized at upstream's pin, any other STT model at `main` (nil).
+    @Test func sttSnapshotsCarryUpstreamsPinsForTheDefaultModelsOnly() {
+        for service in ServiceCatalog.services(of: .stt) {
+            guard let repo = service.info.modelRepo else { continue }
+            let snapshots = ServiceCatalog.snapshots(for: service)
+            #expect(snapshots.map(\.repo) == [repo], "\(service)")
+            let pin = ServiceCatalog.sttPinnedRevisions[repo]
+            #expect(snapshots.allSatisfy { $0.revision == pin && $0.kind == .model && $0.required }, "\(service)")
+        }
+        for service in [Service.whisper, .kyutai, .parakeet, .nemotron] {
+            #expect(ServiceCatalog.snapshots(for: service).first?.revision != nil, "\(service) is a pinned default")
+        }
+        for service in [Service.whisperTiny, .kyutai2B] {
+            #expect(ServiceCatalog.snapshots(for: service).first?.revision == nil, "\(service) is not pinned upstream")
+        }
+        #expect(ServiceCatalog.snapshots(for: .kyutai2B).first?.files == .allButDocs)
+        #expect(ServiceCatalog.snapshots(for: .whisper).first?.files == .allButDocs)
     }
 }
 
@@ -111,7 +194,7 @@ import Testing
         try paths.prepare()
         let tools = Tools(
             uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"),
-            constraints: nil, helper: URL(filePath: "/tmp/helper.py"), source: .override)
+            constraints: nil, source: .override)
         return (EnvironmentManager(paths: paths, tools: tools), paths)
     }
 
@@ -123,11 +206,39 @@ import Testing
         let prefetch = try #require(manager.prefetchArguments(for: Service.phononQ4.info, check: true))
         #expect(prefetch == ["-m", "tts_server", "prefetch", "--backend", "phonon", "--json", "--model", "phonon-q4", "--check"])
 
+        // STT launches the upstream CLI, the one entry point a LaunchAgent also runs.
         let stt = try #require(manager.serveArguments(for: Service.whisperSmall.info, port: 9568))
-        #expect(stt.suffix(2) == ["--model", "mlx-community/whisper-small-mlx"])
+        #expect(stt == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "mlx",
+            "--model", "mlx-community/whisper-small-mlx", "--host", "127.0.0.1", "--port", "9568",
+        ])
+        let parakeet = try #require(manager.serveArguments(for: Service.parakeet.info, port: 9765))
+        #expect(parakeet == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "parakeet",
+            "--model", "mlx-community/parakeet-tdt-0.6b-v3", "--host", "127.0.0.1", "--port", "9765",
+        ])
+        let nemotron = try #require(manager.serveArguments(for: Service.nemotron.info, port: 9865))
+        #expect(nemotron == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "nemotron",
+            "--model", "mlx-community/nemotron-3.5-asr-streaming-0.6b", "--host", "127.0.0.1", "--port", "9865",
+        ])
+        let kyutai = try #require(manager.serveArguments(for: Service.kyutai2B.info, port: 9666))
+        #expect(Array(kyutai.prefix(6)) == ["-m", "stt_server", "serve", "--supervised", "--backend", "kyutai"])
+        #expect(kyutai.contains("kyutai/stt-2.6b-en-mlx"))
         let sttPrefetch = try #require(manager.prefetchArguments(for: Service.whisperSmall.info, check: false))
-        #expect(sttPrefetch.contains("mlx-community/whisper-small-mlx"))
-        #expect(sttPrefetch.contains(paths.envDir(.whisper).path))
+        #expect(sttPrefetch == [
+            "-m", "stt_server", "prefetch", "--backend", "mlx",
+            "--model", "mlx-community/whisper-small-mlx", "--json",
+        ])
+        let sttCheck = try #require(manager.prefetchArguments(for: Service.nemotron.info, check: true))
+        #expect(sttCheck == [
+            "-m", "stt_server", "prefetch", "--backend", "nemotron",
+            "--model", "mlx-community/nemotron-3.5-asr-streaming-0.6b", "--json", "--check",
+        ])
+        // No pins, no helper script, no state dir: the upstream CLI owns all three.
+        #expect(!(stt + sttPrefetch).contains { $0.hasSuffix(".py") || $0 == "--state-dir" || $0 == "--revision" })
+        #expect(manager.serveArguments(for: Service.appleSpeech.info, port: 9465) == nil)
+        #expect(manager.prefetchArguments(for: Service.appleSpeech.info, check: false) == nil)
 
         // One environment per family; logs per variant.
         #expect(paths.envDir(.whisperTiny) == paths.envDir(.whisper))
@@ -137,7 +248,7 @@ import Testing
 
     /// STT environments install against their engine's hash-pinned constraints
     /// (`--require-hashes`); TTS against the `uv.lock` export, without hashes.
-    @Test(arguments: [Service.kyutai, .whisperSmall, .phonon])
+    @Test(arguments: [Service.kyutai, .whisperSmall, .parakeet, .nemotron, .phonon])
     func packagesInstallWithTheirConstraints(_ service: Service) async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-pins-\(UUID().uuidString.prefix(8))")
         let paths = AppPaths(
@@ -146,7 +257,7 @@ import Testing
         try paths.prepare()
         let pins = root.appending(path: "constraints")
         try FileManager.default.createDirectory(at: pins, withIntermediateDirectories: true)
-        for engine in ["whisper", "kyutai"] {
+        for engine in ["whisper", "kyutai", "parakeet", "nemotron"] {
             FileManager.default.createFile(atPath: pins.appending(path: "stt-\(engine).txt").path, contents: Data())
         }
         let lock = root.appending(path: "constraints.txt")
@@ -157,7 +268,7 @@ import Testing
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let tools = Tools(
             uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: lock,
-            helper: URL(filePath: "/tmp/helper.py"), sttConstraints: pins, source: .override)
+            sttConstraints: pins, source: .override)
         let manager = EnvironmentManager(paths: paths, tools: tools)
         try await Self.fakeEnvironment(service, manager, paths)
 
@@ -186,7 +297,7 @@ import Testing
     @Test(arguments: [Tools.Source.override, .repository, .bundle])
     func sttConstraintsAreOptionalOnlyOutsideTheBundle(source: Tools.Source) throws {
         let tools = Tools(
-            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil,
             sttConstraints: URL(filePath: "/nonexistent"), source: source)
         if source == .bundle {
             #expect(throws: ToolLocatorError.self) { try tools.constraints(for: Service.kyutai.info) }
@@ -198,7 +309,7 @@ import Testing
         try FileManager.default.createDirectory(at: present, withIntermediateDirectories: true)
         try "x==1 --hash=sha256:00\n".write(to: present.appending(path: "stt-kyutai.txt"), atomically: true, encoding: .utf8)
         let found = Tools(
-            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+            uv: URL(filePath: "/usr/bin/true"), wheel: URL(filePath: "/tmp/x.whl"), constraints: nil,
             sttConstraints: present, source: source)
         #expect(try found.constraints(for: Service.kyutai.info)?.lastPathComponent == "stt-kyutai.txt")
     }
@@ -213,7 +324,7 @@ import Testing
         let manager = EnvironmentManager(
             paths: paths,
             tools: Tools(
-                uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil,
+                uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil,
                 sttConstraints: paths.supportDir.appending(path: "missing"), source: .bundle))
         do {
             try await manager.install(.kyutai).consume { _ in }
@@ -676,6 +787,21 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         let client = TTSClient(port: readyPort)
         let hello = try await client.connect()
         #expect(hello.backend == "tone" && hello.rate == 24000)
+        #expect(hello.protocolVersion == "0.1")
+
+        // The live hello maps back to the service that was started (the server is on an
+        // ephemeral port, so the match is made on tone's own catalog port).
+        let live = try await HelloFixtures.liveHello(port: readyPort)
+        #expect(live.backendName == "tone" && live.model == nil && live.protocolVersion == "0.1")
+        #expect(HelloFixtures.entry(for: live, port: Service.tone.info.port)?.service == .tone)
+        #expect(HelloFixtures.entry(for: live, port: readyPort) == nil, "an ephemeral port belongs to no entry")
+        // The probe reads the same hello with no Origin header (a 403 would be `needsToken`);
+        // on this port it is a mismatch, and it names the tone server that answered.
+        guard case .mismatch(let probed) = await ExternalProbe().probe(port: readyPort) else {
+            Issue.record("expected the live tone hello to be read by the probe")
+            return
+        }
+        #expect(probed.backendName == "tone" && probed.protocolVersion == "0.1")
 
         for frame in TTSClientFrame.request(TTSRequest(id: "tryit-1", text: "Hello there.", voice: nil)) {
             try await client.send(frame)
@@ -788,7 +914,7 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try paths.prepare()
         let (uv, pidFile) = try Self.slowUV(in: root)
         let tools = Tools(
-            uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil, helper: nil,
+            uv: uv, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
             source: .override)
         let manager = EnvironmentManager(paths: paths, tools: tools)
 
@@ -949,20 +1075,33 @@ final class Lines: @unchecked Sendable {
         try sub.run()
         let lines = Lines()
         let reader = Task { for await line in sub.stdout { lines.append(line) } }
-        let status = await sub.waitForExit(after: reader)
+        // The line lands 0.3 s after the exit; a generous drain limit, so a slow runner still
+        // delivers it inside the limit (this test is about the order, not the limit).
+        let status = await sub.waitForExit(after: reader, drainLimit: .seconds(10))
         #expect(status == 1)
         #expect(lines.all.compactMap(ServerCLIEvent.parse).last?.errorCode == .addressInUse)
     }
 
+    /// A grandchild holds stdout open for 30 s: the wait ends at the drain limit, with the
+    /// pipe still open (so the limit ended it, not EOF), never sooner than the limit, and
+    /// (a hang guard for a slow shared runner) long before the grandchild exits.
     @Test func drainIsBoundedWhenThePipeStaysOpen() async throws {
         let sub = Subprocess(
             .init(executable: URL(filePath: "/bin/sh"), arguments: ["-c", "(sleep 30) & exit 0"], environment: ProcessEnvironment.base()))
         try sub.run()
-        let reader = Task { for await _ in sub.stdout {} }
+        let eof = Flag()
+        let reader = Task {
+            for await _ in sub.stdout {}
+            eof.raise()
+        }
         let clock = ContinuousClock()
         let start = clock.now
         #expect(await sub.waitForExit(after: reader, drainLimit: .milliseconds(300)) == 0)
-        #expect(clock.now - start < .seconds(5))
+        let elapsed = clock.now - start
+        #expect(!eof.value, "the pipe closed: the drain limit was not what ended the wait")
+        #expect(elapsed >= .milliseconds(300), "returned before the drain limit (\(elapsed))")
+        #expect(elapsed < .seconds(20), "waited for the grandchild (\(elapsed))")
+        _ = await sub.stop(grace: .seconds(2))  // end the orphaned sleep
     }
 }
 
@@ -1085,7 +1224,7 @@ final class Lines: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
             paths: paths,
-            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override),
+            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override),
             cancelGrace: .milliseconds(500))
 
         let ended = Flag()
@@ -1128,7 +1267,7 @@ final class Lines: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
             paths: paths,
-            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override),
+            tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override),
             cancelGrace: .milliseconds(500))
         let ended = Flag()
         let install = Task {
@@ -1321,7 +1460,7 @@ extension VariantTests {
         let manager = EnvironmentManager(
             paths: paths,
             tools: Tools(uv: uvPath, wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
-                         helper: nil, source: .override),
+                         source: .override),
             cancelGrace: .milliseconds(300))
         try await VariantTests.fakeEnvironment(.phonon, manager, paths)
         if outdated {
@@ -1371,7 +1510,7 @@ extension VariantTests {
         """.write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
-            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override))
         let install = Task { try await manager.install(.tone).consume { _ in } }
         // Generous: the whole suite runs in parallel and spawns many processes.
         let deadline = ContinuousClock.now + .seconds(30)
@@ -1415,7 +1554,7 @@ extension VariantTests {
         try "#!/bin/sh\nexit 0\n".write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
-            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override))
         return (manager, paths, started)
     }
 
@@ -1493,7 +1632,7 @@ extension VariantTests {
         try "#!/bin/sh\ntouch '\(started.path)'\n\(Self.leaky)".write(to: uv, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: uv.path)
         let manager = EnvironmentManager(
-            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, helper: nil, source: .override))
+            paths: paths, tools: Tools(uv: uv, wheel: URL(filePath: "/tmp/x.whl"), constraints: nil, source: .override))
         let ended = Flag()
         let install = Task {
             defer { ended.raise() }
@@ -1546,7 +1685,7 @@ extension VariantTests {
             paths: paths,
             tools: Tools(
                 uv: inPrefetch ? URL(filePath: "/usr/bin/true") : script,
-                wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil, helper: nil,
+                wheel: URL(filePath: "/tmp/pipecat_local_tts_server-0-py3-none-any.whl"), constraints: nil,
                 source: .override),
             cancelGrace: .milliseconds(300), drainLimit: .milliseconds(300))
         let service: Service = inPrefetch ? .phonon : .tone
@@ -1675,6 +1814,18 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(ProcessEnvironment.base()["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.huggingFace()["HF_TOKEN"] == "hf_test_secret")
     }
+
+    /// Parakeet's `serve` child sees Homebrew's `ffmpeg`; nothing else gets a wider `PATH`.
+    @Test func onlyParakeetServeGetsTheHomebrewPath() {
+        let base = ProcessEnvironment.base()["PATH"]
+        let parakeet = ProcessEnvironment.serve(.parakeet)["PATH"] ?? ""
+        #expect(parakeet == (base ?? "") + ":/opt/homebrew/bin:/usr/local/bin")
+        for service in Service.allCases where service != .parakeet {
+            #expect(ProcessEnvironment.serve(service)["PATH"] == base, "\(service)")
+        }
+        // The fact lives in the catalog, not in the process-environment layer.
+        #expect(Service.allCases.filter { $0.info.serveRunsHomebrewTools } == [.parakeet])
+    }
 }
 
 @Suite struct PCMStreamConverterTests {
@@ -1744,7 +1895,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         let clock = ContinuousClock()
         let begin = clock.now
         let build = Task {
-            try await ToolLocator.buildFromRepository(paths.supportDir, uv: uv, helper: nil, paths: paths, processes: processes)
+            try await ToolLocator.buildFromRepository(paths.supportDir, uv: uv, paths: paths, processes: processes)
         }
         let deadline = clock.now + .seconds(30)
         while !FileManager.default.fileExists(atPath: started.path), clock.now < deadline {
@@ -1757,5 +1908,292 @@ final class ConcurrencyGauge: @unchecked Sendable {
         // Nothing starts after quit.
         let late = Subprocess(.init(executable: uv, arguments: [], environment: [:]))
         await #expect(throws: CancellationError.self) { _ = try await processes.collect(late) }
+    }
+}
+
+/// One decoder for the `server.hello` text frame, shared by the probe and both clients.
+@Suite struct ServerHelloFrameTests {
+    @Test func decodesTheRecordedToneHello() throws {
+        let frame = try HelloFixtures.frame(HelloFixtures.recordedTone)
+        #expect(frame.backendName == "tone")
+        #expect(frame.model == nil)
+        #expect(frame.protocolVersion == "0.1")
+        #expect(frame.rate == 24000)
+    }
+
+    @Test func decodesModelAndRate() throws {
+        let frame = try HelloFixtures.frame(HelloFixtures.json(for: .dia))
+        #expect(frame.backendName == "dia" && frame.model == "mlx-community/Dia-1.6B-fp16")
+        #expect(frame.rate == 44100)
+    }
+
+    /// A hello's `audio.rate` reaches `AVAudioFormat` (TTS Try it on an adopted server), so a
+    /// rate outside `acceptedRates` decodes as absent and the clients fall back to their default.
+    @Test(arguments: [
+        (rate: "24000", expected: 24000 as Int?), ("8000", 8000), ("192000", 192_000), ("16000", 16000),
+        ("0", nil), ("-24000", nil), ("7999", nil), ("192001", nil), ("1000000000", nil), ("24000.5", nil),
+        ("true", nil), ("\"24000\"", nil), ("null", nil),
+    ])
+    func aHelloRateOutsideTheAcceptedRangeIsDropped(rate: String, expected: Int?) throws {
+        let json = #"{"type":"server.hello","protocol_version":"0.1","backend":{"name":"tone","model":null},"audio":{"rate":"#
+            + rate + "}}"
+        let frame = try #require(ServerHelloFrame.decode(json))
+        #expect(frame.rate == expected, "rate \(rate)")
+        if case .hello(let hello)? = TTSEvent.decode(json) {
+            #expect(hello.rate == (expected ?? 24000), "TTS fallback for \(rate)")
+        } else {
+            Issue.record("TTSEvent did not decode the hello")
+        }
+    }
+
+    @Test func aMissingProtocolVersionIsNilNotAGuess() throws {
+        let frame = try HelloFixtures.frame(HelloFixtures.json(name: "tone", model: nil, protocolVersion: nil))
+        #expect(frame.protocolVersion == nil)
+    }
+
+    @Test func otherFramesAndNonJSONAreNotHellos() {
+        #expect(ServerHelloFrame.decode(#"{"type":"server.status","voices":[],"queue_depth":0}"#) == nil)
+        #expect(ServerHelloFrame.decode(#"{"type":"response.audio.done","response_id":"r1"}"#) == nil)
+        #expect(ServerHelloFrame.decode("not json") == nil)
+        #expect(ServerHelloFrame.decode("") == nil)
+    }
+
+    @Test func aHelloWithoutABackendNameIsNeverAdopted() throws {
+        // Unsupported (plan): either the decoder rejects it or the match does.
+        let json = HelloFixtures.json(name: nil, model: nil)
+        if let frame = ServerHelloFrame.decode(json) {
+            for service in Service.allCases where service != .appleSpeech {
+                #expect(HelloFixtures.entry(for: frame, port: service.info.port) == nil, "\(service)")
+            }
+        }
+    }
+
+    /// The TTS client's hello carries the version too, and a memberwise `ServerHello`
+    /// without it still compiles (`TTSRequestMachineTests` builds one).
+    @Test func ttsClientHelloKeepsTheProtocolVersion() throws {
+        guard case .hello(let hello)? = TTSEvent.decode(HelloFixtures.recordedTone) else {
+            Issue.record("not a hello")
+            return
+        }
+        #expect(hello.protocolVersion == "0.1")
+        #expect(hello.backend == "tone" && hello.rate == 24000)
+        guard case .hello(let bare)? = TTSEvent.decode(HelloFixtures.json(name: "tone", model: nil, protocolVersion: nil)) else {
+            Issue.record("not a hello")
+            return
+        }
+        #expect(bare.protocolVersion == nil)
+        #expect(ServerHello(backend: "x", model: nil, rate: 1, channels: 1, streaming: false, voiceCount: 0, maxTextChars: nil, languages: []).protocolVersion == nil)
+    }
+}
+
+/// `entry(for:port:)`: the one place a hello becomes a catalog entry.
+@Suite struct HelloMatchingTests {
+    static let catalogServices = Service.allCases.filter { $0 != .appleSpeech }
+
+    /// Each entry reports a `backend.name` the catalog expects, independent of the fixtures.
+    @Test func expectedBackendNames() {
+        for service in Service.allCases where service.kind == .tts {
+            #expect(service.info.expectedBackendName == service.family.rawValue, "\(service)")
+        }
+        // Whisper's variants are all the `mlx` backend; Kyutai's both `kyutai`.
+        for service in Service.whisper.variants { #expect(service.info.expectedBackendName == "mlx", "\(service)") }
+        for service in Service.kyutai.variants { #expect(service.info.expectedBackendName == "kyutai", "\(service)") }
+        #expect(Service.parakeet.info.expectedBackendName == "parakeet")
+        #expect(Service.nemotron.info.expectedBackendName == "nemotron")
+    }
+
+    @Test func launchdLabelsExistPerFamilyOnly() {
+        for service in Service.allCases where service.kind == .tts {
+            let expected = service == service.family ? "pipecat.tts-server.\(service.rawValue)" : nil
+            #expect(service.info.launchdLabel == expected, "\(service)")
+        }
+        #expect(Service.tone.info.launchdLabel == "pipecat.tts-server.tone")
+        #expect(Service.whisper.info.launchdLabel == "pipecat.stt-server")
+        #expect(Service.kyutai.info.launchdLabel == "pipecat.stt-server.kyutai")
+        #expect(Service.parakeet.info.launchdLabel == "pipecat.stt-server.parakeet")
+        #expect(Service.nemotron.info.launchdLabel == "pipecat.stt-server.nemotron")
+        for service in Service.whisper.variants.dropFirst() + Service.kyutai.variants.dropFirst() {
+            #expect(service.info.launchdLabel == nil, "\(service)")
+        }
+        #expect(Service.appleSpeech.info.launchdLabel == nil)
+    }
+
+    /// Every service's hello, on its own port, maps back to exactly that service.
+    @Test func everyHelloMapsBackToItsService() throws {
+        for r in HelloFixtures.synthesized {
+            let info = try #require(try HelloFixtures.match(HelloFixtures.json(for: r.service), port: r.service.info.port), "\(r.service)")
+            #expect(info.service == r.service)
+        }
+        #expect(Set(HelloFixtures.synthesized.map(\.service)) == Set(Self.catalogServices))
+    }
+
+    @Test func recordedToneHelloMapsToTone() throws {
+        let info = try #require(try HelloFixtures.match(HelloFixtures.recordedTone, port: Service.tone.info.port))
+        #expect(info.service == .tone)
+    }
+
+    @Test func phononVariantsReportTheirAlias() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q8"), port: 9366)?.service == .phononQ8)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q4"), port: 9367)?.service == .phononQ4)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "gradium/phonon-31m-en"), port: 9365)?.service == .phonon)
+        // The quantized servers report the alias, not the repo they fetched.
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "gradium/phonon-31m-en"), port: 9366) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "gradium/phonon-31m-en"), port: 9367) == nil)
+        // Full precision does not answer on a quantized port, nor q8 on the full port.
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q8"), port: 9365) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q8"), port: 9367) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q4"), port: 9366) == nil)
+    }
+
+    @Test func whisperVariantsAllReportMlx() throws {
+        for service in Service.whisper.variants {
+            let repo = try #require(service.info.modelRepo)
+            let json = HelloFixtures.json(name: "mlx", model: repo, rate: 16000)
+            #expect(try HelloFixtures.match(json, port: service.info.port)?.service == service, "\(service)")
+            // The model decides which variant; another size's repo on this port is a mismatch.
+            for other in Service.whisper.variants where other != service {
+                #expect(try HelloFixtures.match(json, port: other.info.port) == nil, "\(service) on \(other)")
+            }
+        }
+        // The family name is not the backend name.
+        let turbo = try #require(Service.whisper.info.modelRepo)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "whisper", model: turbo), port: Service.whisper.info.port) == nil)
+    }
+
+    @Test func kyutaiVariantsMatchByModel() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai), port: 9665)?.service == .kyutai)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai2B), port: 9666)?.service == .kyutai2B)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai2B), port: 9665) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kyutai), port: 9666) == nil)
+    }
+
+    @Test func toneWithAModelIsAMismatch() throws {
+        // Tone pins no model: only a hello without one matches.
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "tone", model: nil), port: 8665)?.service == .tone)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "tone", model: "some/model"), port: 8665) == nil)
+    }
+
+    @Test func kokoroWithNoModelIsAMismatch() throws {
+        // A missing model matches only an entry that pins none; kokoro pins its repo.
+        let repo = try #require(Service.kokoro.info.modelRepo)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: repo), port: 8765)?.service == .kokoro)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: nil), port: 8765) == nil)
+    }
+
+    @Test func unknownModelForAKnownBackendIsAMismatch() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: "someone/else-82M"), port: 8765) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "phonon", model: "phonon-q2"), port: 9365) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "mlx", model: "mlx-community/whisper-huge"), port: 9565) == nil)
+    }
+
+    @Test func unknownBackendNameIsAMismatch() throws {
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "echo", model: nil), port: 8665) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(name: "TONE", model: nil), port: 8665) == nil)
+        // Another entry's backend name on this entry's port.
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .kokoro), port: Service.tone.info.port) == nil)
+        #expect(try HelloFixtures.match(HelloFixtures.json(for: .tone), port: Service.kokoro.info.port) == nil)
+    }
+
+    @Test(arguments: [nil, "", "0", "0.2", "0.10", "1", "1.0", "v0.1"] as [String?])
+    func protocolVersionMustBeZeroPointOne(version: String?) throws {
+        for service in Self.catalogServices {
+            let json = HelloFixtures.json(for: service, protocolVersion: version)
+            #expect(try HelloFixtures.match(json, port: service.info.port) == nil, "\(service) with \(String(describing: version))")
+        }
+        let ok = HelloFixtures.json(for: .tone, protocolVersion: "0.1")
+        #expect(try HelloFixtures.match(ok, port: 8665)?.service == .tone)
+    }
+
+    @Test func aHelloOnAnyOtherPortIsAMismatch() throws {
+        for r in HelloFixtures.synthesized {
+            let json = HelloFixtures.json(for: r.service)
+            let own = r.service.info.port
+            for port in [own + 1000, own - 1, 0, 1, 65535] where port != own {
+                // No other entry shares a model, so a stray port matches nothing.
+                #expect(try HelloFixtures.match(json, port: port)?.service != r.service, "\(r.service) on \(port)")
+            }
+            for other in Self.catalogServices where other != r.service {
+                #expect(try HelloFixtures.match(json, port: other.info.port)?.service != r.service, "\(r.service) on \(other)")
+            }
+        }
+    }
+
+    @Test func theMatchIsPureAndStable() throws {
+        let json = HelloFixtures.json(for: .phononQ8)
+        let frame = try HelloFixtures.frame(json)
+        let first = HelloFixtures.entry(for: frame, port: 9366)
+        #expect(first == HelloFixtures.entry(for: frame, port: 9366))
+        #expect(first == Service.phononQ8.info)
+    }
+}
+
+/// `PortProbe.owner`: the source line names a LaunchAgent only when that agent holds the port, i.e.
+/// the pid in `launchctl print` is the pid `lsof` reports for the port.
+@Suite struct PortProbeOwnerTests {
+    /// The shape of `launchctl print gui/<uid>/<label>` for a running agent: the service's own
+    /// `pid = N` sits one tab in; nested blocks indent further.
+    static func printOutput(pid: Int?, nestedPid: Int? = nil) -> [String] {
+        var lines = [
+            "gui/501/pipecat.tts-server.tone = {",
+            "\tactive count = 1",
+            "\tpath = /Users/x/Library/LaunchAgents/pipecat.tts-server.tone.plist",
+            "\tstate = \(pid == nil ? "waiting" : "running")",
+            "",
+        ]
+        if let nestedPid {
+            lines += ["\tdomain = {", "\t\tpid = \(nestedPid)", "\t}"]
+        }
+        lines += ["\tprogram = /usr/bin/python3", "\targuments = {", "\t\t/usr/bin/python3", "\t}"]
+        if let pid { lines.append("\tpid = \(pid)") }
+        lines += ["\timmediate reason = inefficient", "}"]
+        return lines
+    }
+
+    @Test func launchctlPidReadsTheServicesOwnPid() {
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: 4242)) == 4242)
+    }
+
+    @Test func aNestedPidDoesNotStandInForTheServicesPid() {
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: 4242, nestedPid: 1)) == 4242)
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil, nestedPid: nil)) == nil)
+        // No top-level pid (the agent is down): a nested one is not the service's.
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil, nestedPid: 4242)) == nil)
+        #expect(
+            PortProbe.launchdLabel(
+                "pipecat.stt-server", launchctlStatus: 0, launchctlLines: Self.printOutput(pid: nil, nestedPid: 4242),
+                lsofPid: 4242) == nil)
+    }
+
+    @Test func aLoadedButNotRunningAgentHasNoPid() {
+        #expect(PortProbe.launchctlPid(Self.printOutput(pid: nil)) == nil)
+        #expect(PortProbe.launchctlPid([]) == nil)
+        #expect(PortProbe.launchctlPid(["\tpid = soon"]) == nil)
+    }
+
+    /// The label is set only on a pid match: a loaded agent whose pid is not the port's holder (a
+    /// second server on the port, or an agent that is down) does not own the row.
+    @Test func theLabelNeedsThePidToMatchTheLsofHolder() {
+        let label = "pipecat.stt-server"
+        let output = Self.printOutput(pid: 4242)
+        // Match: the agent holds the port.
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: output, lsofPid: 4242) == label)
+        // A different holder, no holder, an agent that is loaded but down, a failed `launchctl print`.
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: output, lsofPid: 99) == nil)
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: output, lsofPid: nil) == nil)
+        #expect(
+            PortProbe.launchdLabel(label, launchctlStatus: 0, launchctlLines: Self.printOutput(pid: nil), lsofPid: 4242)
+                == nil)
+        #expect(PortProbe.launchdLabel(label, launchctlStatus: 113, launchctlLines: output, lsofPid: 4242) == nil)
+    }
+
+    /// Against a real listener (this process, on an ephemeral port) for a service with no LaunchAgent
+    /// label, so no `launchctl` runs: the holder's pid is found and no label is set.
+    @Test func aServiceWithoutALaunchAgentNeverGetsALabel() async throws {
+        #expect(Service.phononQ8.info.launchdLabel == nil)
+        let server = try await FakeHelloServer.start(.upgradeAndStaySilent)
+        defer { server.stop() }
+        let owner = await PortProbe.owner(of: server.port, backend: .phononQ8)
+        #expect(owner.pid == getpid())
+        #expect(owner.launchdLabel == nil)
     }
 }

@@ -159,8 +159,8 @@ public actor EnvironmentManager {
             args = ["-m", "tts_server", "prefetch", "--backend", info.family.rawValue, "--json"]
             if let model = info.modelArgument { args += ["--model", model] }
         case .sttHelper:
-            guard let helper = tools.helper, let repo = info.modelRepo else { return nil }
-            args = [helper.path, "prefetch", "--repo", repo, "--state-dir", paths.envDir(info.service).path, "--json"]
+            guard let repo = info.modelRepo else { return nil }
+            args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", repo, "--json"]
         case .appleSpeech:
             return nil
         }
@@ -177,11 +177,11 @@ public actor EnvironmentManager {
             return args + [
                 "--host", ServiceCatalog.host, "--port", String(port), "--supervised", "--log-level", "INFO",
             ]
-        case .sttHelper(let engine, _):
-            guard let helper = tools.helper else { return nil }
-            var args = [helper.path, "serve-stt", "--engine", engine, "--host", ServiceCatalog.host, "--port", String(port)]
+        case .sttHelper:
+            // The same upstream CLI a LaunchAgent runs; TCP on the catalog port.
+            var args = ["-m", "stt_server", "serve", "--supervised", "--backend", info.expectedBackendName]
             if let repo = info.modelRepo { args += ["--model", repo] }
-            return args
+            return args + ["--host", ServiceCatalog.host, "--port", String(port)]
         case .appleSpeech:
             return nil
         }
@@ -216,7 +216,7 @@ public actor EnvironmentManager {
     }
 
     /// Reads `prefetch --check --json` output: one `check` row per snapshot, then
-    /// a `summary`. The TTS server and the STT helper write the same events
+    /// a `summary`. The TTS server and the upstream STT server write the same events
     /// (`docs/supervised-contract.json`, enforced by `tests/test_supervised_contract.py`).
     static func cacheStatus(checkOutput lines: [String]) -> ModelCacheStatus? {
         let events = lines.compactMap(ServerCLIEvent.parse)
@@ -525,7 +525,7 @@ public actor EnvironmentManager {
         try Task.checkCancellation()
         if shuttingDown { throw CancellationError() }
         guard let args = prefetchArguments(for: backend.info, check: false) else {
-            throw InstallError(stage: .model, message: "The STT helper script is missing from this build.", logTail: [])
+            throw InstallError(stage: .model, message: "This service has no model to download.", logTail: [])
         }
         let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.huggingFace()))
         running[backend] = sub

@@ -277,7 +277,7 @@ def _busy_port(ctx: Ctx, backend: str, model: str | None, port: int, rep: Report
         code = child.wait(ctx.args.busy_bound)
         elapsed = time.monotonic() - t0
         if ev is not None:
-            errors += event_errors("serve", ev)
+            errors += event_errors("serve", ev, emitter="tts")
             if ev.get("event") != "error" or ev.get("code") != "EADDRINUSE":
                 errors.append(f"expected error{{code: EADDRINUSE}}, got {ev}")
         if code is None:
@@ -346,7 +346,7 @@ def _eof_during_startup(ctx: Ctx, backend: str, model: str | None, rep: Report) 
         time.sleep(0.2)
         events, bad = parse_json_lines("\n".join(child.lines))
         errors = [f"non-JSON stdout line: {b!r}" for b in bad]
-        errors += [e for ev in events for e in event_errors("serve", ev)]
+        errors += [e for ev in events for e in event_errors("serve", ev, emitter="tts")]
         reached = "ready" if any(e.get("event") == "ready" for e in events) else "loading"
         if code is None:
             errors.append(f"still running {ctx.args.stop_bound:.0f}s after stdin EOF")
@@ -463,7 +463,7 @@ def smoke_backend(ctx: Ctx, backend: str) -> Report:
         time.sleep(0.2)  # let the pump thread drain the last lines
         events, bad = parse_json_lines("\n".join(child.lines))
         errors = [f"non-JSON stdout line: {b!r}" for b in bad]
-        errors += [e for e2 in events for e in event_errors("serve", e2)]
+        errors += [e for e2 in events for e in event_errors("serve", e2, emitter="tts")]
         if [e["event"] for e in events] != ["ready"]:
             errors.append(f"stdout events {[e.get('event') for e in events]} (expected only ready)")
         if code is None:

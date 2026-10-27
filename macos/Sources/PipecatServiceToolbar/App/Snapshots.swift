@@ -52,7 +52,7 @@
             app.model(.dia).setPreviewState(
                 phase: .failed(.init(kind: .download, title: "Model download failed", message: "Couldn't reach the network.")))
             app.model(.appleSpeech).setPreviewState(
-                phase: .running, running: .init(pid: 4242, port: 9465, rate: 16000, model: "SpeechTranscriber", since: .now),
+                phase: .running, running: .init(pid: 4242, port: 9465, rate: 16000, model: ServiceInfo.appleSpeechModel, since: .now),
                 log: ["listening on 127.0.0.1:9465", "transcribed 3.2 s of audio in 0.41 s"])
             app.model(.whisper).setPreviewState(phase: .starting, environment: .ready(marker), startDetail: "starting whisper (model=mlx-community/whisper-large-v3-turbo)")
             app.model(.kyutai).approxDownloadBytes = 2_363_000_000
@@ -133,6 +133,22 @@
             ("detail-installing", { app in
                 busyState(app)
                 app.page = .detail(.pocketTTS, from: .catalog)
+            }),
+            ("running-external", { app in
+                busyState(app)
+                app.model(.tone).setPreviewState(
+                    phase: .external(Service.tone.info.port, ExternalInfo(backendName: "tone", rate: 24000)))
+                app.model(.kyutai).setPreviewState(
+                    phase: .external(Service.kyutai.info.port, ExternalInfo(backendName: "kyutai")))
+            }),
+            ("detail-external", { app in
+                busyState(app)
+                app.model(.phonon).setPreviewState(
+                    phase: .external(
+                        Service.phonon.info.port,
+                        ExternalInfo(
+                            backendName: "phonon", model: Service.phonon.info.expectedModel, rate: 24000)))
+                app.page = .detail(.phonon, from: .running)
             }),
             ("detail-port-busy", { app in
                 busyState(app)

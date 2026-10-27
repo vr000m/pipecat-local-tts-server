@@ -29,9 +29,9 @@ EXPECT = {"backend": "tone", "model": None, "host": "127.0.0.1", "port": 51234, 
 
 
 def test_valid_events_conform():
-    assert sc.event_errors("serve", READY) == []
+    assert sc.event_errors("serve", READY, emitter="tts") == []
     err = {"event": "error", "code": "EADDRINUSE", "message": "busy", "exc_type": "OSError"}
-    assert sc.event_errors("serve", err) == []
+    assert sc.event_errors("serve", err, emitter="tts") == []
     summary = {
         "event": "summary",
         "backend": "phonon",
@@ -40,7 +40,7 @@ def test_valid_events_conform():
         "size_bytes": 1,
         "quantized": False,
     }
-    assert sc.event_errors("prefetch", summary) == []
+    assert sc.event_errors("prefetch", summary, emitter="tts") == []
 
 
 @pytest.mark.parametrize(
@@ -59,7 +59,7 @@ def test_valid_events_conform():
     ],
 )
 def test_contract_violations_are_reported(event, needle):
-    errors = sc.event_errors("serve", event)
+    errors = sc.event_errors("serve", event, emitter="tts")
     assert any(needle in e for e in errors), errors
 
 
@@ -165,3 +165,30 @@ def test_canonical_ports_cover_the_operator_map():
     assert not sc.usable_smoke_port(9365, ports)
     assert not sc.usable_smoke_port(8080, ports)
     assert sc.usable_smoke_port(51234, ports)
+
+
+def test_error_codes_are_checked_against_the_named_emitter():
+    only_stt = {"event": "error", "code": "ModelInvalidError", "message": "x", "exc_type": "E"}
+    assert sc.event_errors("serve", only_stt, emitter="stt") == []
+    assert any("code" in e for e in sc.event_errors("serve", only_stt, emitter="tts"))
+    only_tts = {**only_stt, "code": "SocketPathConflict"}
+    assert any("code" in e for e in sc.event_errors("serve", only_tts, emitter="stt"))
+
+
+def test_the_emitter_is_required_no_union_default():
+    """A caller that forgets ``emitter=`` fails loudly instead of getting the looser
+    "either emitter's code" check (a TTS line with an STT-only code would pass it)."""
+    only_stt = {"event": "error", "code": "ModelInvalidError", "message": "x", "exc_type": "E"}
+    with pytest.raises(TypeError):
+        sc.event_errors("serve", only_stt)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        sc.known_error_codes(sc.load_contract())  # type: ignore[call-arg]
+
+
+def test_every_smoke_caller_names_its_emitter():
+    """The app-path smoke runs only the TTS emitter: every ``event_errors`` call in it says so."""
+    smoke = (sc.REPO / "tests" / "smoke" / "supervised_smoke.py").read_text()
+    calls = re.findall(r"event_errors\(([^)]*)\)", smoke)
+    assert calls, "the pattern sees the smoke's calls"
+    for args in calls:
+        assert 'emitter="tts"' in args, args

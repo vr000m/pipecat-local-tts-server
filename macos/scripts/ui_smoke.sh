@@ -13,6 +13,12 @@
 # 3. Quit: `quit app id` (applicationShouldTerminate -> shutdownAll) exits within
 #    the grace period and leaves no process the app started (uv, python, lsof...).
 # 4. SIGTERM: a second launch killed with SIGTERM also leaves no child behind.
+# 5. External: a tone server started OUT OF PROCESS on its canonical loopback port
+#    (8665) is adopted at launch (the bootstrap log line says `external(`) and is
+#    still alive after Quit. Skipped when 8665 is held, a tone LaunchAgent is loaded
+#    or the repo .venv cannot import tts_server. The script never starts or stops anything on 8965 or
+#    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
+#    read-only, at every launch.
 #
 # Not covered (needs Accessibility, see macos/README.md "Manual UI checklist"):
 # opening the panel, clicking Install/Start, and the port a started service opens.
@@ -29,14 +35,78 @@ QUIT_WAIT="${QUIT_WAIT:-20}"       # seconds for a quit to finish
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/toolbar-ui-smoke.XXXXXX")"
 LOG_PID=""
 APP_PID=""
+EXT_PID=""        # the out-of-process server this script started (step 5), nothing else
+EXT_LISTEN_PID="" # whatever pid listens on its port once it is up
+EXT_PORT=8665     # tone's canonical port (ServiceCatalog / justfile _resolve); not a real agent's
+EXT_MATCH=""      # the command line EXT_PID must still be running (set when it starts)
 
 pass() { printf '  \033[32mok\033[0m   %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; exit 1; }
 step() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 
+# True only while EXT_PID is still the server this script started: alive, a child of this
+# shell, and running the command line it was started with. `kill -0` alone is not proof:
+# once the child exits and the shell reaps it, the kernel can hand its pid to an unrelated
+# process. A read-only check (the start and "still running after Quit" assertions); it never
+# guards a signal, since the pid could change hands between the check and the kill.
+ext_is_ours() {
+    [[ -n "$EXT_PID" && -n "$EXT_MATCH" ]] || return 1
+    local ppid cmd
+    ppid="$(ps -o ppid= -p "$EXT_PID" 2>/dev/null | tr -d ' ' || true)"
+    cmd="$(ps -o command= -p "$EXT_PID" 2>/dev/null || true)"
+    [[ "$ppid" == "$$" && "$cmd" == *"$EXT_MATCH"* ]]
+}
+
+# The job number of this shell's background job whose pid is $1 (empty: none).
+job_of() {
+    jobs -l | awk -v pid="$1" '$2 == pid { gsub(/[^0-9]/, "", $1); print $1 }'
+}
+
+# True while this shell's background job whose pid is $1 is still running.
+job_running() {
+    jobs -l | awk -v pid="$1" '$2 == pid && $3 == "Running" { found = 1 } END { exit !found }'
+}
+
+# Send signal $1 to this shell's background job whose pid is $2, by job spec: the shell resolves
+# "%N" from its own job table and skips a process it has already reaped, so a pid the kernel has
+# since reused is never hit (a check-then-`kill $pid` can race that reuse). The job number is
+# looked up from the pid here, at signal time, never cached: the shell hands a reaped job's
+# number to the next job (bash 3.2 does), so a number saved earlier can name another job. Every
+# signal this script sends to a process it started goes through here.
+signal_job() {
+    local job
+    job="$(job_of "$2")"
+    [[ -n "$job" ]] || return 0
+    kill "-$1" "%$job" 2>/dev/null || true
+}
+
+# Stop this shell's background job whose pid is $1 and reap it before returning, so it cannot
+# outlive the step that started it: SIGTERM, up to 5s to exit, SIGKILL if it ignored SIGTERM,
+# then `wait` (bounded: the job has exited by then, and a pid that is not this shell's child
+# returns at once). Signals only through signal_job; nothing after `wait`.
+stop_job() {
+    signal_job TERM "$1"
+    for _ in $(seq 1 20); do job_running "$1" || break; sleep 0.25; done
+    signal_job KILL "$1"
+    wait "$1" 2>/dev/null || true
+}
+
+# Stop the server this script started (stop_job) and forget it.
+stop_ext() {
+    [[ -n "$EXT_PID" ]] || return 0
+    stop_job "$EXT_PID"
+    EXT_PID=""; EXT_LISTEN_PID=""
+}
+
 cleanup() {
-    [[ -n "$LOG_PID" ]] && kill "$LOG_PID" 2>/dev/null || true
-    [[ -n "$APP_PID" ]] && kill -9 "$APP_PID" 2>/dev/null || true
+    [[ -z "$LOG_PID" ]] || stop_job "$LOG_PID"
+    if [[ -n "$APP_PID" ]]; then
+        signal_job KILL "$APP_PID"
+        wait "$APP_PID" 2>/dev/null || true
+    fi
+    # Only the job this script started, through signal_job (never the lsof listener, never a
+    # pid, never a pattern kill).
+    stop_ext
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -91,7 +161,7 @@ launch() {
     while ((SECONDS < deadline)); do
         kill -0 "$APP_PID" 2>/dev/null || { cat "$WORK/stdout.log"; fail "the app exited during launch"; }
         SEEN="$SEEN $(descendants "$APP_PID")"
-        if grep -q "tools from" "$WORK/app.log" && [[ "$(grep -cE ': (notInstalled|installed|unavailable|running|installing)' "$WORK/app.log")" -gt 0 ]]; then
+        if grep -q "tools from" "$WORK/app.log" && [[ "$(grep -cE ': (notInstalled|installed|unavailable|running|installing|external\()' "$WORK/app.log")" -gt 0 ]]; then
             break
         fi
         sleep 0.5
@@ -121,7 +191,7 @@ assert_clean_exit() {
     local stray
     stray="$(pgrep -fl "$APP/Contents" || true)"
     [[ -z "$stray" ]] || fail "$how left processes from the bundle: $stray"
-    kill "$LOG_PID" 2>/dev/null || true
+    stop_job "$LOG_PID"
     LOG_PID=""
     local n
     n="$(echo "$SEEN" | tr ' ' '\n' | sort -u | grep -c . || true)"
@@ -134,18 +204,67 @@ launch
 kind="$(lsappinfo info -only ApplicationType "$APP_PID" 2>/dev/null || true)"
 [[ "$kind" == *UIElement* ]] || fail "not a menu bar (UIElement) app: ${kind:-not registered with LaunchServices}"
 pass "running as a UIElement app (pid $APP_PID)"
-pass "bootstrap finished: $(grep -o 'tools from [a-z]*' "$WORK/app.log" | head -1); $(grep -cE ': (notInstalled|installed|unavailable|running|installing)' "$WORK/app.log") service phase line(s)"
+pass "bootstrap finished: $(grep -o 'tools from [a-z]*' "$WORK/app.log" | head -1); $(grep -cE ': (notInstalled|installed|unavailable|running|installing|external\()' "$WORK/app.log") service phase line(s)"
 
 step "Quit (Apple Event, as the menu's Quit does)"
 osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
 quitter=$!
 assert_clean_exit "quit"
-kill "$quitter" 2>/dev/null || true
+stop_job "$quitter"
 
 # --- 4. SIGTERM ---------------------------------------------------------------
 step "Launch again, then SIGTERM"
 launch
-kill -TERM "$APP_PID"
+signal_job TERM "$APP_PID"
 assert_clean_exit "SIGTERM"
+
+# --- 5. External (out-of-process server) -------------------------------------
+# The script cannot open the panel or read its text, so External is read from the
+# phase line the bootstrap logs after its one discovery pass: `tone: external(8665, ...)`.
+step "External: a server started outside the app is adopted and survives Quit"
+REPO_ROOT="$(dirname "$MACOS_DIR")"
+EXT_PY="$REPO_ROOT/.venv/bin/python"
+if lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "  SKIP external: port $EXT_PORT is already held ($(lsof -nP -iTCP:"$EXT_PORT" -sTCP:LISTEN | awk 'NR==2{print $1" pid "$2}'))"
+elif launchctl print "gui/$(id -u)/pipecat.tts-server.tone" >/dev/null 2>&1; then
+    echo "  SKIP external: a pipecat.tts-server.tone LaunchAgent is loaded (it would race for $EXT_PORT)"
+elif [[ ! -x "$EXT_PY" ]] || ! "$EXT_PY" -c 'import tts_server' >/dev/null 2>&1; then
+    echo "  SKIP external: no usable $EXT_PY (run: uv sync --extra client)"
+else
+    EXT_MATCH="-m tts_server serve --backend tone --host 127.0.0.1 --port $EXT_PORT"
+    "$EXT_PY" -m tts_server serve --backend tone --host 127.0.0.1 --port "$EXT_PORT" >"$WORK/external.log" 2>&1 &
+    EXT_PID=$!
+    # Fail fast if the shell cannot see its own job (signal_job would then be a no-op).
+    [[ -n "$(job_of "$EXT_PID")" ]] || fail "the external tone server (pid $EXT_PID) is not in this shell's job table"
+    deadline=$((SECONDS + 20))
+    while ((SECONDS < deadline)); do
+        # Liveness only (no signal): until the child has exec'd python its command line is still bash's.
+        kill -0 "$EXT_PID" 2>/dev/null || { cat "$WORK/external.log"; fail "the external tone server exited at start"; }
+        # Accept the listener only if it is the process we started ($! is the python itself).
+        EXT_LISTEN_PID="$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+        [[ "$EXT_LISTEN_PID" == "$EXT_PID" ]] && ext_is_ours && break
+        EXT_LISTEN_PID=""
+        sleep 0.25
+    done
+    [[ -n "$EXT_LISTEN_PID" ]] || { cat "$WORK/external.log"; fail "the external tone server we started never listened on $EXT_PORT"; }
+    pass "external tone server up on 127.0.0.1:$EXT_PORT (pid $EXT_PID)"
+
+    launch
+    grep -qE "tone: external\($EXT_PORT" "$WORK/app.log" \
+        || { grep -E 'tone' "$WORK/app.log" | head -5; fail "bootstrap did not report tone as external($EXT_PORT"; }
+    pass "bootstrap adopted tone as External: $(grep -oE "tone: external\($EXT_PORT" "$WORK/app.log" | head -1)"
+
+    osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
+    quitter=$!
+    assert_clean_exit "quit with an external server"
+    stop_job "$quitter"
+    ext_is_ours || fail "Quit stopped the external server (pid $EXT_PID)"
+    [[ "$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)" == "$EXT_PID" ]] \
+        || fail "the server we started no longer listens on $EXT_PORT after Quit"
+    pass "external server (pid $EXT_PID) still running after Quit"
+
+    # Stop what this script started; cleanup() repeats it if we fail before here.
+    stop_ext
+fi
 
 step "UI smoke passed"

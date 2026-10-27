@@ -39,9 +39,12 @@ final class ServiceModel: Identifiable {
     private(set) var sttTryIt: STTTryItSession?
 
     @ObservationIgnored weak var app: AppModel?
+    /// The app's one hello prober (`AppModel.prober`), for the Start-path probe.
+    private let prober: any HelloProber
 
-    init(info: ServiceInfo) {
+    init(info: ServiceInfo, prober: any HelloProber) {
         self.info = info
+        self.prober = prober
         var dependencies = ServiceDependencies()
         dependencies.appleSpeechPhase = {
             switch await AppleSpeech.status() {
@@ -52,8 +55,9 @@ final class ServiceModel: Identifiable {
             }
         }
         dependencies.appleSpeechInstall = { progress in try await AppleSpeech.install(progress: progress) }
+        let nativeName = info.expectedBackendName  // what its hello reports
         dependencies.makeNativeServer = {
-            STTWebSocketServer(identity: .init(name: "apple_speech", model: "SpeechTranscriber")) { pcm, language in
+            STTWebSocketServer(identity: .init(name: nativeName, model: ServiceInfo.appleSpeechModel)) { pcm, language in
                 try await AppleSpeech.transcribe(pcm16: pcm, language: language)
             }
         }
@@ -63,7 +67,51 @@ final class ServiceModel: Identifiable {
 
     // MARK: - Derived
 
-    var isRunning: Bool { phase == .running }
+    /// A server answers: the app's own, or an External one (`ServiceCounts`).
+    var isRunning: Bool { ServiceCounts.isRunning(driver.state) }
+    /// Consecutive failed re-probes of an External server ("not responding" while below the threshold).
+    var externalFailures: Int { driver.state.externalFailures }
+    /// The External server missed a re-probe (`ExternalPresentation.isNotResponding`, Core).
+    var isExternalNotResponding: Bool { ExternalPresentation.isNotResponding(failures: externalFailures) }
+    /// The LaunchAgent label `PortProbe.owner` confirmed holds the External server's port
+    /// (pid matched); nil until looked up or when unconfirmed. Reset when the service leaves External.
+    private(set) var externalLaunchdLabel: String?
+    /// The row's status line for an External service (`ExternalPresentation`, Core).
+    var externalStatusLine: String {
+        guard case .external(let port, _) = phase else { return "" }
+        return ExternalPresentation.statusLine(
+            port: port, launchdLabel: externalLaunchdLabel, hasLaunchdFamily: info.launchdLabel != nil,
+            failures: externalFailures)
+    }
+    /// The source alone (label or `127.0.0.1:<port>`), for the detail view.
+    var externalSource: String {
+        guard case .external(let port, _) = phase else { return "" }
+        return ExternalPresentation.source(
+            port: port, launchdLabel: externalLaunchdLabel, hasLaunchdFamily: info.launchdLabel != nil)
+    }
+    /// The External row's actions, nil when the service is not External.
+    var externalActions: ExternalPresentation.Actions? { ExternalPresentation.Actions.forPhase(phase) }
+
+    /// Looks up, on every discovery pass, who holds an External server's port, to confirm the
+    /// LaunchAgent label. Read-only: `lsof` and `launchctl print`, never a signal. It runs
+    /// every pass (not once per adoption) so that a different holder answering the same hello,
+    /// or an agent that restarted under a new pid, never keeps the previous holder's label; an
+    /// unconfirmed lookup clears it. A cancelled lookup (Quit) changes nothing. When to look
+    /// up and whether the answer lands is `ExternalPresentation.OwnerLookup` (Core, tested).
+    func refreshExternalOwner() async {
+        typealias Lookup = ExternalPresentation.OwnerLookup
+        switch Lookup.step(for: driver.state, hasLaunchdFamily: info.launchdLabel != nil) {
+        case .clear:
+            externalLaunchdLabel = nil
+        case .lookUp(let port, let epoch):
+            // The driver's injected seam (default `PortProbe.owner`), as the Start-path lookup uses.
+            let portOwner = driver.dependencies.portOwner
+            let owner = await portOwner(port, service)
+            externalLaunchdLabel = Lookup.settle(
+                found: owner.launchdLabel, startedAt: epoch, cancelled: Task.isCancelled,
+                current: externalLaunchdLabel, in: driver.state)
+        }
+    }
     // The lifecycle's own reading of its state (Core, tested with the reducer).
     /// Started by the user: shown in the main menu.
     var isActive: Bool { driver.state.isActive }
@@ -72,7 +120,10 @@ final class ServiceModel: Identifiable {
     var isBusy: Bool { driver.state.isBusy }
 
     /// The Python services own an environment and model files that can be deleted.
-    var canDeleteModel: Bool { info.runtime.usesPython && isInstalled && phase != .removing }
+    /// An External row follows `ExternalPresentation.Actions.delete` (never: the server is not ours).
+    var canDeleteModel: Bool {
+        info.runtime.usesPython && isInstalled && phase != .removing && (externalActions?.delete ?? true)
+    }
 
     var installFraction: Double? { info.runtime == .appleSpeech ? assetProgress : download?.fraction }
     var diskBytes: Int64? { cache.map(\.sizeBytes).flatMap { $0 > 0 ? $0 : nil } }
@@ -124,18 +175,32 @@ extension ServiceModel: ServiceHost {
     func openTryIt(port: Int) {
         switch kind {
         case .tts: ttsTryIt = TryItSession(backend: service, port: port)
-        case .stt: sttTryIt = STTTryItSession(port: port)
+        // An External server gets the test clip but never live microphone audio (`Actions.microphone`).
+        case .stt: sttTryIt = STTTryItSession(port: port, allowsMicrophone: externalActions?.microphone ?? true)
         }
     }
 
     func detachTryIt() { ttsTryIt?.detach() }
 
+    /// Opens Try it on an External row on demand (it opens at adoption for no one).
+    /// A no-op while a session exists or the service is not External.
+    func requestTryIt() {
+        guard phase.isExternal, ttsTryIt == nil, sttTryIt == nil else { return }
+        driver.tryItRequested()
+    }
+
     /// The menu's "Test Voice" / "Test Transcription": runs the Try it check on this service.
     func runTest() async {
+        requestTryIt()
         switch kind {
         case .tts: await ttsTryIt?.speakTest(TryItSession.testLine(for: info))
         case .stt: await sttTryIt?.transcribeSample()
         }
+    }
+
+    /// The Start-path probe, through the app's one prober (the one discovery uses).
+    func probeExternal(port: Int) async -> ExternalProbe.Outcome {
+        await prober.probe(port: port)
     }
 
     func closeTryIt() {

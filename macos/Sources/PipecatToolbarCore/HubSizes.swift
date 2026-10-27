@@ -10,7 +10,7 @@ public struct HubSnapshot: Sendable, Equatable {
         /// `fnmatch` patterns, as `snapshot_download(allow_patterns=)` matches them
         /// (`*` also crosses `/`).
         case patterns([String])
-        /// The STT helper's filter: every file but top-level dotfiles, `*.md` and `.gitattributes`.
+        /// The STT filter (an approximation of what upstream `prefetch` fetches): every file but top-level dotfiles, `*.md` and `.gitattributes`.
         case allButDocs
 
         /// `mlx_audio.utils.DEFAULT_ALLOW_PATTERNS` (`tts_server.prefetch.DEFAULT_ALLOW_PATTERNS`).

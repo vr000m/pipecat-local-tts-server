@@ -6,7 +6,8 @@ public enum PortProbe {
     public struct Owner: Sendable, Equatable {
         public var pid: Int32?
         public var command: String?
-        /// Set when the matching `pipecat.tts-server.<backend>` launchd agent is loaded.
+        /// Set only when the family's launchd agent is loaded and its pid (from
+        /// `launchctl print`) is the pid `lsof` reports for the port: the agent holds the port.
         public var launchdLabel: String?
 
         public init(pid: Int32? = nil, command: String? = nil, launchdLabel: String? = nil) {
@@ -63,10 +64,29 @@ public enum PortProbe {
                 executable: URL(filePath: "/bin/launchctl"),
                 arguments: ["print", "gui/\(getuid())/\(label)"],
                 environment: ProcessEnvironment.base()))
-        if let result = await collect(launchctl), result.status == 0 {
-            owner.launchdLabel = label
+        if let result = await collect(launchctl) {
+            owner.launchdLabel = launchdLabel(
+                label, launchctlStatus: result.status, launchctlLines: result.stdout, lsofPid: owner.pid)
         }
         return owner
+    }
+
+    /// The agent's label, only when `launchctl print` succeeded and its pid is the one `lsof`
+    /// found holding the port. A loaded agent that does not hold the port (it is between
+    /// restarts, or something else took the port) must not be blamed.
+    static func launchdLabel(_ label: String, launchctlStatus: Int32, launchctlLines: [String], lsofPid: Int32?)
+        -> String?
+    {
+        guard launchctlStatus == 0, let lsofPid, launchctlPid(launchctlLines) == lsofPid else { return nil }
+        return label
+    }
+
+    /// The service's own `pid = N` line in `launchctl print` output: the first one at the
+    /// top level of the service block (a single tab of indent). A `pid =` nested deeper
+    /// belongs to another block and never stands in for it: no top-level pid is nil.
+    static func launchctlPid(_ lines: [String]) -> Int32? {
+        guard let top = lines.first(where: { $0.hasPrefix("\tpid = ") }) else { return nil }
+        return Int32(top.dropFirst("\tpid = ".count).trimmingCharacters(in: .whitespaces))
     }
 
     /// Runs `sub` to completion; cancelling the calling task stops it (SIGTERM,

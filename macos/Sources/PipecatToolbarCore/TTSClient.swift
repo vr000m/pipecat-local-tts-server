@@ -10,6 +10,8 @@ public struct ServerHello: Sendable, Equatable {
     public var voiceCount: Int
     public var maxTextChars: Int?
     public var languages: [String]
+    /// `protocol_version`; defaults to nil so memberwise callers need not pass it.
+    public var protocolVersion: String? = nil
 }
 
 /// A server -> client event, decoded from one JSON text frame (docs/protocol.md §5).
@@ -38,19 +40,19 @@ public enum TTSEvent: Sendable, Equatable {
         let previous = obj["previous_event_id"] as? String
         switch type {
         case "server.hello":
-            let audio = obj["audio"] as? [String: Any] ?? [:]
+            let frame = ServerHelloFrame.decode(object: obj)
             let caps = obj["capabilities"] as? [String: Any] ?? [:]
-            let backend = obj["backend"] as? [String: Any] ?? [:]
             return .hello(
                 ServerHello(
-                    backend: backend["name"] as? String ?? "",
-                    model: backend["model"] as? String,
-                    rate: audio["rate"] as? Int ?? 24000,
-                    channels: audio["channels"] as? Int ?? 1,
+                    backend: frame?.backendName ?? "",
+                    model: frame?.model,
+                    rate: frame?.rate ?? 24000,
+                    channels: (obj["audio"] as? [String: Any])?["channels"] as? Int ?? 1,
                     streaming: caps["streaming"] as? Bool ?? false,
                     voiceCount: caps["voice_count"] as? Int ?? 0,
                     maxTextChars: caps["max_text_chars"] as? Int,
-                    languages: caps["languages"] as? [String] ?? []))
+                    languages: caps["languages"] as? [String] ?? [],
+                    protocolVersion: frame?.protocolVersion))
         case "server.status":
             return .status(voices: obj["voices"] as? [String] ?? [], queueDepth: obj["queue_depth"] as? Int)
         case "input_text.committed":

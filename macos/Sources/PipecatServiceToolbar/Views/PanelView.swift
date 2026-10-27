@@ -33,6 +33,11 @@ struct PanelView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .clipped()
         .animation(.snappy(duration: 0.28), value: app.page)
+        // Discovery re-probes only while the panel is visible. UNVERIFIED: that a
+        // `MenuBarExtra(.window)` content view gets both on every open and close
+        // (a person must confirm; Phase 3 re-checks by hand).
+        .onAppear { app.panelVisibilityChanged(true) }
+        .onDisappear { app.panelVisibilityChanged(false) }
     }
 }
 
@@ -203,6 +208,11 @@ struct RunningRow: View {
                 Text(verbatim: "127.0.0.1:\(model.port)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+            case .external:
+                StatusDot(color: model.isExternalNotResponding ? .orange : .green)
+                Text(verbatim: model.externalStatusLine)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
             case .starting:
                 StatusDot(color: .orange)
                 Text(model.info.needsModelDownload ? "Loading model…" : "Starting…")
@@ -227,6 +237,17 @@ struct RunningRow: View {
             HStack(spacing: 2) {
                 CopyButton(text: "ws://\(ServiceCatalog.host):\(model.port)/", help: "Copy URL")
                 IconButton(systemImage: "stop.fill", help: "Stop") { model.stop() }
+            }
+        case .external(let port, _):
+            // Observe and copy only (`ExternalPresentation.Actions`): the app never stops a server it did not start.
+            let actions = model.externalActions
+            HStack(spacing: 2) {
+                if actions?.copyURL == true {
+                    CopyButton(text: "ws://\(ServiceCatalog.host):\(port)/", help: "Copy URL")
+                }
+                if actions?.stop == true {
+                    IconButton(systemImage: "stop.fill", help: "Stop") { model.stop() }
+                }
             }
         case .starting, .stopping:
             ProgressView().controlSize(.small).frame(width: 44)
@@ -498,6 +519,9 @@ struct CatalogSubtitle: View {
             case .running:
                 StatusDot(color: .green)
                 Text(verbatim: "Running on :\(model.port)").foregroundStyle(.secondary)
+            case .external:
+                StatusDot(color: model.isExternalNotResponding ? .orange : .green)
+                Text(verbatim: model.externalStatusLine).foregroundStyle(.secondary)
             case .stopping:
                 Text("Stopping…").foregroundStyle(.secondary)
             case .removing:
@@ -558,6 +582,11 @@ struct CatalogAction: View {
             Button("Start") { model.start() }.buttonStyle(PillButtonStyle(tint: .green, prominent: true))
         case .running:
             Button("Stop") { model.stop() }.buttonStyle(PillButtonStyle(tint: .secondary))
+        case .external:
+            // `ExternalPresentation.Actions`: no Get or Install for a server the app did not start.
+            if model.externalActions?.get == true || model.externalActions?.install == true {
+                Button("Get") { model.install() }.buttonStyle(PillButtonStyle())
+            }
         case .failed(let failure):
             switch failure.kind {
             case .install, .download:
@@ -578,13 +607,21 @@ struct ServiceMenuItems: View {
 
     var body: some View {
         let info = model.info
-        Button("Copy URL") { Pasteboard.copy("ws://\(ServiceCatalog.host):\(model.port)/") }
-        Button("Copy Pipecat Service") { Pasteboard.copy(info.pipecatService(port: model.port)) }
-        Button("Copy Environment Variables") { Pasteboard.copy(info.environment(port: model.port)) }
+        // An External row offers what `ExternalPresentation.Actions` allows; every other row all of them.
+        let external = model.externalActions
+        if external?.copyURL ?? true {
+            Button("Copy URL") { Pasteboard.copy("ws://\(ServiceCatalog.host):\(model.port)/") }
+        }
+        if external?.copyPipecatService ?? true {
+            Button("Copy Pipecat Service") { Pasteboard.copy(info.pipecatService(port: model.port)) }
+        }
+        if external?.copyEnvironment ?? true {
+            Button("Copy Environment Variables") { Pasteboard.copy(info.environment(port: model.port)) }
+        }
         Divider()
         // Disabled while the app can't run them (`AppPhase.acceptsServiceActions`).
         action.disabled(!model.acceptsActions)
-        if model.isRunning {
+        if model.isRunning, external?.tryIt ?? true {
             // Opens the detail view, which shows the result (playing, transcript, or error).
             Button(model.kind == .tts ? "Test Voice" : "Test Transcription") {
                 app.show(model.service)
@@ -604,6 +641,8 @@ struct ServiceMenuItems: View {
         switch model.phase {
         case .running:
             Button("Stop") { model.stop() }
+        case .external:
+            if model.externalActions?.stop == true { Button("Stop") { model.stop() } }
         case .installed:
             Button("Start") { model.start() }
         case .notInstalled, .needsModel:
@@ -691,7 +730,7 @@ struct FooterBar: View {
         }
     }
 
-    private var quitTitle: String { app.running.isEmpty ? "Quit" : "Stop All & Quit" }
+    private var quitTitle: String { app.quitTitle }
 }
 
 struct SetupBanner: View {

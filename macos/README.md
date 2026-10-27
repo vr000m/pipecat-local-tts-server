@@ -5,7 +5,7 @@
 A native macOS menu bar app that downloads speech models (text to speech and
 speech to text) and serves each one on a fixed loopback port. Point a Pipecat
 app at the port and it uses the model with no cloud API. It has no Dock icon.
-Servers stop when the app quits, even if it crashes. Quitting also cancels running installs and downloads.
+Servers the app started stop when it quits, even if it crashes; servers it didn't start are left running. Quitting also cancels running installs and downloads.
 
 ## Quickstart
 
@@ -30,6 +30,8 @@ then **Start**.
 | **Apple Speech** (default STT) | STT | 9465 | SpeechAnalyzer (built in) | macOS |
 | Whisper | STT | 9565 | `mlx-community/whisper-large-v3-turbo` | MIT |
 | Kyutai STT | STT | 9665 | `kyutai/stt-1b-en_fr-mlx` | CC-BY-4.0 |
+| Parakeet | STT | 9765 | `mlx-community/parakeet-tdt-0.6b-v3` | CC-BY-4.0 |
+| Nemotron | STT | 9865 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | Custom licence (`license:other`) |
 | **Kokoro** (default TTS) | TTS | 8765 | `mlx-community/Kokoro-82M-bf16` | Apache-2.0 |
 | Phonon | TTS | 9365 | `gradium/phonon-31m-en` | Apache-2.0 |
 | Pocket TTS | TTS | 8965 | `mlx-community/pocket-tts` | CC-BY-4.0 |
@@ -51,17 +53,48 @@ can run side by side. Variants share their family's Python environment.
 
 TTS services speak this repo's protocol (`tts_server`). STT services speak the
 protocol of [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server).
-Any client of either works unchanged. TTS ports match the `just tts-install`
-launchd agents, so run one or the other, not both.
+Any client of either works unchanged. The ports match the `just tts-install`
+and `just stt-*` launchd agents; see [Servers you didn't start](#servers-you-didnt-start)
+for running both.
+
+## Servers you didn't start
+
+- **Adopt first.** The app probes each catalog port (loopback TCP only) with a
+  `server.hello`. A running server whose backend and model match a catalog entry
+  is adopted and shown as **External**; the app starts its own only when
+  nothing answers. Discovery runs once at launch, then every 15 s while the panel
+  is open.
+- **Ownership.** The app only signals, stops or deletes processes it started.
+  An External service has no per-service Stop, Delete, Get or Install; it offers
+  Try it (for STT, the test clip only, never the microphone) and the Copy items.
+  Reset is app-wide: it deletes only the app's own `envs` directory and layout
+  file, never signals or stops an External server, and is not blocked by one.
+  **Quit leaves it running**
+  (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
+- **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the
+  same ports, so a running agent whose hello matches shows as External. If
+  whatever holds the port does not identify as that service (a different
+  backend or model, no hello, or a token), Start reports the port busy, naming
+  the holder when `launchctl` confirms it (the agent's label).
+- **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
+  server that needs a bearer token is not adopted (Start then reports the port busy
+  because it wants a token); the app stores no token.
+- **Support floor.** STT starts through `pipecat-local-stt-server==0.5.0`'s own CLI
+  (`python -m stt_server serve --supervised`). An STT agent on an older version
+  is still adopted by its hello, but an app-started STT server needs 0.5.0.
+
 
 ## Menu bar
 
-- **Running**: the main menu lists only started services, grouped into Text
-  to Speech and Speech to Text, each with its address, a copy button and Stop.
+- **Running**: the main menu lists the services the app started and the External
+  ones it adopted, grouped into Text to Speech and Speech to Text, each with its
+  address and a copy button; Stop only on the app's own (External rows show
+  `External · <agent label or address>`).
 - **Add Models**: every model, by type, with Get, Start and download progress.
   Python and model weights are fetched on first Get; nothing is bundled.
 - **Right-click** any service: **Copy URL**, **Copy Pipecat Service**,
-  **Copy Environment Variables**, Start/Stop, **Delete Model…**. Deleting
+  **Copy Environment Variables**, Start/Stop, **Delete Model…** (an External
+  service gets the Copy items, Test and Show Details only). Deleting
   removes the model's Python environment and, unless another installed variant
   still uses them, its weights. The detail page's **Delete…** offers **Keep
   Model Files** or **Delete Everything**. Weights live in the shared Hugging
@@ -69,7 +102,8 @@ launchd agents, so run one or the other, not both.
   downloads them again after a delete.
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
-  microphone) and see whether the transcript matches its sentence.
+  microphone) and see whether the transcript matches its sentence. An External
+  STT server gets the clip only: the app never sends it live microphone audio.
   Right-click a running service for **Test Voice** (speaks a line naming the
   model) or **Test Transcription** (the clip); both open the details view,
   which shows the result.
@@ -80,8 +114,10 @@ launchd agents, so run one or the other, not both.
   check. It is disabled while a check runs.
 - **Reset**: when environments from an incompatible app version are found, a
   banner offers Reset, which deletes every Python environment (not model
-  weights) and checks the services again. It is refused while a service runs,
-  installs or is being deleted. While Reset or the launch check runs, the
+  weights) and checks the services again. It is refused while a server the app
+  started runs, or a service installs or is being deleted; an External server
+  does not block it (Reset deletes only the app's own environments and never
+  touches that server). While Reset or the launch check runs, the
   Python services' Get, Start and Delete are disabled.
 
 ## Use a service from Pipecat
@@ -114,12 +150,19 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
 - **TTS**: `uv pip install "pipecat-local-tts-server[<backend>] @ <bundled wheel>"`,
   pinned to `uv.lock`, then `python -m tts_server prefetch` and
   `serve --supervised`.
-- **Whisper, Kyutai**: PyPI packages hash-pinned to the last transitive
-  dependency (`constraints/stt-<engine>.txt`, `uv pip install --require-hashes`;
-  a bundled app missing that file refuses the install rather than resolve
-  unpinned) and model weights pinned to a commit, run by the bundled
-  `Helper/pipecat_app_helper.py`. Kyutai runs as a `moshi_mlx` backend inside
-  `stt_server`.
+- **Whisper, Kyutai, Parakeet, Nemotron**: PyPI packages hash-pinned to the last
+  transitive dependency (`constraints/stt-<engine>.txt`, `uv pip install
+  --require-hashes`; a bundled app missing that file refuses the install rather
+  than resolve unpinned), run by the upstream CLI (`python -m stt_server prefetch`
+  and `serve --supervised`). The four default STT models (Whisper large-v3-turbo,
+  Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.5.0
+  itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
+  no revision flag (there is none), only `--model <repo>`: a model other than a pinned
+  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
+  `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
+  it the server exits with `BackendStartError: FFmpeg is not installed or not in
+  your PATH`.
 - **Apple Speech**: SpeechAnalyzer in the app process, behind a Swift
   WebSocket server that speaks the same STT protocol.
 - **Supervision**: every server prints a JSON `ready` line and exits when the
@@ -157,6 +200,10 @@ are reserved per client, so the bundled app's install does not count). Once:
 `just app-smoke` (`scripts/ui_smoke.sh`) needs no Accessibility or Screen Recording
 grant, so it cannot open the panel or click. It launches the app with your real
 support and log folders (installing nothing) and refuses while another copy runs.
+Its last step starts a tone server outside the app on 8665, checks the bootstrap
+log reports it as External, and checks it is still running after Quit; it skips
+that step when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
+the repo `.venv` cannot import `tts_server`.
 Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
 
 1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.
@@ -190,7 +237,7 @@ target (`ServiceLifecycleTests`, `ServiceDriverTests`, `AppLifecycleTests`). Dow
 `uv run pytest tests/test_macos_catalog_drift.py` fails until they match.
 
 Unbundled runs find their tools through `PIPECAT_TOOLBAR_UV`, `PIPECAT_TOOLBAR_WHEEL`,
-`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_HELPER`, `PIPECAT_TOOLBAR_STT_CONSTRAINTS`
+`PIPECAT_TOOLBAR_CONSTRAINTS`, `PIPECAT_TOOLBAR_STT_CONSTRAINTS`
 and `PIPECAT_TOOLBAR_REPO` (see
 [Architecture](docs/architecture.md#development-overrides)); a built app uses its bundle.
 
@@ -201,8 +248,21 @@ constraints (network needed; `tests/test_supervised_contract.py` fails until you
 uv run python macos/scripts/compile_stt_constraints.py   # writes macos/constraints/stt-<engine>.txt
 ```
 
-To move an STT model pin, update `MODEL_REVISIONS` in `Helper/pipecat_app_helper.py`
-with the repo's commit sha (`https://huggingface.co/api/models/<repo>` → `sha`).
+When `ServiceCatalog.sttServerRequirement` moves, also re-record
+`tests/fixtures/stt_server_<version>_source.txt` from the new tag (the lean tests fail until
+its release line names the new version), then check it against that release's real source;
+no CI job installs the STT server, so this check is opt-in:
+
+```bash
+# a directory holding stt_server/ and pipecat_local_stt_server-<version>.dist-info
+# (a site-packages, or the app's uv cache entry)
+PIPECAT_STT_SERVER_SITE=<dir> uv run pytest tests/test_supervised_contract.py -k verbatim
+```
+
+STT model weights are pinned by upstream, not by the app (see How it works): the
+default models' commits live in `pipecat-local-stt-server`'s `PINNED_REVISIONS`, so moving
+one means a new STT release, then bumping `ServiceCatalog.sttServerRequirement` and
+regenerating the constraints. Other STT models follow `main`.
 
 Build knobs (environment variables read by `macos/scripts/`):
 

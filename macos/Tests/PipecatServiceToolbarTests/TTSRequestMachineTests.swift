@@ -552,8 +552,21 @@ struct World {
     /// the machine is idle and the server's slot is free (so Stop alone freed
     /// it: invariant 2), every request has its one outcome (4), and a new
     /// request then plays to the end.
+    ///
+    /// Each batch is seconds of synchronous CPU work with no suspension point, so it runs on a
+    /// low-priority GCD thread, not the Swift concurrency cooperative pool: there it held a pool
+    /// thread for its whole run, and the batches together held every thread of a small CI
+    /// runner's pool (one per core), stalling every other test's timers and polls for seconds.
     @Test(arguments: 0..<8)
-    func invariantsHoldForRandomInterleavings(batch: Int) {
+    func invariantsHoldForRandomInterleavings(batch: Int) async {
+        let failure = await withCheckedContinuation { (done: CheckedContinuation<String?, Never>) in
+            DispatchQueue.global(qos: .utility).async { done.resume(returning: Self.firstViolation(batch: batch)) }
+        }
+        if let failure { Issue.record("\(failure)") }
+    }
+
+    /// The first violation of batch `batch`'s seeds, as "seed N: what" (nil: none).
+    static func firstViolation(batch: Int) -> String? {
         for seed in UInt64(batch * 1500)..<UInt64(batch * 1500 + 1500) {
             var rng = SeededRNG(state: seed)
             var world = World()
@@ -571,11 +584,9 @@ struct World {
             world.drain(synthesis: true)
             if world.completed.last != id { world.violate("the next request did not complete: \(world.machine.phase)") }
 
-            if let first = world.violations.first {
-                Issue.record("seed \(seed): \(first)")
-                return
-            }
+            if let first = world.violations.first { return "seed \(seed): \(first)" }
         }
+        return nil
     }
 }
 

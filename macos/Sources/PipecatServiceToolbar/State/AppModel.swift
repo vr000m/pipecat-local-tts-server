@@ -33,6 +33,10 @@ final class AppModel {
     @ObservationIgnored private var sizes: Task<Void, Never>?
     /// The quit shutdown, shared by every quit request.
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
+    /// Finds servers already running on the catalog ports (one pass at bootstrap, on panel open and every 15 s).
+    @ObservationIgnored private(set) lazy var discovery = ExternalDiscovery(app: self, prober: prober)
+    /// The one hello prober: discovery's passes and every service's Start-path probe use it.
+    @ObservationIgnored let prober: any HelloProber
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
@@ -41,9 +45,10 @@ final class AppModel {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
     }
 
-    init(paths: AppPaths = .standard()) {
+    init(paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe()) {
         self.paths = paths
-        services = Service.allCases.map { ServiceModel(info: $0.info) }
+        self.prober = prober
+        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober) }
         for model in services { model.app = self }
     }
 
@@ -75,14 +80,16 @@ final class AppModel {
 
     /// Services the user started (running, starting, stopping or failed at runtime).
     func active(_ kind: ServiceKind) -> [ServiceModel] { services.filter { $0.kind == kind && $0.isActive } }
-    var anyActive: Bool { services.contains(where: \.isActive) }
+    /// The menu's counting (`ServiceCounts`, Core): External services count as running.
+    var counts: ServiceCounts { ServiceCounts(services.map { $0.driver.state }) }
+    var anyActive: Bool { counts.active > 0 }
 
     /// Installed (or downloading) services that aren't running: what the main
-    /// menu offers to start when nothing is running.
+    /// menu offers to start when nothing is running (`ServiceCounts.isStartable`, Core).
     func startable(_ kind: ServiceKind) -> [ServiceModel] {
-        services.filter { $0.kind == kind && !$0.isActive && ($0.isInstalled || $0.isInstalling) }
+        services.filter { $0.kind == kind && ServiceCounts.isStartable($0.driver.state) }
     }
-    var anyStartable: Bool { ServiceKind.allCases.contains { !startable($0).isEmpty } }
+    var anyStartable: Bool { counts.startable > 0 }
     var running: [ServiceModel] { services.filter(\.isRunning) }
 
     func installed(_ kind: ServiceKind) -> [ServiceModel] {
@@ -93,9 +100,7 @@ final class AppModel {
         services.filter { $0.kind == kind && !$0.isInstalled && !$0.isActive }
     }
 
-    var anyInstalling: Bool {
-        services.contains { if case .installing = $0.phase { true } else { false } }
-    }
+    var anyInstalling: Bool { counts.installing > 0 }
 
     /// Nothing known yet, or a bootstrap / Reset re-reads it.
     var bootstrapping: Bool { phase.isChecking }
@@ -103,20 +108,26 @@ final class AppModel {
     var canRetryBootstrap: Bool { phase.canRetryBootstrap }
 
     var summary: String {
-        if bootstrapping { return "Checking services…" }
-        let runningCount = running.count
-        let installedCount = services.filter(\.isInstalled).count
-        switch (runningCount, installedCount) {
-        case (0, 0): return "Add a model to get started"
-        case (0, _): return "Nothing running · \(installedCount) installed"
-        case (1, _): return "1 service running"
-        default: return "\(runningCount) services running"
-        }
+        counts.summary(bootstrapping: bootstrapping)
     }
 
     var menuBarBadge: MenuBarArt.Badge {
-        if anyInstalling { return .installing }
-        return running.isEmpty ? .none : .running
+        switch counts.badge {
+        case .installing: .installing
+        case .running: .running
+        case .none: .none
+        }
+    }
+
+    /// The Stop-and-Quit title: only servers the app started are stopped.
+    var quitTitle: String { counts.quitTitle }
+
+    /// The panel opened or closed (`PanelView.onAppear` / `onDisappear`): discovery runs a
+    /// pass now and every 15 s while it is open.
+    func panelVisibilityChanged(_ visible: Bool) {
+        guard phase != .shuttingDown else { return }
+        Log.app.info("panel visible: \(visible, privacy: .public)")
+        discovery.setPanelVisible(visible)
     }
 
     // MARK: - Lifecycle
@@ -133,6 +144,9 @@ final class AppModel {
                 manager = nil
                 job = Task { await runReset(old: old) }
             case .shutdown:
+                // In this turn, before the shutdown task runs: a probe or read continuation
+                // already queued on the main actor must not launch a server after Quit.
+                for model in services { model.driver.beginQuit() }
                 shutdownTask = Task { await runShutdown() }
             }
         }
@@ -169,6 +183,9 @@ final class AppModel {
                 group.addTask { await model.refresh() }
             }
         }
+        // The one discovery pass at launch (before the panel is ever opened), so the
+        // phase lines below show a server that was already running as External.
+        await discovery.runPass()
         for model in services {
             Log.app.info("\(model.service.rawValue, privacy: .public): \(String(describing: model.phase), privacy: .public)")
         }
@@ -210,12 +227,16 @@ final class AppModel {
     }
 
     private func runShutdown() async {
+        discovery.stop()
         sizes?.cancel()
         let manager = self.manager
         await withTaskGroup(of: Void.self) { group in
             for model in services {
                 group.addTask { await model.shutdown() }
             }
+            // The discovery pass `stop()` cancelled, with its probes and owner lookups.
+            let discovery = self.discovery
+            group.addTask { await discovery.drain() }
             let processes = bootstrapProcesses
             group.addTask { await processes.shutdown() }
             if let manager {
@@ -231,7 +252,7 @@ final class AppModel {
     /// (`AppPhase.allowsReset`): it deletes the environments and swaps the manager.
     var canReset: Bool { phase.allowsReset(servicesBusy: servicesBusy) }
 
-    private var servicesBusy: Bool { services.contains { $0.driver.state.blocksReset } }
+    private var servicesBusy: Bool { counts.blocksReset }
 
     /// Whether `model`'s Get / Start / Delete can run now (`AppPhase.acceptsServiceActions`):
     /// the views disable them otherwise, so a Start during Reset can't fail on the missing manager.
