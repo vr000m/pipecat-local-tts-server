@@ -910,6 +910,30 @@ import Testing
         #expect(!driver.state.phase.isExternal && driver.state.server == nil, "\(driver.state.phase)")
     }
 
+    /// Quit sets the flag in its own turn (`beginQuit`, before the asynchronous `quit()` runs): a
+    /// hello probe that then answers `.unreachable` (nothing listens) launches nothing.
+    @Test func aProbeAnswerAfterBeginQuitLaunchesNothing() async {
+        let host = FakeHost()
+        let started = Flag()
+        let release = Flag()
+        host.externalHandler = { _ in
+            started.value = true
+            while !release.value { try? await Task.sleep(for: .milliseconds(5)) }
+            return .unreachable
+        }
+        let processes = Processes([])
+        let driver = busyDriver(host, processes: processes)
+        await driver.refresh()
+        driver.start()
+        await until { started.value }
+        #expect(started.value && driver.state.phase == .starting)
+        driver.beginQuit()
+        release.value = true
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(processes.launches == 0, "a probe answer after Quit began launched a server")
+        #expect(driver.state.server == nil, "\(driver.state.phase)")
+    }
+
     // MARK: Quit leaves External services alone
 
     /// An External service next to one the app started: Quit stops only ours.

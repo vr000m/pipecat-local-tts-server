@@ -493,7 +493,10 @@ extension LifecycleState {
     /// - This event entered `.failed`: dropped, so its answer can't replace the failure before
     ///   it is seen; Dismiss issues its own read (`dismissFailure`). A read orphaned while the
     ///   failure was already shown (Dismiss's, a bootstrap's, Reset's) is issued again: it was
-    ///   issued to replace the failure, and `refreshed` lets it.
+    ///   issued to replace the failure, and `refreshed` lets it. The one failure that can be
+    ///   re-entered with an equal value is a retry's `launchFailed` (Start from `.failed` keeps the
+    ///   phase until the launch answers): that event would change nothing here, so it drops the
+    ///   read in flight itself (`apply`), as entering the failure would.
     /// - `.external` is the exception: live work with no re-reading end until the server is
     ///   lost, whose `isInstalled` reads what a read records (`requested`, the environment).
     ///   So an orphaned read is issued again, going External issues one (`adopt`), and a read
@@ -853,6 +856,10 @@ public enum ServiceLifecycle {
         case .launchFailed(let message):
             guard !s.phase.isExternal else { return [] }
             s.phase = .failed(ServiceFailure(kind: .startup(code: nil), title: "Couldn't start", message: message))
+            // This failure is entered even when it equals the one a retry started from (no value
+            // changes, so rule 4 would not see it): the read in flight is dropped, as there.
+            s.reading = nil
+            s.startAfterRead = false
             return []
 
         case .nativeLaunched(let id):

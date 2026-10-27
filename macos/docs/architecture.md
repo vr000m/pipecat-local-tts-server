@@ -151,11 +151,13 @@ guard rejects it (no change, no effect). It advances before the event runs, so
 the work it issues is tagged with the new epoch and any older read is stale:
 a second refresh, a sibling's change (`environmentChanged`), Start, Stop, Delete
 or an install each invalidate the read in flight. A read orphaned that way is
-dropped when `LifecycleState.dropsOrphanedRead(after:)` holds (its doc comment is
-the one rule: live work owning the phase, `hasLiveWork`, whose every end re-reads
-or shows a failure, a completed Stop included; or the event that entered `.failed`,
-whose failure only Dismiss's own read replaces), and issued again otherwise (a read
-orphaned while a failure was already shown, such as Dismiss's, is issued again).
+dropped when `LifecycleState.dropsOrphanedRead(after:)` holds, and issued again
+otherwise; its doc comment is the one statement of the rule. In short: live work
+owning the phase (`hasLiveWork`, every end of which re-reads or shows a failure,
+a completed Stop included) or the event that entered `.failed` (a retry's equal
+`launchFailed` included) drops it, so a failure is replaced only by a read issued
+while it is shown (Dismiss's, a bootstrap's or Reset's), never by the one its
+failing event orphaned.
 `.external` is the exception: it counts as live work but has no end that re-reads
 until the server is lost, and its `isInstalled` reads the `requested` and
 environment the read records. So every transition into External issues a read
@@ -168,9 +170,7 @@ never moves the External phase; it never carries a start, and staying External
 (a re-probe's found) issues none.
 A current read re-reads the environment but moves the phase only when nothing
 owns it, so Reset, Try Again or a sibling's refresh never hides a running server
-or undoes a Delete. A `.failed` phase is replaced only by a read issued while it
-is shown (Dismiss, a bootstrap or Reset), never by the one its failing event
-orphaned (`dropsOrphanedRead(after:)`). A port probe lives only while the phase is `starting` with
+or undoes a Delete (nor a failure, as above). A port probe lives only while the phase is `starting` with
 no server, so a launch ends it and its late answer can't fail the server; Cancel
 during it drops it and re-reads the phase. A probe that ends any other way than
 its own answer (Stop, a launch, a removal, a second Start) is cancelled
@@ -214,7 +214,9 @@ Quit is accepted from every phase but `shuttingDown`: it always runs the full
 shutdown (every service's, the bootstrap's subprocesses, the environment
 manager's installs and cache probes), even when no service is busy, then waits
 for the job in flight; after quit no job's end moves the phase or starts
-another. Each service's part starts with `ServiceDriver.quit()`, after which no
+another. Each service's part starts with `ServiceDriver.quit()`; the app sets its
+`quitting` flag (`beginQuit()`) already in the Quit turn, before the shutdown task
+runs, so a probe answer queued meanwhile launches nothing. From then on no
 read is issued or lands and no intent starts work, so a refresh the bootstrap
 issued late (or one in flight) can't attach an Apple Speech install the
 shutdown already passed. The download-size lookup starts only from a bootstrap

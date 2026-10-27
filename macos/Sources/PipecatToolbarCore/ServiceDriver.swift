@@ -59,7 +59,8 @@ public protocol ServiceHost: AnyObject {
     func closeTryIt()
 }
 
-/// Every seam the driver runs effects through; the defaults are the real ones.
+/// The driver's process, port and clock seams; the defaults are the real ones. The hello probe
+/// is the one seam on `ServiceHost` instead (`probeExternal`: the app's shared prober).
 public struct ServiceDependencies: Sendable {
     public var isPortFree: @Sendable (Int) -> Bool = { PortProbe.isFree($0) }
     public var portOwner: @Sendable (Int, Service) async -> PortProbe.Owner = { await PortProbe.owner(of: $0, backend: $1) }
@@ -173,9 +174,11 @@ public final class ServiceDriver {
     }
 
     /// The read issued under `epoch`: every result carries it. After quit
-    /// began, none starts and none lands.
+    /// began, none starts and none lands. One already stale when it runs (a later event
+    /// moved the epoch: Start right after a completed Stop) does not start its slow cache
+    /// probe; its results would be dropped anyway (`ServiceLifecycle.isCurrent`).
     private func read(epoch: Int) async {
-        guard !quitting else { return }
+        guard !quitting, epoch == state.epoch else { return }
         if info.runtime == .appleSpeech {
             let phase = await dependencies.appleSpeechPhase()
             guard !quitting else { return }
@@ -259,9 +262,13 @@ public final class ServiceDriver {
 
     /// App quit: from here on nothing new starts (see `quitting`), then `shutdown()`.
     public func quit() async {
-        quitting = true
+        beginQuit()
         await shutdown()
     }
+
+    /// Sets `quitting` now, before the asynchronous `quit()` runs: the app calls it in the same
+    /// main-actor turn as Quit, so a probe or read continuation already queued can't start work.
+    public func beginQuit() { quitting = true }
 
     public func dismissFailure() { dispatch(.dismissFailure) }
 

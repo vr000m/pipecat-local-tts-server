@@ -144,6 +144,9 @@ final class AppModel {
                 manager = nil
                 job = Task { await runReset(old: old) }
             case .shutdown:
+                // In this turn, before the shutdown task runs: a probe or read continuation
+                // already queued on the main actor must not launch a server after Quit.
+                for model in services { model.driver.beginQuit() }
                 shutdownTask = Task { await runShutdown() }
             }
         }

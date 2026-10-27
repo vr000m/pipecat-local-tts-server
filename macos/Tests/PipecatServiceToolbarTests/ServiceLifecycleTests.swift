@@ -1056,6 +1056,122 @@ import Testing
         #expect(s.phase == .installed, "the re-issued read did not replace the failure")
     }
 
+    /// A retry that fails again with the very same failure value still entered that failure: Start
+    /// from `.failed` re-issues the read in flight (the launch has not answered yet), and the
+    /// identical `launchFailed` (no value changes) drops it, so its answer can't replace the new
+    /// failure unseen.
+    @Test func aRetryFailingIdenticallyDropsTheReadInFlight() {
+        let same = ServiceFailure(kind: .startup(code: nil), title: "Couldn't start", message: "no")
+        var s = Self.state(.failed(same), server: nil)
+        _ = Self.issueRead(&s)
+        let started = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        #expect(started == [.launch(port: 8665), .refresh(epoch: s.epoch)], "\(started)")
+        let orphaned = s.epoch
+        let failed = ServiceLifecycle.reduce(&s, .launchFailed("no"))
+        #expect(s.phase == .failed(same), "\(s.phase)")
+        #expect(!failed.contains { if case .refresh = $0 { true } else { false } }, "\(failed)")
+        #expect(s.reading == nil && !s.startAfterRead, "the read in flight was kept")
+        let before = s
+        let late = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: orphaned))
+        #expect(late.isEmpty && s == before && s.phase == .failed(same), "the orphaned answer replaced the new failure")
+    }
+
+    /// The premise of `dropsOrphanedRead(after:)`: every end of live work re-reads or shows a
+    /// failure. Over the phase table (plus the probe, removal and native owner slots) x every event,
+    /// any applied event that takes a state with live work (not External) to one without must
+    /// issue a read or leave `.failed`. Quit's ends are the named exceptions (`isQuitEnd`).
+    @Test func everyEndOfLiveWorkRereadsOrFails() {
+        var starts: [(String, LifecycleState)] = []
+        for info in [Service.tone.info, Service.appleSpeech.info] {
+            for phase in Self.phases where !phase.isExternal {
+                for server in [Self.current, nil] as [ServerID?] {
+                    for stopping in [false, true] {
+                        for quitting in [false, true] {
+                            for installing in [false, true] {
+                                let s = Self.state(
+                                    phase, info: info, server: server, stopRequested: stopping, shuttingDown: quitting,
+                                    installing: installing)
+                                starts.append(("\(info.service) \(phase) server=\(server != nil) stop=\(stopping) quit=\(quitting) install=\(installing)", s))
+                            }
+                        }
+                    }
+                }
+            }
+            for afterBind in [false, true] {
+                var probing = Self.state(.starting, info: info, server: nil)
+                probing.probe = 7
+                probing.probeAfterBind = afterBind
+                starts.append(("\(info.service) probing afterBind=\(afterBind)", probing))
+            }
+            for server in [Self.current, nil] as [ServerID?] {
+                var removing = Self.state(.removing, info: info, server: server, stopRequested: server != nil)
+                removing.removal = 5
+                starts.append(("\(info.service) removing server=\(server != nil)", removing))
+            }
+            for phase in [ServicePhase.starting, .running] {
+                for quitting in [false, true] {
+                    var native = Self.state(phase, info: info, server: nil, shuttingDown: quitting)
+                    native.native = Self.current
+                    starts.append(("\(info.service) native \(phase) quit=\(quitting)", native))
+                }
+            }
+        }
+        let installOutcomes: [InstallOutcome] = [.finished, .cancelled, .failed(stage: .model, message: "no", logTail: [])]
+        let probeOutcomes: [ExternalProbe.Outcome] = [
+            .unreachable, .timeout, .silent, .needsToken, .mismatch(Self.kokoroHello), .adopt(Service.tone.info, Self.toneHello),
+        ]
+        var events: [LifecycleEvent] = [
+            .refreshRequested, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: 0),
+            .environmentRead(.ready(Self.marker), epoch: 0), .environmentChanged(.missing),
+            .installRequested(managerAvailable: true), .cancelInstallRequested,
+            .startRequested(appAvailable: true, managerAvailable: true, portFree: true),
+            .startRequested(appAvailable: true, managerAvailable: true, portFree: false),
+            .portOwnerFound(PortProbe.Owner(pid: 1, command: "other"), probe: 7),
+            .launched(ServerID(2)), .launchFailed("no"), .nativeLaunched(ServerID(2)),
+            .nativeBound(Self.current, port: 8665, pid: 1, at: Self.date), .nativeFailed(Self.current, "no"),
+            .ready(Self.current, port: 8665, pid: 1, rate: 24000, model: nil, at: Self.date),
+            .supervisedError(Self.current, SupervisedError(code: "EADDRINUSE", message: nil)),
+            .readyTimedOut(Self.current), .exited(Self.current, status: 0, logTail: []),
+            .exited(Self.current, status: 1, logTail: []), .stopRequested, .shutdownRequested, .shutdownServers,
+            .removeRequested(deleteModel: false, managerAvailable: true), .removalResumed(deleteModel: false, removal: 5),
+            .removalFailed("no", removal: 5), .removalFinished(removal: 5), .dismissFailure,
+            .externalFound(epoch: 0, info: Self.externalInfo), .externalLost(epoch: 0, reason: .mismatch), .tryItRequested,
+        ]
+        for outcome in installOutcomes {
+            events.append(.installEnded(outcome, then: .refresh, install: Self.installTag))
+            events.append(.appleSpeechInstallEnded(outcome, install: Self.installTag))
+        }
+        for outcome in probeOutcomes { events.append(.startProbeResult(tag: 7, outcome: outcome)) }
+
+        /// Quit's ends issue no read on purpose (the app is going away): its own server stop
+        /// (`shutdownServers`, supervised or native) and the Apple Speech install it cancelled.
+        func isQuitEnd(_ event: LifecycleEvent, _ before: LifecycleState) -> Bool {
+            switch event {
+            case .shutdownServers: true
+            case .appleSpeechInstallEnded: before.shuttingDown
+            default: false
+            }
+        }
+
+        var checked = 0
+        for (label, start) in starts where start.hasLiveWork && !start.phase.isExternal {
+            for event in events {
+                var s = start
+                let effects = ServiceLifecycle.reduce(&s, event)
+                guard !s.hasLiveWork, !isQuitEnd(event, start) else { continue }
+                checked += 1
+                let reads = effects.contains { if case .refresh = $0 { true } else { false } }
+                var failed = false
+                if case .failed = s.phase { failed = true }
+                #expect(
+                    reads || failed,
+                    "\(label) \(event.kind): live work ended with no read and no failure: \(s.phase) \(effects)")
+            }
+        }
+        #expect(checked > 0, "no transition out of live work was exercised")
+    }
+
     /// The events the driver used to send without running their effects: from every phase, with
     /// the owner current or stale, with or without an install and a read in flight, they return
     /// none. (Install and External exclude each other, so that pair is not a reachable state.)
