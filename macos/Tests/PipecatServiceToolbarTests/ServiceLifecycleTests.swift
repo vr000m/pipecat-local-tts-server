@@ -799,22 +799,14 @@ import Testing
         let bootstrap = Self.issueRead(&s)
         let adopted = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
         #expect(s.phase == Self.external)
-        #expect(s.epoch != bootstrap)
-        #expect(adopted == [.refresh(epoch: s.epoch)], "the orphaned read was not issued again: \(adopted)")
-        #expect(adopted.allSatisfy(Self.allowedForExternal))
-        #expect(s.reading == s.epoch && !s.startAfterRead)
+        // Shared: re-issued exactly once under the new epoch, and the orphaned answer is dropped.
+        Self.expectOrphanedReadReissuedWhileExternal(&s, adopted, orphaned: bootstrap, "adoption")
+        #expect(!s.isInstalled, "the dropped orphaned answer must not record requested")
         // Answer the read the reducer actually issued, not one forged at the current epoch.
         guard case .refresh(let reissued) = adopted.last else {
             Issue.record("no read re-issued: \(adopted)")
             return
         }
-
-        // The orphaned read's answer is stale: nothing changes.
-        let before = s
-        let late = ServiceLifecycle.reduce(
-            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: bootstrap))
-        #expect(late.isEmpty && s == before, "the orphaned read applied")
-        #expect(!s.isInstalled)
 
         // The re-issued read records `requested` and the environment; External stays put.
         let landed = ServiceLifecycle.reduce(
