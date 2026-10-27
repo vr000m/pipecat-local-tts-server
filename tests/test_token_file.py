@@ -107,7 +107,18 @@ def _ok_file(tmp_path: Path) -> Path:
 
 
 def test_policy_accepts_an_owner_only_file_in_an_owned_directory(tmp_path):
-    check_token_file_policy(_ok_file(tmp_path))
+    f = _ok_file(tmp_path)
+    assert check_token_file_policy(f) == os.path.realpath(f)
+
+
+def test_policy_returns_the_symlink_free_path_for_a_symlinked_directory(tmp_path):
+    """The installer records this path, so a repointable symlinked component is not trusted."""
+    real = _ok_file(tmp_path)
+    link_dir = tmp_path / "via-link"
+    link_dir.symlink_to(real.parent, target_is_directory=True)
+    resolved = check_token_file_policy(link_dir / "token")
+    assert resolved == os.path.realpath(real)
+    assert "via-link" not in resolved
 
 
 @pytest.mark.parametrize("mode", [0o640, 0o604, 0o660, 0o644, 0o666])

@@ -71,20 +71,38 @@ cmd="${1:-install}"
 # tts_server.env.check_token_file_policy (absolute path, not a symlink, a regular
 # file you own with no group/other bits, in a directory chain only you or root
 # can write). Runs before anything is written or loaded.
+#
+# Validated == recorded: the policy checks the symlink-free resolved path, and this
+# sets AUTH_TOKEN_FILE to that path, which is what the plist then carries. A
+# symlinked directory in the path as typed sits outside the checked chain and could
+# be repointed after this check; the resolved path has no such component left.
 validate_token_file() {
-    local f="$1"
-    if ! "$PYTHON" -I -c '
+    local f="$1" resolved
+    # Lossless capture (the trailing x survives command substitution's newline strip).
+    if ! resolved="$("$PYTHON" -I -c '
 import sys
 from tts_server.env import ConfigError, check_token_file_policy, read_token_file
 try:
-    check_token_file_policy(sys.argv[1], uid=int(sys.argv[2]))
-    read_token_file(sys.argv[1], strict=True)
+    resolved = check_token_file_policy(sys.argv[1], uid=int(sys.argv[2]))
+    read_token_file(resolved, strict=True)
 except ConfigError as exc:
     print(f"error: PIPECAT_TTS_AUTH_TOKEN_FILE: {exc}", file=sys.stderr)
     sys.exit(1)
-' "$f" "$(id -u)"; then
+sys.stdout.write(resolved)
+' "$f" "$(id -u)" && printf x)"; then
         exit 1
     fi
+    resolved="${resolved%x}"
+    # A control character (newline, tab, ESC) cannot be carried safely by the plist or
+    # launchd; refuse it rather than record a path nobody typed.
+    if [[ "$resolved" == *[[:cntrl:]]* ]]; then
+        echo "error: PIPECAT_TTS_AUTH_TOKEN_FILE resolves to a path containing a control character; rename the file or its directories" >&2
+        exit 1
+    fi
+    if [[ "$resolved" != "$f" ]]; then
+        echo "note: PIPECAT_TTS_AUTH_TOKEN_FILE resolves to $resolved; the plist records that path"
+    fi
+    AUTH_TOKEN_FILE="$resolved"
 }
 
 render_plist() {

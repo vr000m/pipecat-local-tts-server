@@ -235,12 +235,15 @@ def check_token_dir_chain(path: str | os.PathLike[str], *, uid: int | None = Non
         d = parent
 
 
-def check_token_file_policy(path: str | os.PathLike[str], *, uid: int | None = None) -> None:
+def check_token_file_policy(path: str | os.PathLike[str], *, uid: int | None = None) -> str:
     """The installer's checks on a token file (``serve`` itself checks content only).
 
     The file must be an absolute path to a regular file (not a symlink) owned by
     ``uid`` (default: the current user) with no group/other permission bits, in a
-    directory chain ``check_token_dir_chain`` accepts. Raises ``ConfigError``.
+    directory chain ``check_token_dir_chain`` accepts. Returns the symlink-free
+    path that was checked: the installer must record THAT path, because a symlinked
+    directory component in the path as written lives outside the checked chain and
+    could be repointed after the check. Raises ``ConfigError``.
     """
     uid = os.getuid() if uid is None else uid
     p = os.fspath(path)
@@ -260,4 +263,4 @@ def check_token_file_policy(path: str | os.PathLike[str], *, uid: int | None = N
         raise _refuse(p, f"is owned by uid {st.st_uid}, not you (uid {uid})", f"chown {uid} '{p}'")
     if st.st_mode & 0o077:
         raise _refuse(p, "is readable or writable by group/other", f"chmod 600 '{p}'")
-    check_token_dir_chain(p, uid=uid)
+    return os.path.join(check_token_dir_chain(p, uid=uid), os.path.basename(p))
