@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Pipecat Service Toolbar: an External row's LaunchAgent label is cut in the middle, not at the
+  end, so `pipecat.stt-server.kyutai` / `…parakeet` / `…nemotron` stay distinguishable in the
+  panel, and hovering the line shows the whole label.
+
 ## [0.8.0] - 2026-10-27
 
 ### Added
