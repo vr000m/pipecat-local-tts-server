@@ -21,7 +21,7 @@ import Python, so these tests parse the Swift source (one parser,
     family's repo;
   * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
     TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
-    repo with no revision pin (the upstream ``stt_server prefetch`` pins none);
+    repo with no revision (the app passes none: upstream 0.5.0 pins the default models itself);
   * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
     repo's LaunchAgent labels and ports (written out here), and backend names and
     default model repos that equal the upstream registry, read from the recorded
@@ -256,8 +256,8 @@ def test_swift_snapshots_match_prefetch_specs(monkeypatch):
 
 def test_swift_stt_snapshots_are_the_model_repo_unpinned():
     """An STT service downloads its one model repo through the upstream
-    ``stt_server prefetch --backend <b> --model <repo>``, which takes no revision pin
-    (the helper's ``MODEL_REVISIONS`` is gone): one required model snapshot of the
+    ``stt_server prefetch --backend <b> --model <repo>``, which takes no revision flag
+    (upstream 0.5.0 pins the default models itself; the helper's ``MODEL_REVISIONS`` is gone): one required model snapshot of the
     entry's ``modelRepo``, ``revision`` nil. Whisper and Kyutai take everything but docs."""
     stt = {n: e for n, e in macos_catalog().items() if e.kind == "stt"}
     assert {"parakeet", "nemotron", "whisper", "kyutai"} <= set(stt)
@@ -339,7 +339,7 @@ def test_swift_expected_models_match_what_the_backends_report():
             assert expected == entry.model_argument != entry.model_repo, entry.name
 
 
-# The STT repo's (pipecat-local-stt-server 0.4.0) LaunchAgents, which the app's STT entries
+# The STT repo's (pipecat-local-stt-server 0.5.0) LaunchAgents, which the app's STT entries
 # agree with: ``backend.name`` the server reports, port, launchd label and default model repo
 # per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper`` engine name is the
 # app's own (it names the environment and the constraints file). The backend names and

@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "stt_server_0.4.0_source.txt"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "stt_server_0.5.0_source.txt"
 
 
 @dataclass(frozen=True)

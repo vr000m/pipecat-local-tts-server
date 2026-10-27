@@ -217,7 +217,7 @@ public enum ServiceCatalog {
     public static let host = "127.0.0.1"
 
     /// Pins for the STT engines' environments (verified together).
-    public static let sttServerRequirement = "pipecat-local-stt-server==0.4.0"
+    public static let sttServerRequirement = "pipecat-local-stt-server==0.5.0"
 
     public static let all: [ServiceInfo] = Service.allCases.map(info(for:))
 
@@ -321,7 +321,7 @@ public enum ServiceCatalog {
             ServiceInfo(
                 service: .whisper, kind: .stt, expectedBackendName: "mlx", displayName: "Whisper", tagline: "OpenAI's speech recognition on MLX",
                 runtime: .sttHelper(
-                    engine: "whisper", requirements: ["pipecat-local-stt-server[mlx]==0.4.0", "mlx-whisper==0.4.3"]),
+                    engine: "whisper", requirements: ["pipecat-local-stt-server[mlx]==0.5.0", "mlx-whisper==0.4.3"]),
                 port: 9565, modelRepo: "mlx-community/whisper-large-v3-turbo", licence: .mit,
                 streaming: false, symbol: "waveform.and.mic",
                 variantLabel: "Large v3 Turbo", variantDetail: "Fast and accurate")
@@ -360,14 +360,14 @@ public enum ServiceCatalog {
             ServiceInfo(
                 service: .parakeet, kind: .stt, expectedBackendName: "parakeet", displayName: "Parakeet",
                 tagline: "NVIDIA's fast multilingual recognition",
-                runtime: .sttHelper(engine: "parakeet", requirements: ["pipecat-local-stt-server[parakeet]==0.4.0"]),
+                runtime: .sttHelper(engine: "parakeet", requirements: ["pipecat-local-stt-server[parakeet]==0.5.0"]),
                 port: 9765, modelRepo: "mlx-community/parakeet-tdt-0.6b-v3", licence: .ccBy4,
                 streaming: false, symbol: "hare")
         case .nemotron:
             ServiceInfo(
                 service: .nemotron, kind: .stt, expectedBackendName: "nemotron", displayName: "Nemotron",
                 tagline: "NVIDIA's multilingual speech recognition model",
-                runtime: .sttHelper(engine: "nemotron", requirements: ["pipecat-local-stt-server[nemotron]==0.4.0"]),
+                runtime: .sttHelper(engine: "nemotron", requirements: ["pipecat-local-stt-server[nemotron]==0.5.0"]),
                 port: 9865, modelRepo: "mlx-community/nemotron-3.5-asr-streaming-0.6b", licence: .other,
                 streaming: false, symbol: "brain")
         }

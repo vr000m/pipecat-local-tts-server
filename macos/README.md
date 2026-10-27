@@ -79,9 +79,9 @@ for running both.
 - **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
   server that needs a bearer token is not adopted (Start then reports the port busy
   because it wants a token); the app stores no token.
-- **Support floor.** STT starts through `pipecat-local-stt-server==0.4.0`'s own CLI
+- **Support floor.** STT starts through `pipecat-local-stt-server==0.5.0`'s own CLI
   (`python -m stt_server serve --supervised`). An STT agent on an older version
-  is still adopted by its hello, but an app-started STT server needs 0.4.0.
+  is still adopted by its hello, but an app-started STT server needs 0.5.0.
 
 
 ## Menu bar
@@ -154,9 +154,11 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   transitive dependency (`constraints/stt-<engine>.txt`, `uv pip install
   --require-hashes`; a bundled app missing that file refuses the install rather
   than resolve unpinned), run by the upstream CLI (`python -m stt_server prefetch`
-  and `serve --supervised`). STT model weights are **not** pinned to a commit in
-  this release: upstream 0.4.0 has no revision option, so the app follows each
-  repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  and `serve --supervised`). The four default STT models (Whisper large-v3-turbo,
+  Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.5.0
+  itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
+  no revision flag (there is none), only `--model <repo>`: a model other than a pinned
+  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
   Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
   `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
   it the server exits with `BackendStartError: FFmpeg is not installed or not in
@@ -257,10 +259,10 @@ no CI job installs the STT server, so this check is opt-in:
 PIPECAT_STT_SERVER_SITE=<dir> uv run pytest tests/test_supervised_contract.py -k verbatim
 ```
 
-STT model weights are not pinned (see How it works): upstream 0.4.0 has no revision
-option. Pinning them needs an STT release that has one; the app then has to bump
-`ServiceCatalog.sttServerRequirement`, regenerate the constraints and pass the new
-revision option.
+STT model weights are pinned by upstream, not by the app (see How it works): the
+default models' commits live in `pipecat-local-stt-server`'s `PINNED_REVISIONS`, so moving
+one means a new STT release, then bumping `ServiceCatalog.sttServerRequirement` and
+regenerating the constraints. Other STT models follow `main`.
 
 Build knobs (environment variables read by `macos/scripts/`):
 

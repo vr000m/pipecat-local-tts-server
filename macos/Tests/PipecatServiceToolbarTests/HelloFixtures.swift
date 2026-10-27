@@ -29,7 +29,7 @@ enum HelloFixtures {
     // (rates are placeholders: nothing asserts them)
     /// `name` is the backend's static `backend_name`; `model` is what its `model`
     /// attribute holds: the default repo, or the raw `--model` argument (Phonon aliases,
-    /// `phonon.py:455`). Whisper variants all report `mlx` (plan, STT 0.4.0 `backend.name`).
+    /// `phonon.py:455`). Whisper variants all report `mlx` (plan, STT 0.5.0 `backend.name`).
     static let synthesized: [Reported] = [
         Reported(service: .tone, name: "tone", model: nil, rate: 24000),
         Reported(service: .kokoro, name: "kokoro", model: "mlx-community/Kokoro-82M-bf16", rate: 24000),

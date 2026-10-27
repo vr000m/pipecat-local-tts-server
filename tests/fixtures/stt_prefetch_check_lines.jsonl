@@ -1,2 +1,2 @@
-{"event":"check","repo":"kyutai/stt-1b-en_fr-mlx","revision":null,"kind":"model","required":true,"cached":false,"path":null,"size_bytes":0}
+{"event":"check","repo":"kyutai/stt-1b-en_fr-mlx","revision":"2b995724eef1e964b7ccb6a762b35a665c4abe0d","kind":"model","required":true,"cached":false,"path":null,"size_bytes":0}
 {"event":"summary","backend":"kyutai","model":"kyutai/stt-1b-en_fr-mlx","cached":false,"size_bytes":0}

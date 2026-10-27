@@ -255,7 +255,7 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
   for the discovery pass it cancels (`SerialPass`), so no probe or owner lookup
   outlives the app.
-- **Support floor.** STT is app-started through `pipecat-local-stt-server==0.4.0`;
+- **Support floor.** STT is app-started through `pipecat-local-stt-server==0.5.0`;
   older STT servers are adopted by hello only.
 - **Beside LaunchAgents.** `just tts-install` and `just stt-*` agents use the same
   ports, so they show as External; the source line is the agent's label when
@@ -328,7 +328,7 @@ Every Python server, and the native server, follows one contract.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the upstream
-`pipecat-local-stt-server==0.4.0` CLI (`python -m stt_server serve --supervised`,
+`pipecat-local-stt-server==0.5.0` CLI (`python -m stt_server serve --supervised`,
 `prefetch --json`); the app no longer wraps `stt_server`. Older STT versions lack
 it, so an STT server on one is adopted by its hello but never app-started.
 
@@ -495,10 +495,12 @@ the bare file name.
   requirement in `Service.swift`, regenerate them (network needed):
   `uv run python macos/scripts/compile_stt_constraints.py`. The TTS export from
   `uv.lock` stays `--no-hashes`.
-- **STT weights are not pinned.** Upstream `pipecat-local-stt-server` 0.4.0 has no
-  revision option, so `prefetch` and `serve` follow each STT repo's `main`. Until the
-  app moves to an STT release that has one (and passes it), do not claim a pinned STT
-  commit.
+- **STT weights are pinned upstream, not by the app.** `pipecat-local-stt-server` 0.5.0
+  pins the four default models (Whisper large-v3-turbo, Kyutai 1B, Parakeet, Nemotron) to
+  a recorded Hub commit in code (`PINNED_REVISIONS`); `prefetch --json` `start`/`check`
+  events carry that `revision` (null for any other `--model`, which follows `main`). It has
+  no revision flag, so the app passes none; the app's own size estimate
+  (`ServiceCatalog.snapshots(for:)`) still reads `main`.
 - **TTS weights.** Two snapshots are pinned to a commit, the same pins the backend
   modules pass (`ServiceCatalog.snapshots(for:)`, drift-tested against
   `prefetch_specs(model)`): Phonon's weights and Pocket TTS's voice embeddings
@@ -516,12 +518,12 @@ The app reads the same JSON lines from two independent emitters: `tts_server`
 fields, types and error codes are fixed in `docs/supervised-contract.json`.
 `tests/test_supervised_contract.py` runs the TTS emitter on stub inputs and checks each
 line against it. The lean job cannot install the STT server, so the STT side is checked
-against recorded upstream artifacts instead: a real 0.4.0 `ready` and `error` line
-(`tests/fixtures/stt_supervised_lines.jsonl`), a real 0.4.0 kyutai `prefetch --check --json`
+against recorded upstream artifacts instead: a real 0.5.0 `ready` and `error` line
+(`tests/fixtures/stt_supervised_lines.jsonl`), a real 0.5.0 kyutai `prefetch --check --json`
 (`tests/fixtures/stt_prefetch_check_lines.jsonl`: the `check` row then the `summary` that
 `EnvironmentManager.cacheStatus` reads, recorded offline on an empty cache and re-recorded by
-the opt-in `-k verbatim` run), and a verbatim excerpt of the 0.4.0 source
-(`tests/fixtures/stt_server_0.4.0_source.txt`: its `CODE_*` error codes and backend
+the opt-in `-k verbatim` run), and a verbatim excerpt of the 0.5.0 source
+(`tests/fixtures/stt_server_0.5.0_source.txt`: its `CODE_*` error codes and backend
 registry, checked against the live package too where it is importable). The test also
 checks the Swift decoder (`ServerCLIEvent`), the error codes (`SupervisedErrorCode`, the
 union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against the contract.
@@ -552,8 +554,8 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
   - TTS packages follow `uv.lock`; STT packages are hash-pinned to the last
     transitive dependency (see Pins).
   - Phonon's weights and Pocket TTS's voice embeddings are pinned to a commit.
-    Other TTS repos (Dia's codec included) and every STT repo follow `main`
-    (STT: upstream 0.4.0 has no revision option).
+    Other TTS repos (Dia's codec included) follow `main`; the default STT models are
+    pinned by upstream 0.5.0 itself and other STT models follow `main`.
 - **Logs.** The app never writes audio or transcripts to disk itself. Each
   service's log file holds what that server prints at INFO level, plus the
   app's start and stop markers.

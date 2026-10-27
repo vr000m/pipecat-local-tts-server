@@ -97,8 +97,8 @@ import Testing
             return
         }
         #expect(pEngine == "parakeet" && nEngine == "nemotron")
-        #expect(pReqs.contains("pipecat-local-stt-server[parakeet]==0.4.0"))
-        #expect(nReqs.contains("pipecat-local-stt-server[nemotron]==0.4.0"))
+        #expect(pReqs.contains("pipecat-local-stt-server[parakeet]==0.5.0"))
+        #expect(nReqs.contains("pipecat-local-stt-server[nemotron]==0.5.0"))
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-envs-\(UUID().uuidString.prefix(8))")
         let paths = AppPaths(
             supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
@@ -108,14 +108,14 @@ import Testing
     }
 
     @Test func everySTTEnvironmentPinsTheSameServerRelease() {
-        #expect(ServiceCatalog.sttServerRequirement == "pipecat-local-stt-server==0.4.0")
+        #expect(ServiceCatalog.sttServerRequirement == "pipecat-local-stt-server==0.5.0")
         for service in ServiceCatalog.services(of: .stt) {
             guard case .sttHelper(_, let reqs) = service.info.runtime else { continue }
-            #expect(reqs.contains { $0.hasPrefix("pipecat-local-stt-server") && $0.hasSuffix("==0.4.0") }, "\(service)")
+            #expect(reqs.contains { $0.hasPrefix("pipecat-local-stt-server") && $0.hasSuffix("==0.5.0") }, "\(service)")
         }
     }
 
-    /// Two real lines from the released 0.4.0 `stt_server` (the Python test checks them
+    /// Two real lines from the released 0.5.0 `stt_server` (the Python test checks them
     /// against the contract): the app's decoder reads them.
     @Test func recordedUpstreamLinesDecode() throws {
         let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -124,7 +124,7 @@ import Testing
         #expect(lines.count == 2)
         let ready = try #require(ServerCLIEvent.parse(lines[0]))
         #expect(ready.event == "ready" && ready.backend == "echo" && ready.model == nil)
-        #expect(ready.host == "127.0.0.1" && ready.port == 18770 && ready.rate == 16000 && ready.pid == 42342)
+        #expect(ready.host == "127.0.0.1" && ready.port == 18773 && ready.rate == 16000 && ready.pid == 53758)
         let error = try #require(ServerCLIEvent.parse(lines[1]))
         #expect(error.event == "error" && error.errorCode == .addressInUse)
     }

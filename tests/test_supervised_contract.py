@@ -2,14 +2,14 @@
 
 Two independent emitters speak one contract to the macOS app: ``tts_server``
 (``serve --supervised``, ``prefetch --json``) and the upstream STT CLI
-(``python -m stt_server``, pipecat-local-stt-server 0.4.0). ``docs/supervised-contract.json``
+(``python -m stt_server``, pipecat-local-stt-server 0.5.0). ``docs/supervised-contract.json``
 fixes every event's fields and types, the error ``code`` values per emitter, and the
 stt wire rate. The lean job has no STT server installed, so:
 
   * the TTS emitter runs on stub inputs, and every line it writes conforms to its
     event's contract entry (exact required keys, optional keys only from the
     contract, JSON types); every contract event is exercised;
-  * the STT emitter's lines are a recorded 0.4.0 fixture
+  * the STT emitter's lines are a recorded 0.5.0 fixture
     (``tests/fixtures/stt_supervised_lines.jsonl``: a real ``ready`` and ``error``
     line) and ``tests/fixtures/stt_prefetch_check_lines.jsonl`` (a real kyutai
     ``prefetch --check --json``: a ``check`` row then the ``summary``, recorded offline on
@@ -67,7 +67,7 @@ STT_CODES = set(CONTRACT["error_codes"]["stt"])
 
 
 def stt_fixture_lines() -> list[dict]:
-    """The recorded 0.4.0 ``stt_server`` lines (``serve --supervised``), one object per line."""
+    """The recorded 0.5.0 ``stt_server`` lines (``serve --supervised``), one object per line."""
     return [json.loads(line) for line in STT_FIXTURE.read_text().splitlines() if line.strip()]
 
 
@@ -198,7 +198,7 @@ def test_every_emitted_line_conforms_to_the_contract(emitted):
 
 
 def test_recorded_stt_lines_conform_to_the_contract(emitted):
-    """The upstream 0.4.0 ``ready`` and ``error`` lines, byte for byte as recorded."""
+    """The upstream 0.5.0 ``ready`` and ``error`` lines, byte for byte as recorded."""
     lines = stt_fixture_lines()
     assert [line["event"] for line in lines] == ["ready", "error"]
     for line in lines:
@@ -227,7 +227,7 @@ def test_tts_check_dialect_is_check_rows_then_summary(emitted):
 
 
 def stt_prefetch_check_lines() -> list[dict]:
-    """The recorded 0.4.0 ``stt_server prefetch --backend kyutai --check --json`` lines."""
+    """The recorded 0.5.0 ``stt_server prefetch --backend kyutai --check --json`` lines."""
     return [
         json.loads(line) for line in STT_PREFETCH_FIXTURE.read_text().splitlines() if line.strip()
     ]

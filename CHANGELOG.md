@@ -39,18 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Pipecat Service Toolbar: STT now runs through the upstream
-  `pipecat-local-stt-server==0.4.0` CLI (`python -m stt_server serve --supervised`,
+  `pipecat-local-stt-server==0.5.0` CLI (`python -m stt_server serve --supervised`,
   `prefetch --json`); the bundled `pipecat_app_helper.py`, `PIPECAT_TOOLBAR_HELPER`
   and the helper's cooperative cancel are removed, with the helper's `MODEL_REVISIONS`
   pins and `ServiceCatalog.sttModelRevisions` (0.7.0 listed both). An STT server on an
-  older version is adopted by its hello, but an app-started STT server needs 0.4.0.
-- STT model weights are **not pinned to a commit** in this release (0.7.0 pinned them
-  through the helper): in
-  `pipecat-local-stt-server` 0.4.0 (tag `v0.4.0`, commit `44843732`) `serve` and
-  `prefetch` take no revision option and every backend's snapshot uses the repo's
-  `main`, so the app follows `main`. In 0.4.0, Kyutai's cancel only stops a decode that
-  has not started (its frame loop has no cancel check), so Kyutai barge-in waits for
-  the in-flight decode.
+  older version is adopted by its hello, but an app-started STT server needs 0.5.0.
+- STT model weights are pinned by upstream, not by the app: `pipecat-local-stt-server`
+  0.5.0 pins the four default models (Whisper large-v3-turbo, Kyutai 1B, Parakeet,
+  Nemotron) to a recorded Hub commit in code (`prefetch --json` reports it as
+  `revision`). It has no revision flag, so the app passes none; any other `--model`
+  (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`.
 - `docs/supervised-contract.json` lists error codes per emitter (contract `version` 2;
   version 1 had one flat list); `ModelInvalidError` is emitted by the STT server only (`tts_server/supervise.py` is unchanged).
 

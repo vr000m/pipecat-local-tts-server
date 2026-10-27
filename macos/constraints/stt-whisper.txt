@@ -3,7 +3,7 @@
 # python-version: 3.12
 # python-platform: aarch64-apple-darwin
 # macos-deployment-target: 15.0
-# requirement: pipecat-local-stt-server[mlx]==0.4.0
+# requirement: pipecat-local-stt-server[mlx]==0.5.0
 # requirement: mlx-whisper==0.4.3
 anyio==4.15.1 \
     --hash=sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101 \
@@ -636,9 +636,9 @@ packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
     # via huggingface-hub
-pipecat-local-stt-server==0.4.0 \
-    --hash=sha256:0bfb4bc17bb7dcee309641865e1e21d85ef4fdb875351f9208839d7153bd9f2c \
-    --hash=sha256:1ef078514f831d5a9afeee7b5cf04d9316140d60ddcdbefd7c457a97ceb3c62c
+pipecat-local-stt-server==0.5.0 \
+    --hash=sha256:572fd9a501fd39fa81377a0629294b1ec1cc167c3cfcb913d2ee275dc8897211 \
+    --hash=sha256:910e451e0c3fa147162cb3059adce2083bfd8835a002c957b2eadf5116e34c14
     # via -r stt-whisper.in
 pyyaml==6.0.3 \
     --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \

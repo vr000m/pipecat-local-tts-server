@@ -1,6 +1,6 @@
 # Verbatim excerpts of the upstream STT server, recorded for the lean drift tests
 # (tests/test_supervised_contract.py, tests/test_macos_catalog_drift.py), which cannot import it.
-# release: pipecat-local-stt-server 0.4.0 (tag v0.4.0, commit 44843732c9c3e6161889645192e1d4c1362d8474)
+# release: pipecat-local-stt-server 0.5.0 (tag v0.5.0, commit 8555dbdb799e61036d731a2ef63a7a99cfbb62a5)
 # Re-record from the new tag whenever ServiceCatalog.sttServerRequirement moves; the tests check
 # that the release above is the one the app installs.
 ## stt_server/supervise.py
