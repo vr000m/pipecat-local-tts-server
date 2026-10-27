@@ -19,7 +19,7 @@ final class ExternalDiscovery {
     /// Quit began: no pass starts and no result lands.
     private var stopped: Bool { passes.stopped }
 
-    init(app: AppModel, prober: any HelloProber = ExternalProbe()) {
+    init(app: AppModel, prober: any HelloProber) {
         self.app = app
         self.prober = prober
     }

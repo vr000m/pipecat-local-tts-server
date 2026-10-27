@@ -48,7 +48,7 @@ final class AppModel {
     init(paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe()) {
         self.paths = paths
         self.prober = prober
-        services = Service.allCases.map { ServiceModel(info: $0.info) }
+        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober) }
         for model in services { model.app = self }
     }
 

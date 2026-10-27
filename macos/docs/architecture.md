@@ -151,10 +151,12 @@ guard rejects it (no change, no effect). It advances before the event runs, so
 the work it issues is tagged with the new epoch and any older read is stale:
 a second refresh, a sibling's change (`environmentChanged`), Start, Stop, Delete
 or an install each invalidate the read in flight. A read orphaned that way is
-dropped when `LifecycleState.dropsOrphanedRead` holds (its doc comment gives the
-reasons: live work owning the phase, `hasLiveWork`, whose end re-reads, or a
-`.failed` phase, which only Dismiss's own read replaces), and issued again
-otherwise. `.external` is the exception: it counts as live work but has no end that re-reads
+dropped when `LifecycleState.dropsOrphanedRead(after:)` holds (its doc comment is
+the one rule: live work owning the phase, `hasLiveWork`, whose every end re-reads
+or shows a failure, a completed Stop included; or the event that entered `.failed`,
+whose failure only Dismiss's own read replaces), and issued again otherwise (a read
+orphaned while a failure was already shown, such as Dismiss's, is issued again).
+`.external` is the exception: it counts as live work but has no end that re-reads
 until the server is lost, and its `isInstalled` reads the `requested` and
 environment the read records. So every transition into External issues a read
 itself (`adopt`, the one producer of `.external`: discovery, a Start-path probe, the
@@ -167,8 +169,8 @@ never moves the External phase; it never carries a start, and staying External
 A current read re-reads the environment but moves the phase only when nothing
 owns it, so Reset, Try Again or a sibling's refresh never hides a running server
 or undoes a Delete. A `.failed` phase is replaced only by a read issued while it
-is shown (Dismiss, a bootstrap or Reset), never by one it orphaned
-(`dropsOrphanedRead`). A port probe lives only while the phase is `starting` with
+is shown (Dismiss, a bootstrap or Reset), never by the one its failing event
+orphaned (`dropsOrphanedRead(after:)`). A port probe lives only while the phase is `starting` with
 no server, so a launch ends it and its late answer can't fail the server; Cancel
 during it drops it and re-reads the phase. A probe that ends any other way than
 its own answer (Stop, a launch, a removal, a second Start) is cancelled
@@ -268,11 +270,7 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
 
 Left as they are on purpose, across both lifecycles and their adapters:
 
-- `ServiceLifecycle`: not every end of live work re-reads, though
-  `dropsOrphanedRead` drops the read it orphaned: a completed Stop (`exited`
-  after Stop, the native stop) sets `.installed` without a read, so a read
-  dropped while the server ran leaves `requested`, the environment and the cache
-  as last read; `discardNative` and
+- `ServiceLifecycle`: `discardNative` and
   `stopServer(id)` are not executed keyed by `ServerID` (the driver keeps
   unkeyed handles); `isCurrent` repeats the classification `Kind.owner`
   encodes; `shutdownRequested` marks `shuttingDown` only for an Apple Speech

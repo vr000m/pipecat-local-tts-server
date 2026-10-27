@@ -39,9 +39,12 @@ final class ServiceModel: Identifiable {
     private(set) var sttTryIt: STTTryItSession?
 
     @ObservationIgnored weak var app: AppModel?
+    /// The app's one hello prober (`AppModel.prober`), for the Start-path probe.
+    private let prober: any HelloProber
 
-    init(info: ServiceInfo) {
+    init(info: ServiceInfo, prober: any HelloProber) {
         self.info = info
+        self.prober = prober
         var dependencies = ServiceDependencies()
         dependencies.appleSpeechPhase = {
             switch await AppleSpeech.status() {
@@ -197,7 +200,7 @@ extension ServiceModel: ServiceHost {
 
     /// The Start-path probe, through the app's one prober (the one discovery uses).
     func probeExternal(port: Int) async -> ExternalProbe.Outcome {
-        await (app?.prober ?? ExternalProbe()).probe(port: port)
+        await prober.probe(port: port)
     }
 
     func closeTryIt() {

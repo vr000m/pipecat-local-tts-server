@@ -484,16 +484,22 @@ extension LifecycleState {
         }
     }
 
-    /// A read orphaned here is dropped, not issued again (`reduce` rule 4), for one of two
-    /// reasons. The live work owning the phase re-reads when it ends. Or the phase is
-    /// `.failed`: a result the user must see until Dismiss, which issues its own read
-    /// (`dismissFailure`); a re-issued read would land with nothing owning the phase and
-    /// replace the failure before it was seen. `.external` is the one live phase with no
-    /// re-reading end until the server is lost, and its `isInstalled` reads what the read
-    /// records (`requested`, the environment), so it is excluded; going External issues its
-    /// own read for the same reason (`adopt`).
-    public var dropsOrphanedRead: Bool {
-        if case .failed = phase { return true }
+    /// Whether a read the event from `before` orphaned is dropped rather than issued again
+    /// (`reduce` rule 4). The one rule for reads around owned phases; the other checks cite it:
+    /// - Live work owns the phase (`hasLiveWork`): dropped. Each end of live work re-reads
+    ///   or shows a failure: an install's or a removal's end, a completed Stop (`exited` from
+    ///   `.stopping`, the native Stop), Cancel during a port probe, a lost External server; a
+    ///   probe that launches or a server that becomes ready hands the phase to more live work.
+    /// - This event entered `.failed`: dropped, so its answer can't replace the failure before
+    ///   it is seen; Dismiss issues its own read (`dismissFailure`). A read orphaned while the
+    ///   failure was already shown (Dismiss's, a bootstrap's, Reset's) is issued again: it was
+    ///   issued to replace the failure, and `refreshed` lets it.
+    /// - `.external` is the exception: live work with no re-reading end until the server is
+    ///   lost, whose `isInstalled` reads what a read records (`requested`, the environment).
+    ///   So an orphaned read is issued again, going External issues one (`adopt`), and a read
+    ///   that lands records `requested` without moving the phase (`refreshed`).
+    public func dropsOrphanedRead(after before: LifecycleState) -> Bool {
+        if case .failed = phase, phase != before.phase { return true }
         return hasLiveWork && !phase.isExternal
     }
 
@@ -622,15 +628,11 @@ public enum ServiceLifecycle {
     /// 3. A probe lives only while the phase is `.starting` with no server; a
     ///    probe that ends any other way than its own answer is cancelled, by
     ///    the first effect (so no other effect's wait delays it).
-    /// 4. A read the advance orphaned is issued again unless `dropsOrphanedRead`
-    ///    (see there: an owner's end or a failure's Dismiss re-reads), in which case it is dropped. It never
-    ///    carries a start with it, and only a read already in flight is re-issued.
+    /// 4. A read the advance orphaned is issued again unless `dropsOrphanedRead(after:)`
+    ///    (the one rule, see there), in which case it is dropped. It never carries a start
+    ///    with it, and only a read already in flight is re-issued.
     ///    Invariant: once a transition into `.external` has run, a read issued under
-    ///    the current epoch is in flight or has landed since. The transition itself
-    ///    issues it (`adopt`, the one producer of `.external`), because an earlier
-    ///    owner may have dropped the read in flight and going External ends that
-    ///    owner without the re-read its end promised; while External, an orphaned
-    ///    read is re-issued here (External is not `dropsOrphanedRead`).
+    ///    the current epoch is in flight or has landed since (`adopt` issues it).
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
     ///    transition into or out of `.external`, and for the kinds in `changesExternalEpoch`.
     ///    A kind in `keepsEpochWhenItOnlyCounts` (a count-only `externalLost`) that left an
@@ -660,7 +662,7 @@ public enum ServiceLifecycle {
         }
         if let reading = s.reading, reading != s.epoch {
             s.startAfterRead = false
-            if s.dropsOrphanedRead {
+            if s.dropsOrphanedRead(after: before) {
                 s.reading = nil
             } else {
                 effects.append(read(&s))
@@ -684,13 +686,12 @@ public enum ServiceLifecycle {
             s.startAfterRead = false
             if let environment { s.environment = environment }
             if let cache { s.cache = cache }
-            // External reads installed from `requested`, and `.external` counts as live work, so a
-            // refresh that lands after the adoption must still record it; the phase itself stays
-            // put. This answers the read the adoption issued (`reduce` rule 4).
+            // External records `requested` but keeps its phase (`dropsOrphanedRead(after:)`).
             if let requested, case .external = s.phase { s.requested = requested }
             // A server, install, probe or removal owns the phase; only its own end moves it.
             // A `.failed` phase is replaced only by a read issued while it is shown (Dismiss,
-            // a bootstrap or Reset): an orphaned one never gets here (`dropsOrphanedRead`).
+            // a bootstrap or Reset), never by the one its failing event orphaned
+            // (`dropsOrphanedRead(after:)`).
             guard !s.hasLiveWork else { return [] }
             if let requested { s.requested = requested }
             if s.runtime == .appleSpeech, case .installing = phase {
@@ -893,8 +894,11 @@ public enum ServiceLifecycle {
             s.running = nil
             let effects: [LifecycleEffect] = [.tearDown(note: "exited with status \(status)")]
             if s.stopRequested {
-                if s.phase == .stopping { s.phase = .installed }
-                return effects
+                // Quit or a removal keeps its phase (the removal's end re-reads).
+                guard s.phase == .stopping else { return effects }
+                // A completed Stop ends live work: it re-reads (`dropsOrphanedRead(after:)`).
+                s.phase = .installed
+                return effects + [read(&s)]
             }
             guard let error = s.supervisedError else {
                 s.phase = .failed(
@@ -919,7 +923,9 @@ public enum ServiceLifecycle {
             return effects
 
         case .stopRequested:
-            if s.native != nil { return stopNative(&s) }
+            // The native Stop completes at once: it re-reads (`dropsOrphanedRead(after:)`).
+            // Quit's (`shutdownServers`) does not.
+            if s.native != nil { return stopNative(&s) + [read(&s)] }
             guard let id = s.server else {
                 // Cancel while the busy port is probed: drop the probe, re-read the phase.
                 guard s.probe != nil else { return [] }
@@ -977,10 +983,9 @@ public enum ServiceLifecycle {
 
     /// Goes (or stays) External. Only called from the phases that accept a discovery, and from
     /// the Start-path probe chain (`startProbeResult`, after Start or an `EADDRINUSE` exit).
-    /// Going External issues a read (`reduce` rule 4): an earlier event may have dropped the
-    /// read in flight because the phase was `dropsOrphanedRead` (live work or a failure), and no end
-    /// re-reads after the adoption (`.external` has none until the server is lost), while
-    /// External's `isInstalled` reads what the read records. Staying External issues none.
+    /// Going External issues a read (`dropsOrphanedRead(after:)`): an earlier event may have
+    /// dropped the read in flight, and the adoption ends that owner without the re-read its
+    /// end would have issued. Staying External issues none.
     private static func adopt(_ s: inout LifecycleState, _ info: ExternalInfo) -> [LifecycleEffect] {
         let entering = !s.phase.isExternal
         s.endStartProbe()

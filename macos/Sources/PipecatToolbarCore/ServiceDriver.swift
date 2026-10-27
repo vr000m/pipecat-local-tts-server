@@ -287,8 +287,9 @@ public final class ServiceDriver {
             probes[probe] = Task {
                 let owner = await portOwner(port, service)
                 self.probes[probe] = nil
-                // A cancelled probe (Stop, quit) reports nothing.
-                guard !Task.isCancelled else { return }
+                // A cancelled probe (Stop, quit) reports nothing, nor one that ends after quit
+                // began (as `startProbeResult`).
+                guard !Task.isCancelled, !self.quitting else { return }
                 self.dispatch(.portOwnerFound(owner, probe: probe))
             }
         case .probeExternal(let port, let probe):

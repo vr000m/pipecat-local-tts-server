@@ -702,7 +702,7 @@ import Testing
         var s = Self.state(.installed, info: Service.appleSpeech.info, server: nil)
         _ = ServiceLifecycle.reduce(&s, .nativeLaunched(Self.current))
         #expect(s.phase == .starting)
-        #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.stopNative, .tearDown(note: "stopped")])
+        #expect(ServiceLifecycle.reduce(&s, .stopRequested) == [.stopNative, .tearDown(note: "stopped"), .refresh(epoch: s.epoch)])
         #expect(s.phase == .installed)
         #expect(ServiceLifecycle.reduce(&s, .nativeBound(Self.current, port: 9465, pid: 1, at: Self.date)) == [.discardNative(Self.current)])
         #expect(s.phase == .installed)
@@ -987,6 +987,73 @@ import Testing
                 &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: s.epoch))
             #expect(s.phase == .installed, "\(label): Dismiss's read did not replace the failure")
         }
+    }
+
+    /// A completed Stop is an owner's end, so it re-reads what a read dropped while the server ran
+    /// (`dropsOrphanedRead(after:)`): the supervised exit from `.stopping` and the native Stop each
+    /// issue exactly one read, whose answer records `requested` and the environment; a repeated
+    /// end issues none.
+    @Test func aCompletedStopReissuesTheReadDroppedWhileTheServerRan() {
+        var native = Self.state(.running, info: Service.appleSpeech.info, server: nil)
+        native.native = Self.current
+        let cases: [(String, LifecycleState, [LifecycleEvent])] = [
+            ("supervised", Self.state(.running), [.stopRequested, .exited(Self.current, status: 0, logTail: [])]),
+            ("native", native, [.stopRequested]),
+        ]
+        for (label, start, stop) in cases {
+            var s = start
+            _ = Self.issueRead(&s)
+            // A sibling's change while the server runs orphans the read, which is dropped.
+            _ = ServiceLifecycle.reduce(&s, .environmentChanged(.missing))
+            #expect(s.reading == nil, "\(label): the read was not dropped while running")
+            var effects: [LifecycleEffect] = []
+            for event in stop { effects = ServiceLifecycle.reduce(&s, event) }
+            #expect(s.phase == .installed, "\(label): \(s.phase)")
+            let reads = effects.filter { if case .refresh = $0 { true } else { false } }
+            #expect(reads == [.refresh(epoch: s.epoch)], "\(label): \(effects)")
+            #expect(s.reading == s.epoch && !s.startAfterRead, "\(label)")
+            // Repeated, the end is stale or a no-op: no second read.
+            let again = ServiceLifecycle.reduce(&s, stop.last!)
+            #expect(again.isEmpty, "\(label): \(again)")
+            _ = ServiceLifecycle.reduce(
+                &s, .refreshed(.notInstalled, environment: .missing, requested: false, epoch: s.epoch))
+            #expect(s.phase == .notInstalled && !s.requested && s.environment == .missing, "\(label)")
+        }
+    }
+
+    /// Quit's server stop (`shutdownServers`) is not a Stop: neither its exit nor the native
+    /// stop issues a read.
+    @Test func quitsServerStopIssuesNoRead() {
+        var supervised = Self.state(.running)
+        _ = ServiceLifecycle.reduce(&supervised, .shutdownServers)
+        let exited = ServiceLifecycle.reduce(&supervised, .exited(Self.current, status: 0, logTail: []))
+        #expect(exited == [.tearDown(note: "exited with status 0")], "\(exited)")
+        var native = Self.state(.running, info: Service.appleSpeech.info, server: nil)
+        native.native = Self.current
+        let stopped = ServiceLifecycle.reduce(&native, .shutdownServers)
+        #expect(stopped == [.stopNative, .tearDown(note: "stopped")], "\(stopped)")
+    }
+
+    /// A read orphaned while a failure is already shown is issued again: Dismiss's read, orphaned
+    /// by a sibling's change, still replaces the failure. Only the event that entered `.failed`
+    /// drops the read it orphaned (`aFailureDropsTheReadItOrphansAndKeepsItsPhase`).
+    @Test func dismissesReadOrphanedBySiblingChangeIsIssuedAgain() {
+        var s = Self.state(.failed(Self.failure), server: nil)
+        let dismissed = ServiceLifecycle.reduce(&s, .dismissFailure)
+        guard case .refresh(let orphaned)? = dismissed.last else {
+            Issue.record("no read: \(dismissed)")
+            return
+        }
+        let changed = ServiceLifecycle.reduce(&s, .environmentChanged(.missing))
+        #expect(changed == [.refresh(epoch: s.epoch)], "Dismiss's read was dropped: \(changed)")
+        #expect(s.epoch != orphaned && s.reading == s.epoch)
+        let before = s
+        let late = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: orphaned))
+        #expect(late.isEmpty && s == before, "the orphaned answer applied")
+        _ = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: s.epoch))
+        #expect(s.phase == .installed, "the re-issued read did not replace the failure")
     }
 
     /// The events the driver used to send without running their effects: from every phase, with
