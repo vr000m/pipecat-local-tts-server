@@ -26,8 +26,10 @@ public struct ExternalProbe: Sendable {
     }
 
     /// Longest wait for the hello. Below the 15 s re-probe period, so a pass never queues probes.
-    // provisional: set from the Phase 1 measurement
-    public static let helloTimeout: TimeInterval = 5.0
+    /// Measured (Phase 1, see the plan's Findings): the worst hello seen was 187 ms (Nemotron while
+    /// its model loaded), 130 ms (Kokoro under three concurrent commits) and 36 ms (Fish mid-commit),
+    /// so 2 s is about 10x the worst case.
+    public static let helloTimeout: TimeInterval = 2.0
 
     public let helloTimeout: TimeInterval
     public let host: String

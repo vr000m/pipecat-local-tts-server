@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Pipecat Service Toolbar: the External probe waits 2 s for a server's hello (was 5 s). Measured
+  across every TTS backend mid-synthesis and every STT engine while its model loads, the slowest
+  hello was 187 ms.
+
 ### Fixed
 
 - Pipecat Service Toolbar: an External row's LaunchAgent label is cut in the middle, not at the
