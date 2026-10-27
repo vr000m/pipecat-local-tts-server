@@ -1,6 +1,6 @@
 # Task: Adopt servers that are already running, and start one only when none is
 
-**Status**: Not Started
+**Status**: Complete on `feature/macos-adopt-external-servers` (PR #24); manual checks and live measurements outstanding
 **Component**: macos
 **Assigned to**: Varun / Claude
 **Priority**: High
@@ -382,19 +382,19 @@ Context lifecycle:
 ## Testing Notes
 
 ### Test Approach
-- [ ] Reducer table tests cover every (state, event) cell with the External phase: `.external` in the `phases` array, discovery events with reasons, an `allCases` guard, stale tags, quit under way, `removeRequested` and install/reset refused, discovery events in owned phases change nothing, one row per Start-path probe outcome, and the `EADDRINUSE` chain.
-- [ ] Effect-level ownership invariant: an allow-list of effects for `.external`, and `s.server == nil && s.native == nil`, for every event x stale x `shuttingDown`.
-- [ ] Probe tests against fake servers with an injectable hello delay: matching hello, wrong backend, wrong model, no or wrong `protocol_version`, silent, timeout, token required, closed port.
-- [ ] Hello-to-entry tests: Whisper variants, Phonon q8/q4, tone with and without a model, kokoro with none; drift of each TTS backend's static `backend_name` against the catalog (lean), live hello for tone only.
-- [ ] `ExternalDiscoveryPolicy` and `ServiceCounts` tests in Core (policy fixtures and counting predicates, `quitTitle`).
+- [x] Reducer table tests cover every (state, event) cell with the External phase: `.external` in the `phases` array, discovery events with reasons, an `allCases` guard, stale tags, quit under way, `removeRequested` and install/reset refused, discovery events in owned phases change nothing, one row per Start-path probe outcome, and the `EADDRINUSE` chain.
+- [x] Effect-level ownership invariant: an allow-list of effects for `.external`, and `s.server == nil && s.native == nil`, for every event x stale x `shuttingDown`.
+- [x] Probe tests against fake servers with an injectable hello delay: matching hello, wrong backend, wrong model, no or wrong `protocol_version`, silent, timeout, token required, closed port.
+- [x] Hello-to-entry tests: Whisper variants, Phonon q8/q4, tone with and without a model, kokoro with none; drift of each TTS backend's static `backend_name` against the catalog (lean), live hello for tone only.
+- [x] `ExternalDiscoveryPolicy` and `ServiceCounts` tests in Core (policy fixtures and counting predicates, `quitTitle`).
 - [ ] Live tests: tone server over TCP (adopt, then Quit leaves it running; a `ServiceDriverTests` test behind the existing live-tone gate); hello latency on a real backend mid-commit; cold start to first hello and a real agent restart (sets N).
-- [ ] Recorded upstream `ready`/`error` fixture checked in the lean job; opt-in E2E (`PIPECAT_TOOLBAR_E2E=1`): Parakeet and Nemotron install and serve.
-- [ ] Out-of-process smoke in `ui_smoke.sh` (Phase 6).
+- [x] Recorded upstream `ready`/`error` fixture checked in the lean job; opt-in E2E (`PIPECAT_TOOLBAR_E2E=1`): Parakeet and Nemotron install and serve.
+- [x] Out-of-process smoke in `ui_smoke.sh` (Phase 6).
 - [ ] Manual: run beside `just tts-install tone` and an STT LaunchAgent; the app shows both as External and Quit leaves them; the panel `.onAppear` / `.onDisappear` hook fires on every open and close.
 
 ### Test Results
-- [ ] All existing tests pass
-- [ ] New tests added and passing
+- [x] All existing tests pass
+- [x] New tests added and passing
 - [ ] Manual verification complete
 
 ### Edge Cases Tested
@@ -418,7 +418,7 @@ Context lifecycle:
 - No change to wire protocol v0.1 on either server.
 - Code reviewed and approved; tests passing; docs updated.
 
-<!-- reviewed: 2026-10-26 @ 834c5b88b57a0078d9ae42794019ec07224a57d3 -->
+<!-- reviewed: 2026-10-27 @ 85f0e165486bb1066dc358c81e5b4f868ad9e533 -->
 
 <!-- /review-plan writes the review marker above this line. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
