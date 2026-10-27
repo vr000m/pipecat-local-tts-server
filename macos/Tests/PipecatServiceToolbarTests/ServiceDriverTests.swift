@@ -202,9 +202,10 @@ import Testing
 
     @MainActor final class Flag { var value = false }
 
-    /// Polls (on the main actor) until `condition` holds or 2 s pass.
+    /// Polls (on the main actor) until `condition` holds or 10 s pass: a hang guard, not a
+    /// measurement (the condition is an event; a slow shared CI runner can take seconds).
     func until(_ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(10)
         while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
@@ -238,28 +239,70 @@ import Testing
         let start = clock.now
         await driver.shutdown()
         #expect(ended.value, "shutdown returned with the install still running")
-        #expect(clock.now - start < .seconds(2))
+        // A hang guard well short of the install's 30 s: the cancel, not the sleep, ended it.
+        #expect(clock.now - start < .seconds(20))
         #expect(driver.state.phase == .installing(.model), "a cancel during quit shows nothing")
     }
 
-    /// An install that ignores cancellation holds quit for at most `installDrain`.
+    /// An install that ignores cancellation holds quit for at most `installDrain`: shutdown
+    /// sleeps (the injected sleep, so no wall clock) for exactly that limit and returns with
+    /// the install still running.
     @Test func shutdownWaitsForAStuckInstallOnlySoLong() async {
         var deps = ServiceDependencies()
         deps.installDrain = .milliseconds(200)
+        let slept = Sleeps()
+        deps.sleep = { slept.append($0) }  // the limit elapses at once
+        let gate = InstallGate()
+        let ended = Flag()
         deps.appleSpeechInstall = { _ in
-            // Ignores cancellation without spinning: a cancelled task's own sleep throws at once,
-            // which would busy-loop and starve a small runner's task pool (and the drain timer).
-            let deadline = ContinuousClock.now + .seconds(3)
-            while ContinuousClock.now < deadline {
-                await Task.detached { try? await Task.sleep(for: .milliseconds(20)) }.value
-            }
+            await gate.wait()  // ignores cancellation
+            ended.value = true
         }
         let driver = ServiceDriver(info: Service.appleSpeech.info, dependencies: deps)
         driver.install()
-        let clock = ContinuousClock()
-        let start = clock.now
+        await until { gate.started }
+        #expect(gate.started, "the install never began")
         await driver.shutdown()
-        #expect(clock.now - start < .seconds(2))
+        #expect(!ended.value, "shutdown waited for the install instead of its drain limit")
+        #expect(slept.all == [.milliseconds(200)], "the drain did not wait installDrain")
+        gate.open()
+        await until { ended.value }
+    }
+
+    /// Durations the injected `sleep` was asked for.
+    final class Sleeps: @unchecked Sendable {
+        private let lock = NSLock()
+        private var durations: [Duration] = []
+        func append(_ duration: Duration) { lock.withLock { durations.append(duration) } }
+        var all: [Duration] { lock.withLock { durations } }
+    }
+
+    /// An install body that waits, ignoring cancellation, until the test opens it.
+    final class InstallGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var isOpen = false
+        private var began = false
+        var started: Bool { lock.withLock { began } }
+        func wait() async {
+            await withCheckedContinuation { c in
+                let now: Bool = lock.withLock {
+                    began = true
+                    if isOpen { return true }
+                    waiter = c
+                    return false
+                }
+                if now { c.resume() }
+            }
+        }
+        func open() {
+            let pending: CheckedContinuation<Void, Never>? = lock.withLock {
+                isOpen = true
+                defer { waiter = nil }
+                return waiter
+            }
+            pending?.resume()
+        }
     }
 
     // MARK: - Server lifecycle through the driver
@@ -882,7 +925,11 @@ import Testing
 
     @Test func deleteCancelsTheHelloProbeAndItsAdoptNeverLands() async {
         let hello = SlowHello()
-        let host = FakeHost()
+        // An environment the removal really removes, so `.notInstalled` is reached (an
+        // event to await, not a timeout the wait runs out).
+        let environment = ScriptedEnvironment(.ready(ScriptedEnvironment.marker))
+        environment.release()
+        let host = FakeHost(environment: environment)
         host.externalHandler = { _ in await hello.run() }
         let driver = busyDriver(host)
         await driver.refresh()

@@ -401,7 +401,9 @@ def test_recorded_stt_excerpt_is_verbatim_upstream_source():
     assert excerpt_drift(site) == []
 
 
-def _fake_stt_site(tmp_path: Path, *, extra_code: str = "", extra_backend: str = "") -> Path:
+def _fake_stt_site(
+    tmp_path: Path, *, extra_code: str = "", extra_backend: str = "", extra_pin: str = ""
+) -> Path:
     """A site whose ``## <path>`` files hold the excerpt's lines, plus anything extra."""
     files: dict[str, list[str]] = {}
     current: list[str] = []
@@ -412,7 +414,11 @@ def _fake_stt_site(tmp_path: Path, *, extra_code: str = "", extra_backend: str =
             current.append(line)
     files["stt_server/supervise.py"].append(extra_code)
     backends = files["stt_server/backends/__init__.py"]
-    backends.insert(backends.index("}"), extra_backend)
+    # Each dict's closing brace: PINNED_REVISIONS's, then BACKENDS's.
+    pins_end = backends.index("}", backends.index("PINNED_REVISIONS: dict[str, str] = {"))
+    registry_end = backends.index("}", backends.index("BACKENDS: dict[str, BackendEntry] = {"))
+    backends.insert(registry_end, extra_backend)
+    backends.insert(pins_end, extra_pin)
     for rel, lines in files.items():
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("\n".join(lines) + "\n")
@@ -420,8 +426,9 @@ def _fake_stt_site(tmp_path: Path, *, extra_code: str = "", extra_backend: str =
 
 
 def test_excerpt_drift_catches_what_the_excerpt_leaves_out(tmp_path):
-    """The opt-in check compares the ``CODE_*`` set and the ``BACKENDS`` registry, not only
-    that each excerpt line exists upstream: a code or backend the excerpt omits is drift."""
+    """The opt-in check compares the ``CODE_*`` set, the ``BACKENDS`` registry and the
+    ``PINNED_REVISIONS`` pins, not only that each excerpt line exists upstream: a code,
+    backend or pin the excerpt omits is drift."""
     assert excerpt_drift(_fake_stt_site(tmp_path / "same")) == []
     code = _fake_stt_site(tmp_path / "code", extra_code='CODE_NEW = "NewError"')
     assert [d for d in excerpt_drift(code) if d.startswith("CODE_*")], excerpt_drift(code)
@@ -429,6 +436,14 @@ def test_excerpt_drift_catches_what_the_excerpt_leaves_out(tmp_path):
         tmp_path / "backend", extra_backend='    "new": BackendEntry("m", "C", None),'
     )
     assert [d for d in excerpt_drift(backend) if d.startswith("BACKENDS")], excerpt_drift(backend)
+    pin = _fake_stt_site(
+        tmp_path / "pin",
+        extra_pin='    DEFAULT_NEW_MODEL: "0123456789abcdef0123456789abcdef01234567",',
+    )
+    (pin / "stt_server/backends/__init__.py").write_text(
+        'DEFAULT_NEW_MODEL = "org/new"\n' + (pin / "stt_server/backends/__init__.py").read_text()
+    )
+    assert [d for d in excerpt_drift(pin) if d.startswith("PINNED_REVISIONS")], excerpt_drift(pin)
 
 
 def test_swift_supervised_error_codes_are_the_union_of_both_lists():

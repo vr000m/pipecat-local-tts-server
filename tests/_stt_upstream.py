@@ -34,15 +34,23 @@ class UpstreamSTT:
     error_codes: frozenset[str]
     #: ``stt_server.backends.BACKENDS``: backend name -> its default model (None: none).
     default_models: dict[str, str | None]
+    #: ``stt_server.backends.PINNED_REVISIONS``: model repo -> the Hub commit it loads.
+    pinned_revisions: dict[str, str]
 
 
-def _parse(text: str, name: str) -> tuple[frozenset[str], dict[str, str | None]]:
-    """``CODE_*`` values and ``BACKENDS`` (name -> default model) from an excerpt or the real
-    source files, by one parser, so the two can be compared as sets. Fails on a ``CODE_`` line
-    or a ``BACKENDS`` entry the parser cannot read (it would otherwise drop out of the set)."""
+def _parse(text: str, name: str) -> tuple[frozenset[str], dict[str, str | None], dict[str, str]]:
+    """``CODE_*`` values, ``BACKENDS`` (name -> default model) and ``PINNED_REVISIONS`` (repo ->
+    commit) from an excerpt or the real source files, by one parser, so the two can be compared
+    as sets. Fails on a ``CODE_`` line, a ``BACKENDS`` entry or a pin the parser cannot read (it
+    would otherwise drop out of the set)."""
     codes = re.findall(r'^CODE_[A-Z_]+ = "(\w+)"$', text, re.MULTILINE)
     assert len(codes) == len(re.findall(r"^CODE_", text, re.MULTILINE)), f"{name}: unparsed CODE_"
     constants = dict(re.findall(r'^(DEFAULT_[A-Z_]+_MODEL) = "([^"]+)"$', text, re.MULTILINE))
+    pins_body = text.split("PINNED_REVISIONS: dict[str, str] = {\n", 1)[1].split("\n}\n", 1)[0]
+    pins = re.findall(r'^    (DEFAULT_[A-Z_]+_MODEL): "([0-9a-f]{40})",$', pins_body, re.MULTILINE)
+    entries = [line for line in pins_body.splitlines() if line.strip()]
+    assert len(pins) == len(entries), f"{name}: unparsed PINNED_REVISIONS entries {entries}"
+    pinned = {constants[constant]: sha for constant, sha in pins}
     body = text.split("BACKENDS: dict", 1)[1].split("\n}\n", 1)[0]
     parts = re.split(r'^    "(\w+)": BackendEntry\(', body, flags=re.MULTILINE)
     keys = re.findall(r'^    "(\w+)":', body, re.MULTILINE)
@@ -51,8 +59,8 @@ def _parse(text: str, name: str) -> tuple[frozenset[str], dict[str, str | None]]
     for backend, segment in zip(parts[1::2], parts[2::2], strict=True):
         constant = re.search(r"\b(DEFAULT_[A-Z_]+_MODEL)\b", segment)
         models[backend] = constants[constant.group(1)] if constant else None
-    assert codes and models, f"{name}: the parser sees the source"
-    return frozenset(codes), models
+    assert codes and models and pinned, f"{name}: the parser sees the source"
+    return frozenset(codes), models, pinned
 
 
 def upstream_stt(path: Path = FIXTURE) -> UpstreamSTT:
@@ -63,8 +71,10 @@ def upstream_stt(path: Path = FIXTURE) -> UpstreamSTT:
         re.MULTILINE,
     )
     assert release, f"{path.name}: no release/commit header"
-    codes, models = _parse(text, path.name)
-    return UpstreamSTT(version=release.group(1), error_codes=codes, default_models=models)
+    codes, models, pinned = _parse(text, path.name)
+    return UpstreamSTT(
+        version=release.group(1), error_codes=codes, default_models=models, pinned_revisions=pinned
+    )
 
 
 def _sections(path: Path) -> list[str]:
@@ -88,7 +98,7 @@ def excerpt_drift(site: Path, path: Path = FIXTURE) -> list[str]:
             if line not in source:
                 drift.append(f"not in the source: {line}")
     real = "\n".join((site / section).read_text() for section in _sections(path))
-    codes, models = _parse(real, str(site))
+    codes, models, pinned = _parse(real, str(site))
     excerpt = upstream_stt(path)
     if codes != excerpt.error_codes:
         drift.append(
@@ -96,4 +106,6 @@ def excerpt_drift(site: Path, path: Path = FIXTURE) -> list[str]:
         )
     if models != excerpt.default_models:
         drift.append(f"BACKENDS: source {models} != excerpt {excerpt.default_models}")
+    if pinned != excerpt.pinned_revisions:
+        drift.append(f"PINNED_REVISIONS: source {pinned} != excerpt {excerpt.pinned_revisions}")
     return drift

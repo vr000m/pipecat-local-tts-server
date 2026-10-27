@@ -142,12 +142,20 @@ import Testing
         #expect(!Service.nemotron.info.licence.isRestrictive)
     }
 
-    @Test func sttSnapshotsCarryNoRevisionPins() {
+    /// An STT default model is sized at upstream's pin, any other STT model at `main` (nil).
+    @Test func sttSnapshotsCarryUpstreamsPinsForTheDefaultModelsOnly() {
         for service in ServiceCatalog.services(of: .stt) {
             guard let repo = service.info.modelRepo else { continue }
             let snapshots = ServiceCatalog.snapshots(for: service)
             #expect(snapshots.map(\.repo) == [repo], "\(service)")
-            #expect(snapshots.allSatisfy { $0.revision == nil && $0.kind == .model && $0.required }, "\(service)")
+            let pin = ServiceCatalog.sttPinnedRevisions[repo]
+            #expect(snapshots.allSatisfy { $0.revision == pin && $0.kind == .model && $0.required }, "\(service)")
+        }
+        for service in [Service.whisper, .kyutai, .parakeet, .nemotron] {
+            #expect(ServiceCatalog.snapshots(for: service).first?.revision != nil, "\(service) is a pinned default")
+        }
+        for service in [Service.whisperTiny, .kyutai2B] {
+            #expect(ServiceCatalog.snapshots(for: service).first?.revision == nil, "\(service) is not pinned upstream")
         }
         #expect(ServiceCatalog.snapshots(for: .kyutai2B).first?.files == .allButDocs)
         #expect(ServiceCatalog.snapshots(for: .whisper).first?.files == .allButDocs)
@@ -1067,20 +1075,33 @@ final class Lines: @unchecked Sendable {
         try sub.run()
         let lines = Lines()
         let reader = Task { for await line in sub.stdout { lines.append(line) } }
-        let status = await sub.waitForExit(after: reader)
+        // The line lands 0.3 s after the exit; a generous drain limit, so a slow runner still
+        // delivers it inside the limit (this test is about the order, not the limit).
+        let status = await sub.waitForExit(after: reader, drainLimit: .seconds(10))
         #expect(status == 1)
         #expect(lines.all.compactMap(ServerCLIEvent.parse).last?.errorCode == .addressInUse)
     }
 
+    /// A grandchild holds stdout open for 30 s: the wait ends at the drain limit, with the
+    /// pipe still open (so the limit ended it, not EOF), never sooner than the limit, and
+    /// (a hang guard for a slow shared runner) long before the grandchild exits.
     @Test func drainIsBoundedWhenThePipeStaysOpen() async throws {
         let sub = Subprocess(
             .init(executable: URL(filePath: "/bin/sh"), arguments: ["-c", "(sleep 30) & exit 0"], environment: ProcessEnvironment.base()))
         try sub.run()
-        let reader = Task { for await _ in sub.stdout {} }
+        let eof = Flag()
+        let reader = Task {
+            for await _ in sub.stdout {}
+            eof.raise()
+        }
         let clock = ContinuousClock()
         let start = clock.now
         #expect(await sub.waitForExit(after: reader, drainLimit: .milliseconds(300)) == 0)
-        #expect(clock.now - start < .seconds(5))
+        let elapsed = clock.now - start
+        #expect(!eof.value, "the pipe closed: the drain limit was not what ended the wait")
+        #expect(elapsed >= .milliseconds(300), "returned before the drain limit (\(elapsed))")
+        #expect(elapsed < .seconds(20), "waited for the grandchild (\(elapsed))")
+        _ = await sub.stop(grace: .seconds(2))  // end the orphaned sleep
     }
 }
 

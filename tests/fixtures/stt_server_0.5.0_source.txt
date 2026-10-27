@@ -16,6 +16,12 @@ DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 DEFAULT_NEMOTRON_MODEL = "mlx-community/nemotron-3.5-asr-streaming-0.6b"
 DEFAULT_KYUTAI_MODEL = "kyutai/stt-1b-en_fr-mlx"
+PINNED_REVISIONS: dict[str, str] = {
+    DEFAULT_MLX_MODEL: "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+    DEFAULT_KYUTAI_MODEL: "2b995724eef1e964b7ccb6a762b35a665c4abe0d",
+    DEFAULT_PARAKEET_MODEL: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
+    DEFAULT_NEMOTRON_MODEL: "e550040c0478027ed679b2b6b0d055502c103663",
+}
 BACKENDS: dict[str, BackendEntry] = {
     "echo": BackendEntry(None, None, None),
     "mlx": BackendEntry("stt_server.backends.mlx_whisper", "MLXWhisperBackend", DEFAULT_MLX_MODEL),

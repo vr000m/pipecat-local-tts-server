@@ -21,7 +21,8 @@ import Python, so these tests parse the Swift source (one parser,
     family's repo;
   * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
     TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
-    repo with no revision (the app passes none: upstream 0.5.0 pins the default models itself);
+    repo at upstream's ``PINNED_REVISIONS`` commit for a pinned default, else with no
+    revision (the app passes none: upstream 0.5.0 pins the default models itself);
   * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
     repo's LaunchAgent labels and ports (written out here), and backend names and
     default model repos that equal the upstream registry, read from the recorded
@@ -42,6 +43,7 @@ from ._macos_catalog import (
     Snapshot,
     macos_catalog,
     macos_snapshots,
+    macos_stt_pinned_revisions,
     mlx_audio_default_patterns,
 )
 from ._stt_upstream import upstream_stt
@@ -254,11 +256,14 @@ def test_swift_snapshots_match_prefetch_specs(monkeypatch):
     assert snapshots["phonon_q8"][0].revision, "the parser sees the Phonon pin"
 
 
-def test_swift_stt_snapshots_are_the_model_repo_unpinned():
+def test_swift_stt_snapshots_are_the_model_repo_at_upstreams_pin():
     """An STT service downloads its one model repo through the upstream
-    ``stt_server prefetch --backend <b> --model <repo>``, which takes no revision flag
-    (upstream 0.5.0 pins the default models itself; the helper's ``MODEL_REVISIONS`` is gone): one required model snapshot of the
-    entry's ``modelRepo``, ``revision`` nil. Whisper and Kyutai take everything but docs."""
+    ``stt_server prefetch --backend <b> --model <repo>``, which takes no revision flag:
+    upstream pins its default models itself (``PINNED_REVISIONS``, read from the recorded
+    excerpt of the release the app installs). So one required model snapshot of the entry's
+    ``modelRepo``, at upstream's pin for a pinned default and ``revision`` nil (``main``) for
+    any other model. Whisper and Kyutai take everything but docs."""
+    pinned = upstream_stt().pinned_revisions
     stt = {n: e for n, e in macos_catalog().items() if e.kind == "stt"}
     assert {"parakeet", "nemotron", "whisper", "kyutai"} <= set(stt)
     snapshots = macos_snapshots()
@@ -270,13 +275,18 @@ def test_swift_stt_snapshots_are_the_model_repo_unpinned():
         (snap,) = snapshots[name]
         assert (snap.repo, snap.revision, snap.kind, snap.required) == (
             entry.model_repo,
-            None,
+            pinned.get(entry.model_repo),
             "model",
             True,
         ), name
         assert snap.files, f"{name}: nothing to download"
         if entry.family in ("whisper", "kyutai"):
             assert snap.files == "allButDocs", name
+    # Every upstream pin is a catalog model the app sizes at that pin, and the Swift table holds
+    # nothing else (a stale or extra entry would size the wrong commit).
+    sized = {s.repo: s.revision for name in stt for s in snapshots[name]}
+    assert {repo: sized.get(repo) for repo in pinned} == pinned
+    assert macos_stt_pinned_revisions() == pinned
 
 
 _BACKEND_NAME = re.compile(r'^\s+backend_name = "(\w+)"', re.MULTILINE)

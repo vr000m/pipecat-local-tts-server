@@ -160,9 +160,24 @@ def mlx_audio_default_patterns() -> tuple[str, ...]:
     return tuple(_SWIFT_STRING.findall(text.split("])", 1)[0]))
 
 
+def macos_stt_pinned_revisions() -> dict[str, str]:
+    """``ServiceCatalog.sttPinnedRevisions``: STT model repo -> the Hub commit sized."""
+    text = SERVICE_SWIFT.read_text()
+    body = text.split("static let sttPinnedRevisions: [String: String] = [", 1)[1]
+    body = body.split("\n    ]\n", 1)[0]
+    pins = dict(re.findall(r'^ {8}"([^"]+)": "([0-9a-f]{40})",$', body, re.MULTILINE))
+    assert len(pins) == len(body.strip().splitlines()), f"unparsed sttPinnedRevisions: {body}"
+    return pins
+
+
 def _snapshot(args: str, model_repo: str | None) -> Snapshot:
     repo = re.match(r'\s*repo: (repo|"([^"]+)")', args)
     assert repo, args
+    if "revision: sttPinnedRevisions[repo]" in args:
+        revision = macos_stt_pinned_revisions().get(model_repo or "")
+    else:
+        assert re.search(r"revision: (nil|\")", args) or "revision:" not in args, args
+        revision = _optional_string(args, "revision")
     if m := re.search(r"files: \.patterns\(\[(.*?)\]\)", args, re.DOTALL):
         files: tuple[str, ...] | str = tuple(_SWIFT_STRING.findall(m.group(1)))
     elif "files: .allButDocs" in args:
@@ -172,7 +187,7 @@ def _snapshot(args: str, model_repo: str | None) -> Snapshot:
         files = mlx_audio_default_patterns()
     return Snapshot(
         repo=model_repo if repo.group(1) == "repo" else repo.group(2),
-        revision=_optional_string(args, "revision"),
+        revision=revision,
         files=files,
         kind=_field(args, r"kind: \.(\w+)") or "model",
         required=_field(args, r"required: (true|false)") != "false",

@@ -225,9 +225,22 @@ public enum ServiceCatalog {
         Service.allCases.filter { $0.kind == kind }
     }
 
+    /// The Hub commit upstream `pipecat-local-stt-server` pins each default STT model to
+    /// (`stt_server.backends.PINNED_REVISIONS` of `sttServerRequirement`'s release), so the
+    /// size estimate is of the exact weights `prefetch`/`serve` load. Any other model repo
+    /// is unpinned upstream (it follows `main`) and has no entry. The app passes only
+    /// `--model <repo>`; upstream applies the pin itself.
+    public static let sttPinnedRevisions: [String: String] = [
+        "mlx-community/whisper-large-v3-turbo": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+        "kyutai/stt-1b-en_fr-mlx": "2b995724eef1e964b7ccb6a762b35a665c4abe0d",
+        "mlx-community/parakeet-tdt-0.6b-v3": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
+        "mlx-community/nemotron-3.5-asr-streaming-0.6b": "e550040c0478027ed679b2b6b0d055502c103663",
+    ]
+
     /// Every Hugging Face snapshot the install's model step downloads for `service`:
     /// TTS mirrors `prefetch_specs(model)` in the backend module (run with the app's
-    /// `--model`, no `PIPECAT_TTS_PHONON_VOICES`), STT the upstream `python -m stt_server prefetch --backend <b> --model <repo>`.
+    /// `--model`, no `PIPECAT_TTS_PHONON_VOICES`), STT the upstream `python -m stt_server prefetch --backend <b> --model <repo>`
+    /// (at upstream's pin for a default model, `sttPinnedRevisions`).
     /// `tests/test_macos_catalog_drift.py` compares this table with both.
     /// Kept above `info(for:)`: the drift tests' parser reads that switch to the end.
     public static func snapshots(for service: Service) -> [HubSnapshot] {
@@ -250,9 +263,14 @@ public enum ServiceCatalog {
                     kind: .codec),
             ]
         case .whisper, .kyutai:
-            return [HubSnapshot(repo: repo, files: .allButDocs)]
+            return [HubSnapshot(repo: repo, revision: sttPinnedRevisions[repo], files: .allButDocs)]
         case .parakeet:
-            return [HubSnapshot(repo: repo, files: .patterns(["config.json", "model.safetensors"]))]
+            return [
+                HubSnapshot(
+                    repo: repo, revision: sttPinnedRevisions[repo], files: .patterns(["config.json", "model.safetensors"]))
+            ]
+        case .nemotron:
+            return [HubSnapshot(repo: repo, revision: sttPinnedRevisions[repo])]
         default:
             return [HubSnapshot(repo: repo)]
         }
