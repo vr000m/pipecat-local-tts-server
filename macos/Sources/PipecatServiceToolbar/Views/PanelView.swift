@@ -210,9 +210,13 @@ struct RunningRow: View {
                     .foregroundStyle(.secondary)
             case .external:
                 StatusDot(color: model.isExternalNotResponding ? .orange : .green)
+                // The LaunchAgent labels share a prefix and differ at the end, so cut the middle
+                // (keeping the part that tells them apart); the tooltip has the whole line.
                 Text(verbatim: model.externalStatusLine)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .truncationMode(.middle)
+                    .help(model.externalStatusLine)
             case .starting:
                 StatusDot(color: .orange)
                 Text(model.info.needsModelDownload ? "Loading model…" : "Starting…")
