@@ -24,6 +24,11 @@
 #                        not inherit your shell env, so PIPECAT_TTS_AUTH_TOKEN (the
 #                        env-based server token) is NOT carried into the agent — the
 #                        renderer rejects an install where it is set without the file.
+#                        The file is validated before anything is written: an absolute path to a
+#                        regular file (not a symlink) you own with no group/other mode bits, in
+#                        directories owned by you or root that nobody else can write (group write
+#                        only on root-owned ones), holding one visible-ASCII token
+#                        (an empty file would silently disable auth, so it is refused).
 #   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
 #                        the agent's plist EnvironmentVariables so it survives launchd.
 #   PIPECAT_TTS_PHONON_VOICES  comma-separated Phonon catalog slugs (e.g. zoey,juniper);
@@ -60,7 +65,51 @@ fi
 
 cmd="${1:-install}"
 
+# Refuse a token file the server would refuse or that others could read or swap:
+# the content rules are the server's own (`serve --auth-token-file` runs
+# tts_server.env.read_token_file(strict=True) at every start, so an agent this
+# accepts is one the server starts), and the file/directory policy is
+# tts_server.env.check_token_file_policy (absolute path, not a symlink, a regular
+# file you own with no group/other bits, in a directory chain owned by you or root
+# that nobody else can write; group write only on root-owned directories). Runs before anything is written or loaded.
+#
+# Validated == recorded: the policy checks the symlink-free resolved path, and this
+# sets AUTH_TOKEN_FILE to that path, which is what the plist then carries. A
+# symlinked directory in the path as typed sits outside the checked chain and could
+# be repointed after this check; the resolved path has no such component left.
+validate_token_file() {
+    local f="$1" resolved
+    # Lossless capture (the trailing x survives command substitution's newline strip).
+    if ! resolved="$("$PYTHON" -I -c '
+import sys
+from tts_server.env import ConfigError, check_token_file_policy, read_token_file
+try:
+    resolved = check_token_file_policy(sys.argv[1], uid=int(sys.argv[2]))
+    read_token_file(resolved, strict=True)
+except ConfigError as exc:
+    print(f"error: PIPECAT_TTS_AUTH_TOKEN_FILE: {exc}", file=sys.stderr)
+    sys.exit(1)
+sys.stdout.write(resolved)
+' "$f" "$(id -u)" && printf x)"; then
+        exit 1
+    fi
+    resolved="${resolved%x}"
+    # A control character (newline, tab, ESC) cannot be carried safely by the plist or
+    # launchd; refuse it rather than record a path nobody typed.
+    if [[ "$resolved" == *[[:cntrl:]]* ]]; then
+        echo "error: PIPECAT_TTS_AUTH_TOKEN_FILE resolves to a path containing a control character; rename the file or its directories" >&2
+        exit 1
+    fi
+    if [[ "$resolved" != "$f" ]]; then
+        echo "note: PIPECAT_TTS_AUTH_TOKEN_FILE resolves to $resolved; the plist records that path"
+    fi
+    AUTH_TOKEN_FILE="$resolved"
+}
+
 render_plist() {
+    if [[ -n "$AUTH_TOKEN_FILE" ]]; then
+        validate_token_file "$AUTH_TOKEN_FILE"
+    fi
     mkdir -p "$LOG_DIR" "$(dirname "$PLIST_DST")"
     # Delegate to plistlib (via render_tts_plist.py) so XML escaping +
     # allowlist validation handle hostile values instead of sed substitution

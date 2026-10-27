@@ -43,7 +43,13 @@ precedence everywhere: **URI > socket > host+port**.
 | `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `convert` (phonon aliases), `warning` (an optional snapshot failed), `check`/`summary`, `error`; fields in README). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
-use `--auth-token-file`.
+use `--auth-token-file`. `serve` reads that file strictly (`tts_server.env.read_token_file`): an
+empty/whitespace-only file, a token with anything outside visible ASCII (0x21-0x7E), or a
+non-UTF-8 file exits 1 at startup (`ConfigError` under `--supervised`) instead of silently
+disabling auth; `status` stays lenient. The installer (`scripts/install_tts_agent.sh`) runs the
+same reader plus a file/directory policy (`check_token_file_policy`: absolute path, not a symlink,
+a regular file you own with no group/other mode bits, in directories owned by you or root that no other user can write, group write allowed only on root-owned ones such as macOS's admin-group directories)
+before it writes anything.
 
 ## Environment variables
 
@@ -52,7 +58,7 @@ use `--auth-token-file`.
 | `TTS_WS_URI` / `TTS_WS_SOCKET` / `TTS_WS_HOST` / `TTS_WS_PORT` | client | Endpoint (precedence URI > socket > host+port). |
 | `TTS_WS_TOKEN` | client | Bearer the client/probe sends. **Never** falls back to the server var. |
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
-| `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). |
+| `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). Unset or empty = no auth; a set-but-blank value or one that is not visible ASCII exits 1 at startup (same rules as the token file). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to re-advertise after installing their extra G2P package. |
 | `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |
