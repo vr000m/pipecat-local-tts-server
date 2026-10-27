@@ -826,6 +826,43 @@ import Testing
         #expect(s.reading == nil, "the answered read is not issued again")
     }
 
+    /// Asserts `effects` is exactly the re-issued read at the new epoch, the service stayed
+    /// External, and the orphaned read's answer (tagged `orphaned`) is dropped.
+    static func expectOrphanedReadReissuedWhileExternal(
+        _ s: inout LifecycleState, _ effects: [LifecycleEffect], orphaned: Int, _ label: String
+    ) {
+        #expect(s.phase.isExternal, "\(label): left External")
+        #expect(s.epoch != orphaned, "\(label): the epoch did not advance")
+        #expect(effects == [.refresh(epoch: s.epoch)], "\(label): \(effects)")
+        #expect(effects.allSatisfy(allowedForExternal), "\(label): \(effects)")
+        #expect(s.reading == s.epoch && !s.startAfterRead, "\(label)")
+        let before = s
+        let late = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(marker), requested: true, epoch: orphaned))
+        #expect(late.isEmpty && s == before, "\(label): the orphaned read applied")
+    }
+
+    /// A sibling's environment change while External, with a read in flight: the change advances
+    /// the epoch and orphans the read, which is re-issued (External is not `ownerEndRereads`).
+    @Test func environmentChangedWhileExternalReissuesTheReadInFlight() {
+        var s = Self.externalState()
+        s.environment = .missing
+        let orphaned = Self.issueRead(&s)
+        let effects = ServiceLifecycle.reduce(&s, .environmentChanged(.ready(Self.marker)))
+        #expect(s.environment == .ready(Self.marker))
+        Self.expectOrphanedReadReissuedWhileExternal(&s, effects, orphaned: orphaned, "environmentChanged")
+    }
+
+    /// External to External `externalFound` resets the failure count, which advances the epoch
+    /// and orphans the read in flight: it is re-issued under the new epoch.
+    @Test func externalFoundOnAnExternalServiceReissuesTheReadInFlight() {
+        var s = Self.externalState(failures: 2)
+        let orphaned = Self.issueRead(&s)
+        let effects = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+        #expect(s.externalFailures == 0)
+        Self.expectOrphanedReadReissuedWhileExternal(&s, effects, orphaned: orphaned, "externalFound")
+    }
+
     /// No read in flight: the adoption issues none (rule 4 re-issues only an orphaned read).
     @Test func adoptionWithNoReadInFlightIssuesNoRead() {
         var s = Self.state(.checking, server: nil)

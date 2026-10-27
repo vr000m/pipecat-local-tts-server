@@ -484,6 +484,12 @@ extension LifecycleState {
         }
     }
 
+    /// The live work owning the phase re-reads when it ends, so a read it orphaned
+    /// need not be issued again (`reduce` rule 4). `.external` is the one live phase
+    /// with no such end until the server is lost, and its `isInstalled` reads what
+    /// the read records (`requested`, the environment), so it is excluded.
+    public var ownerEndRereads: Bool { hasLiveWork && !phase.isExternal }
+
     /// Reset is refused: a server, or an install or removal, still uses the
     /// environment Reset would delete (quit never waits on this; it stops them).
     public var blocksReset: Bool {
@@ -609,11 +615,9 @@ public enum ServiceLifecycle {
     /// 3. A probe lives only while the phase is `.starting` with no server; a
     ///    probe that ends any other way than its own answer is cancelled, by
     ///    the first effect (so no other effect's wait delays it).
-    /// 4. A read the advance orphaned is issued again when nothing owns the
-    ///    phase, or when the phase is `.external` (otherwise the owner's own end
-    ///    re-reads it; External has no such end until the server is lost, and its
-    ///    `isInstalled` reads what the read records). It never carries a start
-    ///    with it, and only a read already in flight is re-issued.
+    /// 4. A read the advance orphaned is issued again unless `ownerEndRereads`
+    ///    (the owner's own end re-reads it). It never carries a start with it,
+    ///    and only a read already in flight is re-issued.
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
     ///    transition into or out of `.external`, and for the kinds in `changesExternalEpoch`.
     ///    A kind in `keepsEpochWhenItOnlyCounts` (a count-only `externalLost`) that left an
@@ -643,9 +647,7 @@ public enum ServiceLifecycle {
         }
         if let reading = s.reading, reading != s.epoch {
             s.startAfterRead = false
-            // External has no owner's end that re-reads until the server is lost, yet its
-            // `isInstalled` depends on what the read records: re-issue it there too.
-            if s.hasLiveWork, !s.phase.isExternal {
+            if s.ownerEndRereads {
                 s.reading = nil
             } else {
                 effects.append(read(&s))
@@ -671,8 +673,8 @@ public enum ServiceLifecycle {
             if let cache { s.cache = cache }
             // External reads installed from `requested`, and `.external` counts as live work, so a
             // refresh that lands after the adoption must still record it; the phase itself stays
-            // put. A read in flight when the adoption advanced the epoch is re-issued under the new
-            // one (`reduce` rule 4), so this is the refresh that answers it.
+            // put. External is not `ownerEndRereads`, so a read orphaned by the adoption is
+            // re-issued under the new epoch (`reduce` rule 4) and this is the refresh that answers it.
             if let requested, case .external = s.phase { s.requested = requested }
             // A server, install, probe or removal owns the phase; only its own end moves it.
             guard !s.hasLiveWork else { return [] }

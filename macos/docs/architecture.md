@@ -153,8 +153,8 @@ a second refresh, a sibling's change (`environmentChanged`), Start, Stop, Delete
 or an install each invalidate the read in flight. A read orphaned that way is
 issued again when nothing owns the phase (an install, a probe, a removal, a
 server not yet asked to stop, the native server, or the `starting`/`running`/
-`stopping`/`removing` phases: `hasLiveWork`); otherwise the owner's end re-reads.
-`.external` is the exception: it counts as live work but has no end that re-reads
+`stopping`/`removing` phases: `hasLiveWork`); otherwise the owner's end re-reads
+(`ownerEndRereads`). `.external` is the exception: it counts as live work but has no end that re-reads
 until the server is lost, and its `isInstalled` reads the `requested` and
 environment the read records, so an orphaned read (the bootstrap read in flight
 when discovery adopts) is issued again there too. Its answer records those fields
