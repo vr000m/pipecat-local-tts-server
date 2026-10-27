@@ -52,7 +52,7 @@
             app.model(.dia).setPreviewState(
                 phase: .failed(.init(kind: .download, title: "Model download failed", message: "Couldn't reach the network.")))
             app.model(.appleSpeech).setPreviewState(
-                phase: .running, running: .init(pid: 4242, port: 9465, rate: 16000, model: "SpeechTranscriber", since: .now),
+                phase: .running, running: .init(pid: 4242, port: 9465, rate: 16000, model: ServiceInfo.appleSpeechModel, since: .now),
                 log: ["listening on 127.0.0.1:9465", "transcribed 3.2 s of audio in 0.41 s"])
             app.model(.whisper).setPreviewState(phase: .starting, environment: .ready(marker), startDetail: "starting whisper (model=mlx-community/whisper-large-v3-turbo)")
             app.model(.kyutai).approxDownloadBytes = 2_363_000_000

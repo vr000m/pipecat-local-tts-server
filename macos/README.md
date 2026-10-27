@@ -114,8 +114,10 @@ for running both.
   check. It is disabled while a check runs.
 - **Reset**: when environments from an incompatible app version are found, a
   banner offers Reset, which deletes every Python environment (not model
-  weights) and checks the services again. It is refused while a service runs,
-  installs or is being deleted. While Reset or the launch check runs, the
+  weights) and checks the services again. It is refused while a server the app
+  started runs, or a service installs or is being deleted; an External server
+  does not block it (Reset deletes only the app's own environments and never
+  touches that server). While Reset or the launch check runs, the
   Python services' Get, Start and Delete are disabled.
 
 ## Use a service from Pipecat

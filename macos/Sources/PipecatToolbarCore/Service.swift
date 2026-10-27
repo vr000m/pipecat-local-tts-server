@@ -116,6 +116,8 @@ public struct ServiceInfo: Sendable, Equatable {
     public let kind: ServiceKind
     /// `backend.name` of this entry's `server.hello` (`mlx` for every Whisper size).
     public let expectedBackendName: String
+    /// `backend.model` of Apple Speech's in-app server (its `server.hello` and its running row).
+    public static let appleSpeechModel = "SpeechTranscriber"
     public let displayName: String
     public let tagline: String
     public let runtime: ServiceRuntime

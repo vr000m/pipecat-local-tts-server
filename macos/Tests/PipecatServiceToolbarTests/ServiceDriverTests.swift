@@ -801,9 +801,9 @@ import Testing
     }
 
     /// A read issued while the owner lookup runs is orphaned when the lookup answers (busy
-    /// failure); the reducer re-issues it (rule 4) and the driver must run that effect, or the
-    /// service is left with `reading` set and no read in flight.
-    @Test func thePortOwnerAnswerRunsTheReadItReissues() async {
+    /// failure); the reducer drops it (`dropsOrphanedRead`), so the service is left with no read
+    /// pending, and the orphaned read's answer, landing after, does not replace the failure.
+    @Test func aBusyFailureDropsTheReadItOrphansAndKeepsItsPhase() async {
         let environment = ArmableEnvironment()
         let host = FakeHost(environment: environment)  // answers kokoro: the owner lookup follows
         let answer = Flag()
@@ -823,14 +823,18 @@ import Testing
         environment.arm()
         let inFlight = Task { await driver.refresh() }  // blocks in the cache probe
         await until { driver.state.reading != nil }
-        let orphaned = driver.state.reading
         answer.value = true
         await until { if case .failed = driver.state.phase { true } else { false } }
-        #expect(driver.state.reading != orphaned, "the owner answer did not re-issue the orphaned read")
+        let failed = driver.state.phase
+        guard case .failed(let failure) = failed, case .portBusy = failure.kind else {
+            Issue.record("\(failed)")
+            return
+        }
+        #expect(driver.state.reading == nil, "the busy failure kept the orphaned read")
         environment.slow.release()
         await inFlight.value
-        await until { driver.state.reading == nil }
-        #expect(driver.state.reading == nil, "the re-issued read was never run")
+        #expect(driver.state.phase == failed, "the orphaned read replaced the failure: \(driver.state.phase)")
+        #expect(driver.state.reading == nil)
     }
 
     /// Start on a busy port while a read is in flight: the probe drops the read, the adoption

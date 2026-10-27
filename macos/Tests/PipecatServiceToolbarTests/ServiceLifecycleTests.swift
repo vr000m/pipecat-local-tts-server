@@ -835,7 +835,7 @@ import Testing
     }
 
     /// A sibling's environment change while External, with a read in flight: the change advances
-    /// the epoch and orphans the read, which is re-issued (External is not `ownerEndRereads`).
+    /// the epoch and orphans the read, which is re-issued (External is not `dropsOrphanedRead`).
     @Test func environmentChangedWhileExternalReissuesTheReadInFlight() {
         var s = Self.externalState()
         s.environment = .missing
@@ -887,7 +887,7 @@ import Testing
     }
 
     /// A read in flight when a busy-port Start begins is dropped (the Start-path probe owns the
-    /// phase, `ownerEndRereads`); the probe then adopts, an end that re-reads nothing by itself.
+    /// phase, `dropsOrphanedRead`); the probe then adopts, an end that re-reads nothing by itself.
     @Test func aReadDroppedByTheStartProbeIsIssuedAgainWhenItAdopts() {
         var s = Self.state(.installed, server: nil)
         s.requested = false
@@ -899,7 +899,7 @@ import Testing
             Issue.record("no hello probe: \(started)")
             return
         }
-        #expect(s.reading == nil, "the probe dropped the read in flight (ownerEndRereads)")
+        #expect(s.reading == nil, "the probe dropped the read in flight (dropsOrphanedRead)")
         let adopted = ServiceLifecycle.reduce(
             &s, .startProbeResult(tag: probe, outcome: .adopt(Service.tone.info, Self.toneHello)))
         #expect(s.epoch != inFlight)
@@ -942,6 +942,78 @@ import Testing
         #expect(failed.isEmpty && s.reading == nil, "\(failed)")
         let adopted = ServiceLifecycle.reduce(&s, .externalFound(epoch: s.externalEpoch, info: Self.externalInfo))
         Self.expectAdoptionRereads(&s, adopted, "discovery adopt from .failed")
+    }
+
+    /// Every end of owned work that fails it, with a read in flight (issued while the work owned
+    /// the phase): the failure orphans the read and drops it (`dropsOrphanedRead`), issuing none,
+    /// so the orphaned answer can't replace the failure before the user saw it. Dismiss is the
+    /// way out: it issues its own read, whose answer replaces the failure.
+    @Test func aFailureDropsTheReadItOrphansAndKeepsItsPhase() {
+        var native = Self.state(.starting, info: Service.appleSpeech.info, server: nil)
+        native.native = Self.current
+        var probing = Self.state(.starting, server: nil)
+        probing.probe = 7
+        var removing = Self.state(.removing, server: nil)
+        removing.removal = 5
+        let ends: [(String, LifecycleState, LifecycleEvent)] = [
+            ("launchFailed", Self.state(.installed, server: nil), .launchFailed("no")),
+            ("nativeFailed", native, .nativeFailed(Self.current, "no")),
+            ("portOwnerFound", probing, .portOwnerFound(PortProbe.Owner(pid: 1, command: "other"), probe: 7)),
+            ("removalFailed", removing, .removalFailed("no", removal: 5)),
+            ("crash", Self.state(.running), .exited(Self.current, status: 1, logTail: [])),
+            (
+                "installEnded failed", Self.state(.installing(.model), server: nil, installing: true),
+                .installEnded(.failed(stage: .model, message: "no", logTail: []), then: .refresh, install: Self.installTag)
+            ),
+        ]
+        for (label, start, end) in ends {
+            var s = start
+            let orphaned = Self.issueRead(&s)
+            let effects = ServiceLifecycle.reduce(&s, end)
+            guard case .failed = s.phase else {
+                Issue.record("\(label): did not fail: \(s.phase)")
+                continue
+            }
+            let failed = s.phase
+            #expect(!effects.contains { if case .refresh = $0 { true } else { false } }, "\(label): \(effects)")
+            #expect(s.reading == nil && !s.startAfterRead, "\(label): the orphaned read was kept")
+            let before = s
+            let late = ServiceLifecycle.reduce(
+                &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: orphaned))
+            #expect(late.isEmpty && s == before && s.phase == failed, "\(label): the orphaned answer applied")
+            let dismissed = ServiceLifecycle.reduce(&s, .dismissFailure)
+            #expect(dismissed == [.refresh(epoch: s.epoch)], "\(label): \(dismissed)")
+            _ = ServiceLifecycle.reduce(
+                &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: s.epoch))
+            #expect(s.phase == .installed, "\(label): Dismiss's read did not replace the failure")
+        }
+    }
+
+    /// The events the driver used to send without running their effects: from every phase, with
+    /// the owner current or stale, with or without an install and a read in flight, they return
+    /// none. (Install and External exclude each other, so that pair is not a reachable state.)
+    @Test func environmentReadInstallStageAndSupervisedErrorIssueNoEffect() {
+        for phase in Self.phases {
+            for installing in [false, true] where !(installing && phase.isExternal) {
+                for reading in [false, true] {
+                    for late in [false, true] {
+                        let label = "\(phase) installing=\(installing) reading=\(reading) late=\(late)"
+                        var start = Self.state(phase, installing: installing)
+                        if reading { _ = Self.issueRead(&start) }
+                        let events: [LifecycleEvent] = [
+                            .environmentRead(.missing, epoch: late ? start.epoch - 1 : start.epoch),
+                            .installStage(.packages, install: late ? Self.installTag - 1 : Self.installTag),
+                            .supervisedError(late ? Self.stale : Self.current, SupervisedError(code: "X", message: nil)),
+                        ]
+                        for event in events {
+                            var s = start
+                            let effects = ServiceLifecycle.reduce(&s, event)
+                            #expect(effects.isEmpty, "\(event) \(label): \(effects)")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// An owned phase is never moved, so a found can't drop `s.server` and leak the process.

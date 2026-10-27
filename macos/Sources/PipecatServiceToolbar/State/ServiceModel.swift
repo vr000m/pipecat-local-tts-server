@@ -54,7 +54,7 @@ final class ServiceModel: Identifiable {
         dependencies.appleSpeechInstall = { progress in try await AppleSpeech.install(progress: progress) }
         let nativeName = info.expectedBackendName  // what its hello reports
         dependencies.makeNativeServer = {
-            STTWebSocketServer(identity: .init(name: nativeName, model: "SpeechTranscriber")) { pcm, language in
+            STTWebSocketServer(identity: .init(name: nativeName, model: ServiceInfo.appleSpeechModel)) { pcm, language in
                 try await AppleSpeech.transcribe(pcm16: pcm, language: language)
             }
         }
