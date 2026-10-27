@@ -538,7 +538,8 @@ public enum ServiceLifecycle {
     public static let externalFailureThreshold = 3
 
     /// The phases a discovery `externalFound` adopts from; `ExternalDiscoveryPolicy.probes`
-    /// probes exactly these (the others are owned, or not yet readable).
+    /// probes only these (the others are owned, or not yet readable), and both also exclude
+    /// Apple Speech, which has no port to probe.
     public static func acceptsDiscovery(_ phase: ServicePhase) -> Bool {
         switch phase {
         case .notInstalled, .installed, .failed, .checking, .external: true
@@ -664,6 +665,10 @@ public enum ServiceLifecycle {
             s.startAfterRead = false
             if let environment { s.environment = environment }
             if let cache { s.cache = cache }
+            // External reads installed from `requested`, and `.external` counts as live work, so a
+            // refresh that lands after the adoption (the panel opened mid-bootstrap) must still
+            // record it; the phase itself stays put.
+            if let requested, case .external = s.phase { s.requested = requested }
             // A server, install, probe or removal owns the phase; only its own end moves it.
             guard !s.hasLiveWork else { return [] }
             if let requested { s.requested = requested }

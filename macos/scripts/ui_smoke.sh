@@ -16,7 +16,7 @@
 # 5. External: a tone server started OUT OF PROCESS on its canonical loopback port
 #    (8665) is adopted at launch (the bootstrap log line says `external(`) and is
 #    still alive after Quit. Skipped when 8665 is held, a tone LaunchAgent is loaded
-#    or the repo .venv is missing. The script never starts or stops anything on 8965 or
+#    or the repo .venv cannot import tts_server. The script never starts or stops anything on 8965 or
 #    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
 #    read-only, at every launch.
 #

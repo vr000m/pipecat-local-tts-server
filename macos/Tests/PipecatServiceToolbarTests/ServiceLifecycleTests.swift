@@ -406,7 +406,11 @@ import Testing
                         if stale {
                             #expect(s == before, "\(label)")
                         } else if Self.live(before) {
-                            #expect(s.phase == before.phase && s.requested == before.requested, "\(label)")
+                            // Owned phases keep `requested`; External takes the refreshed value (its
+                            // `isInstalled` reads it), and no live phase moves.
+                            let isExternal = before.phase == Self.external
+                            #expect(s.phase == before.phase, "\(label)")
+                            #expect(s.requested == (isExternal ? false : before.requested), "\(label)")
                             #expect(s.environment == .missing, "\(label)")
                         } else {
                             #expect(s.phase == .needsModel && !s.requested && s.environment == .missing, "\(label)")
@@ -781,6 +785,20 @@ import Testing
             #expect(s.server == nil && s.native == nil, "\(phase)")
             #expect(effects.allSatisfy(Self.allowedForExternal), "\(phase): \(effects)")
         }
+    }
+
+    /// Adopted from `.checking` before the first refresh lands: the refresh must still record
+    /// `requested` (External's `isInstalled` reads it), without moving the External phase.
+    @Test func aRefreshAfterAdoptionRecordsRequestedAndKeepsExternal() {
+        var s = Self.state(.checking, server: nil)
+        s.externalEpoch = 3
+        s.requested = false
+        _ = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+        #expect(s.phase == Self.external)
+        _ = ServiceLifecycle.reduce(&s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: s.epoch))
+        #expect(s.phase == Self.external, "a refresh never moves External")
+        #expect(s.requested)
+        #expect(s.isInstalled)
     }
 
     /// An owned phase is never moved, so a found can't drop `s.server` and leak the process.

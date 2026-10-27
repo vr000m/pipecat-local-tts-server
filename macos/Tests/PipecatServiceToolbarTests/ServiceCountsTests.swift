@@ -84,9 +84,13 @@ import Testing
         #expect(!sharedOnly.isInstalled)
         #expect(ServiceCounts([sharedOnly]).installed == 0)
         #expect(Self.external.isInstalled, "requested and the environment exists")
+        var noEnvironment = Self.external
+        noEnvironment.environment = .missing
+        #expect(!noEnvironment.isInstalled, "requested, but the environment is gone")
     }
 
-    /// The rows (`AppModel.startable`) and the count read the same predicate.
+    /// The count reads `ServiceCounts.isStartable`, the predicate `AppModel.startable` (the rows)
+    /// also calls; the app target has no test target, so the shared predicate is pinned here.
     @Test func startableCountsExactlyTheStatesIsStartableAccepts() {
         for phase in ServiceLifecycleTests.phases {
             for requested in [true, false] {
