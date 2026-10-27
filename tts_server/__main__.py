@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 from .backends import BACKEND_NAMES, BACKENDS, make_backend
-from .env import ConfigError, read_token_file
+from .env import ConfigError, check_token_chars, read_token_file
 from .server import serve
 
 # Every backend name ``make_backend`` accepts; shared by ``serve`` and ``prefetch``.
@@ -126,8 +126,20 @@ def _resolve_auth_token(token_file: str | None, *, client: bool = False) -> str 
     if client:
         client_val = (os.environ.get("TTS_WS_TOKEN") or "").strip()
         return client_val or None
-    env_val = (os.environ.get("PIPECAT_TTS_AUTH_TOKEN") or "").strip()
-    return env_val or None
+    # Unset or empty means "no auth" (a blank line in a .env file is common). A value
+    # that is set but only whitespace is an attempt at a token that would silently
+    # disable auth, so it is refused like an empty token file; the token rules are the
+    # file's (visible ASCII only).
+    env_raw = os.environ.get("PIPECAT_TTS_AUTH_TOKEN") or ""
+    if not env_raw:
+        return None
+    env_val = env_raw.strip()
+    if not env_val:
+        raise ConfigError(
+            "PIPECAT_TTS_AUTH_TOKEN is set but blank; an empty token would disable auth. "
+            "Unset it or give it a token"
+        )
+    return check_token_chars(env_val, "PIPECAT_TTS_AUTH_TOKEN")
 
 
 def _load_dotenv_best_effort() -> None:

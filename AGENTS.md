@@ -58,7 +58,7 @@ before it writes anything.
 | `TTS_WS_URI` / `TTS_WS_SOCKET` / `TTS_WS_HOST` / `TTS_WS_PORT` | client | Endpoint (precedence URI > socket > host+port). |
 | `TTS_WS_TOKEN` | client | Bearer the client/probe sends. **Never** falls back to the server var. |
 | `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
-| `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). |
+| `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer the server requires (optional auth). Unset or empty = no auth; a set-but-blank value or one that is not visible ASCII exits 1 at startup (same rules as the token file). |
 | `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to re-advertise after installing their extra G2P package. |
 | `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
 | `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |

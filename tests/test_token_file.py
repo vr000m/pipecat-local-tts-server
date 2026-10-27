@@ -257,3 +257,64 @@ def test_installer_refuses_a_bad_token_file_before_touching_launchd(
     assert SECRET not in r.stdout + r.stderr
     assert not called.exists(), "launchctl was reached"
     assert not (home / "Library").exists() and not (tmp_path / "logs").exists()
+
+
+# --- PIPECAT_TTS_AUTH_TOKEN (server env var) -----------------------------------------
+
+
+def test_env_token_unset_or_empty_means_no_auth(monkeypatch):
+    from tts_server.__main__ import _resolve_auth_token
+
+    monkeypatch.delenv("PIPECAT_TTS_AUTH_TOKEN", raising=False)
+    assert _resolve_auth_token(None) is None
+    monkeypatch.setenv("PIPECAT_TTS_AUTH_TOKEN", "")
+    assert _resolve_auth_token(None) is None
+
+
+@pytest.mark.parametrize("value", [" ", "\t", "  \n "])
+def test_env_token_set_but_blank_is_refused(monkeypatch, value):
+    from tts_server.__main__ import _resolve_auth_token
+
+    monkeypatch.setenv("PIPECAT_TTS_AUTH_TOKEN", value)
+    with pytest.raises(ConfigError, match="blank"):
+        _resolve_auth_token(None)
+
+
+def test_env_token_is_stripped_and_held_to_the_file_rules(monkeypatch):
+    from tts_server.__main__ import _resolve_auth_token
+
+    monkeypatch.setenv("PIPECAT_TTS_AUTH_TOKEN", f"  {SECRET}\n")
+    assert _resolve_auth_token(None) == SECRET
+    monkeypatch.setenv("PIPECAT_TTS_AUTH_TOKEN", f"{SECRET} extra")
+    with pytest.raises(ConfigError, match="visible ASCII") as exc:
+        _resolve_auth_token(None)
+    assert SECRET not in str(exc.value)
+
+
+def test_client_token_stays_lenient(monkeypatch):
+    """TTS_WS_TOKEN is the probe's bearer, not a gate: a blank one is just no token."""
+    from tts_server.__main__ import _resolve_auth_token
+
+    monkeypatch.setenv("TTS_WS_TOKEN", "  ")
+    assert _resolve_auth_token(None, client=True) is None
+
+
+def test_serve_exits_1_on_a_blank_env_token():
+    env = {**os.environ, "PIPECAT_TTS_AUTH_TOKEN": " "}
+    r = _run(
+        [
+            sys.executable,
+            "-m",
+            "tts_server",
+            "serve",
+            "--backend",
+            "tone",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+        ],
+        env=env,
+    )
+    assert r.returncode == 1, r.stderr
+    assert "PIPECAT_TTS_AUTH_TOKEN" in r.stderr
