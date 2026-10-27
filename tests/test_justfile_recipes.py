@@ -387,6 +387,17 @@ def test_app_open_quits_the_bundle_id_the_build_used():
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
 
 
+def test_app_install_signs_stably_and_quits_by_built_id():
+    """``app-install`` must not ship the ad-hoc default (cdhash-bound, so every rebuild
+    resets TCC grants), must quit the id the build wrote, and must replace the installed
+    copy rather than ditto-merge into it."""
+    body = _recipe_body("app-install")
+    assert 'SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"' in body, body
+    assert "CFBundleIdentifier" in body, body
+    assert body.index("rm -rf") < body.index('ditto "$src"'), body
+    assert "codesign --verify" in body, body
+
+
 # --- Phase 6: docs + out-of-process smoke contract -------------------------
 
 _MACOS = REPO_ROOT / "macos"

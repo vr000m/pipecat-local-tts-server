@@ -17,6 +17,10 @@ cd pipecat-local-tts-server
 just app-open      # build macos/build/Pipecat Service Toolbar.app and launch it
 ```
 
+`just app-install` builds and installs it into `~/Applications` instead, signed with the
+self-signed `Code Signing` identity so Microphone / Speech Recognition grants survive
+rebuilds (ad hoc is cdhash-bound and resets them).
+
 Without `just`: `macos/scripts/build_app.sh`, then open the app. Building needs
 Xcode 16+ and [uv](https://docs.astral.sh/uv/).
 
@@ -270,6 +274,7 @@ Build knobs (environment variables read by `macos/scripts/`):
 |---|---|---|
 | `SIGN_IDENTITY` | `build_app.sh` | Code-signing identity (default `-`, ad hoc). Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`. |
 | `CONFIG` | `build_app.sh` | Swift build configuration, `release` (default) or `debug`. |
+| `APP_INSTALL_DIR` | `just app-install` | Install destination (default `~/Applications`). `SIGN_IDENTITY` defaults to `Code Signing` there. |
 | `BUNDLE_ID` | `build_app.sh` | Overrides `CFBundleIdentifier` (default `ai.pipecat.ServiceToolbar`); `just app-open` quits the id the build wrote. |
 | `PIPECAT_TTS_BUILD_CACHE` | `fetch_uv.sh` | Root of the build cache for the pinned `uv` download (default `~/Library/Caches/pipecat-tts-build`). |
 | `PIPECAT_UV` | `compile_stt_constraints.py` | The `uv` binary used to compile the STT constraints (default: the app's pinned uv). |

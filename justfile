@@ -464,6 +464,30 @@ app-open: app-build
     osascript -e "quit app id \"$id\"" 2>/dev/null || true
     open "$app"
 
+# Build, then install into ~/Applications (APP_INSTALL_DIR overrides), replacing any
+# installed copy. Signs with SIGN_IDENTITY, default the self-signed "Code Signing"
+# identity: its designated requirement (bundle id + cert) is stable across rebuilds,
+# so Microphone / Speech Recognition grants survive an update; the ad-hoc default of
+# app-build is cdhash-bound and resets them on every rebuild. Quits a running copy
+# first (found by the id the build wrote).
+app-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"
+    macos/scripts/build_app.sh
+    name="Pipecat Service Toolbar.app"
+    src="macos/build/$name"
+    dest="${APP_INSTALL_DIR:-$HOME/Applications}"
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$src/Contents/Info.plist")"
+    osascript -e "quit app id \"$id\"" 2>/dev/null || true
+    mkdir -p "$dest"
+    # rm before ditto: ditto merges into an existing tree and would keep stale files.
+    rm -rf "${dest:?}/$name"
+    ditto "$src" "$dest/$name"
+    codesign --verify --deep --strict "$dest/$name"
+    echo "installed $dest/$name"
+    codesign -dr - "$dest/$name" 2>&1 | tail -1
+
 # Run the app unbundled from the checkout (builds the wheel from this repo; uses your uv).
 app-run *args:
     swift run --package-path macos PipecatServiceToolbar {{args}}

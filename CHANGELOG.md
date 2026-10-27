@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `just app-install`: build Pipecat Service Toolbar signed with the self-signed `Code Signing`
+  identity (so Microphone / Speech Recognition grants survive rebuilds) and install it into
+  `~/Applications`, replacing any installed copy.
+
 ## [0.8.1] - 2026-10-27
 
 ### Changed
