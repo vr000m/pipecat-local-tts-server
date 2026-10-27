@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `serve --auth-token-file` no longer treats an empty or whitespace-only token file as "no
+  auth": it exits 1 at startup (as `ConfigError` under `--supervised`), as does a token with
+  internal whitespace or non-visible-ASCII characters, or a non-UTF-8 file. `status` still reads
+  leniently. `scripts/install_tts_agent.sh` validates the file before writing the plist with the
+  same reader and a file/directory policy (owner-only regular file, no symlink, no group/other
+  bits, directories only you or root can write). Mirrors the STT server's fix (#23).
 - Pipecat Service Toolbar: an External row's LaunchAgent label is cut in the middle, not at the
   end, so `pipecat.stt-server.kyutai` / `…parakeet` / `…nemotron` stay distinguishable in the
   panel, and hovering the line shows the whole label.

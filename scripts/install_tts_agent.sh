@@ -24,6 +24,10 @@
 #                        not inherit your shell env, so PIPECAT_TTS_AUTH_TOKEN (the
 #                        env-based server token) is NOT carried into the agent — the
 #                        renderer rejects an install where it is set without the file.
+#                        The file is validated before anything is written: an absolute path to a
+#                        regular file (not a symlink) you own with no group/other mode bits, in
+#                        directories only you or root can write, holding one visible-ASCII token
+#                        (an empty file would silently disable auth, so it is refused).
 #   PIPECAT_TTS_KOKORO_EXTRA_LANGS  comma-separated ISO codes (e.g. ja,zh); baked into
 #                        the agent's plist EnvironmentVariables so it survives launchd.
 #   PIPECAT_TTS_PHONON_VOICES  comma-separated Phonon catalog slugs (e.g. zoey,juniper);
@@ -60,7 +64,33 @@ fi
 
 cmd="${1:-install}"
 
+# Refuse a token file the server would refuse or that others could read or swap:
+# the content rules are the server's own (`serve --auth-token-file` runs
+# tts_server.env.read_token_file(strict=True) at every start, so an agent this
+# accepts is one the server starts), and the file/directory policy is
+# tts_server.env.check_token_file_policy (absolute path, not a symlink, a regular
+# file you own with no group/other bits, in a directory chain only you or root
+# can write). Runs before anything is written or loaded.
+validate_token_file() {
+    local f="$1"
+    if ! "$PYTHON" -I -c '
+import sys
+from tts_server.env import ConfigError, check_token_file_policy, read_token_file
+try:
+    check_token_file_policy(sys.argv[1], uid=int(sys.argv[2]))
+    read_token_file(sys.argv[1], strict=True)
+except ConfigError as exc:
+    print(f"error: PIPECAT_TTS_AUTH_TOKEN_FILE: {exc}", file=sys.stderr)
+    sys.exit(1)
+' "$f" "$(id -u)"; then
+        exit 1
+    fi
+}
+
 render_plist() {
+    if [[ -n "$AUTH_TOKEN_FILE" ]]; then
+        validate_token_file "$AUTH_TOKEN_FILE"
+    fi
     mkdir -p "$LOG_DIR" "$(dirname "$PLIST_DST")"
     # Delegate to plistlib (via render_tts_plist.py) so XML escaping +
     # allowlist validation handle hostile values instead of sed substitution

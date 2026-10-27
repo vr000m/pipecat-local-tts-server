@@ -14,8 +14,10 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import stat
 import urllib.parse
 from collections.abc import Mapping
+from pathlib import Path
 
 logger = logging.getLogger("tts_server.env")
 
@@ -138,3 +140,124 @@ def resolve_endpoint_from_env(env: Mapping[str, str]) -> dict:
         host = None
         port = None
     return {"uri": uri, "socket_path": sock, "host": host, "port": port}
+
+
+class ConfigError(ValueError):
+    """A rejected configuration value (an unusable auth token file).
+
+    A ``ValueError`` subclass so a caller that already catches ``ValueError`` is
+    unaffected. Messages name the source, never the token.
+    """
+
+
+def check_token_chars(token: str, what: str) -> str:
+    """Refuse a token that can never match an ``Authorization`` header.
+
+    ``token`` is already stripped and non-empty. Raises ``ConfigError`` naming
+    ``what`` (the source, never the value) for internal whitespace, a control
+    character or a non-ASCII character: only visible ASCII (0x21-0x7E) survives
+    an HTTP header and the byte-for-byte bearer comparison.
+    """
+    if any(not 0x21 <= ord(c) <= 0x7E for c in token):
+        raise ConfigError(
+            f"{what} must hold one token of visible ASCII characters "
+            "(no internal whitespace, newlines or non-ASCII); anything else can never "
+            "match an Authorization header"
+        )
+    return token
+
+
+def read_token_file(path: str | os.PathLike[str], *, strict: bool = False) -> str | None:
+    """Read a bearer-token file: UTF-8, surrounding whitespace stripped.
+
+    Strict (the ``serve`` path) refuses what would otherwise silently misbehave:
+    an empty or whitespace-only file (the token would be ``None`` and auth
+    disabled), a token with internal whitespace or a non-visible-ASCII character
+    (it can never match a header), and a non-UTF-8 file. Non-strict (the ``status``
+    probe) keeps the lenient ``None`` for an empty file. Raises ``ConfigError``;
+    messages never include the token.
+    """
+    what = f"auth token file {path}"
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        if not strict:
+            raise
+        raise ConfigError(f"{what} cannot be read ({exc.strerror or type(exc).__name__})") from exc
+    try:
+        token = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{what} is not valid UTF-8") from exc
+    if not strict:
+        return token or None
+    if not token:
+        raise ConfigError(f"{what} is empty; an empty token would disable auth")
+    return check_token_chars(token, what)
+
+
+def _refuse(path: str, problem: str, fix: str) -> ConfigError:
+    return ConfigError(f"auth token file {path} {problem}; fix: {fix}")
+
+
+def check_token_dir_chain(path: str | os.PathLike[str], *, uid: int | None = None) -> str:
+    """Refuse a token file whose directory chain someone else could rewrite.
+
+    Walks the symlink-free resolved parent directory up to ``/``: each must be
+    owned by ``uid`` (default: the current user) or root, not be other-writable
+    unless sticky, and not be group-writable unless root-owned or sticky. Returns
+    the resolved directory. Raises ``ConfigError``.
+    """
+    uid = os.getuid() if uid is None else uid
+    p = os.fspath(path)
+    d = os.path.realpath(os.path.dirname(p))
+    resolved = d
+    while True:
+        try:
+            st = os.lstat(d)
+        except OSError as exc:
+            raise _refuse(
+                p, f"has an unreadable parent directory {d} ({exc.strerror})", "check the path"
+            ) from exc
+        sticky = bool(st.st_mode & stat.S_ISVTX)
+        if st.st_uid not in (uid, 0):
+            raise _refuse(
+                p,
+                f"is in {d}, which is owned by uid {st.st_uid}",
+                "keep the file under a directory only you or root own",
+            )
+        if st.st_mode & stat.S_IWOTH and not sticky:
+            raise _refuse(p, f"is in {d}, which any user can write to", f"chmod o-w '{d}'")
+        if st.st_mode & stat.S_IWGRP and not (st.st_uid == 0 or sticky):
+            raise _refuse(p, f"is in {d}, which is group-writable", f"chmod g-w '{d}'")
+        parent = os.path.dirname(d)
+        if parent == d:
+            return resolved
+        d = parent
+
+
+def check_token_file_policy(path: str | os.PathLike[str], *, uid: int | None = None) -> None:
+    """The installer's checks on a token file (``serve`` itself checks content only).
+
+    The file must be an absolute path to a regular file (not a symlink) owned by
+    ``uid`` (default: the current user) with no group/other permission bits, in a
+    directory chain ``check_token_dir_chain`` accepts. Raises ``ConfigError``.
+    """
+    uid = os.getuid() if uid is None else uid
+    p = os.fspath(path)
+    if not os.path.isabs(p):
+        raise _refuse(p, "must be an absolute path", "pass the full path to the file")
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        raise _refuse(p, "does not exist", "create it (install -m 600 /dev/null PATH)") from None
+    except OSError as exc:
+        raise _refuse(p, f"cannot be inspected ({exc.strerror})", "check the path") from exc
+    if stat.S_ISLNK(st.st_mode):
+        raise _refuse(p, "is a symlink", "point the setting at the real file")
+    if not stat.S_ISREG(st.st_mode):
+        raise _refuse(p, "is not a regular file", "use a plain file")
+    if st.st_uid != uid:
+        raise _refuse(p, f"is owned by uid {st.st_uid}, not you (uid {uid})", f"chown {uid} '{p}'")
+    if st.st_mode & 0o077:
+        raise _refuse(p, "is readable or writable by group/other", f"chmod 600 '{p}'")
+    check_token_dir_chain(p, uid=uid)

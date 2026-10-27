@@ -43,7 +43,13 @@ precedence everywhere: **URI > socket > host+port**.
 | `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `convert` (phonon aliases), `warning` (an optional snapshot failed), `check`/`summary`, `error`; fields in README). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
-use `--auth-token-file`.
+use `--auth-token-file`. `serve` reads that file strictly (`tts_server.env.read_token_file`): an
+empty/whitespace-only file, a token with anything outside visible ASCII (0x21-0x7E), or a
+non-UTF-8 file exits 1 at startup (`ConfigError` under `--supervised`) instead of silently
+disabling auth; `status` stays lenient. The installer (`scripts/install_tts_agent.sh`) runs the
+same reader plus a file/directory policy (`check_token_file_policy`: absolute path, not a symlink,
+a regular file you own with no group/other mode bits, in directories only you or root can write)
+before it writes anything.
 
 ## Environment variables
 

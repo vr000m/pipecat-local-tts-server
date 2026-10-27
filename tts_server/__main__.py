@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 from .backends import BACKEND_NAMES, BACKENDS, make_backend
+from .env import ConfigError, read_token_file
 from .server import serve
 
 # Every backend name ``make_backend`` accepts; shared by ``serve`` and ``prefetch``.
@@ -111,8 +112,11 @@ def _resolve_auth_token(token_file: str | None, *, client: bool = False) -> str 
     #      the local server-side secret to the remote endpoint.
     # The two paths stay strictly separate — never read TTS_WS_TOKEN here on the
     # serve path, and never read PIPECAT_TTS_AUTH_TOKEN on the probe path.
+    # Serve is strict: an empty or malformed token file raises ``ConfigError``
+    # rather than reading as ``None`` (auth silently off). The probe stays lenient
+    # about an empty file.
     if token_file:
-        return Path(token_file).read_text(encoding="utf-8").strip() or None
+        return read_token_file(token_file, strict=not client)
     if client:
         client_val = (os.environ.get("TTS_WS_TOKEN") or "").strip()
         return client_val or None
@@ -182,7 +186,10 @@ def _add_endpoint_flags(p: argparse.ArgumentParser, *, include_uri: bool = False
     p.add_argument(
         "--auth-token-file",
         default=None,
-        help="Path to a file containing the auth token (whitespace-stripped).",
+        help=(
+            "Path to a file containing the auth token (whitespace-stripped). "
+            "serve refuses an empty file or a token that is not visible ASCII."
+        ),
     )
 
 
@@ -235,6 +242,12 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 
 def _run_serve(args: argparse.Namespace, **serve_kwargs) -> None:
+    # Resolve the token first: a bad token file must stop startup before the
+    # (potentially slow) model load, and never fall through to an auth-less server.
+    try:
+        auth_token = _resolve_auth_token(args.auth_token_file)
+    except ConfigError as exc:
+        raise SystemExit(f"tts_server: {exc}")
     resolved_model = _resolve_model(args.backend, args.model)
     # Startup model logging (R6): log the resolved backend + model BEFORE the
     # (potentially slow) model load so an operator sees what is being loaded.
@@ -256,7 +269,7 @@ def _run_serve(args: argparse.Namespace, **serve_kwargs) -> None:
             socket_path=args.socket_path,
             host=args.host,
             port=args.port,
-            auth_token=_resolve_auth_token(args.auth_token_file),
+            auth_token=auth_token,
             ping_interval_seconds=_resolve_keepalive(
                 "TTS_WS_PING_INTERVAL", P.KEEPALIVE_PING_INTERVAL_SECONDS
             ),
@@ -273,7 +286,10 @@ async def _probe_status(args: argparse.Namespace) -> dict:
     from .client import TTSClient, format_host_for_uri, is_cleartext_remote
 
     endpoint = _resolve_probe_endpoint(args)
-    auth_token = _resolve_auth_token(args.auth_token_file, client=True)
+    try:
+        auth_token = _resolve_auth_token(args.auth_token_file, client=True)
+    except ConfigError as exc:
+        raise SystemExit(f"tts_server: {exc}")
 
     # Same cleartext-token guard as the client's runtime resolver: if a bearer is
     # configured and the effective endpoint is cleartext-ws to a non-loopback

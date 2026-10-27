@@ -232,7 +232,10 @@ Auth notes: the server reads `PIPECAT_TTS_AUTH_TOKEN`; the client/probe reads
 `TTS_WS_TOKEN` (the two are deliberately separate so a probe can never mask a
 client 401 or leak the server secret to a remote host). A plaintext
 `--auth-token` flag is intentionally unsupported (`ps` exposure) — use
-`--auth-token-file`. A token-less server bound to a non-loopback TCP address logs
+`--auth-token-file`. `serve` refuses a token file that is empty, holds anything but one
+visible-ASCII token, or is not UTF-8 (it would otherwise run with auth silently off) and exits 1;
+the installer also requires an owner-only regular file (no symlink) in directories only you or
+root can write. A token-less server bound to a non-loopback TCP address logs
 a cleartext-remote warning; a Unix socket does not. Sending a bearer over
 cleartext `ws://` to a remote host also warns client-side — use `wss://` or a
 Unix socket.
