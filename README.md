@@ -111,8 +111,8 @@ uv sync --extra examples
 
 [`macos/`](macos/) holds **Pipecat Service Toolbar**, a native SwiftUI menu bar
 app. It downloads speech models and serves them on fixed loopback ports. TTS
-covers every backend here. STT covers Apple Speech (SpeechAnalyzer), Whisper and
-Kyutai, using the [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server)
+covers every backend here. STT covers Apple Speech (SpeechAnalyzer), Whisper,
+Kyutai, Parakeet and Nemotron, using the [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server)
 protocol. It ships a pinned `uv` and this repo's wheel, and installs Python and
 the weights on demand. Python is never bundled.
 

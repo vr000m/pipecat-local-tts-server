@@ -100,7 +100,9 @@ final class ServiceModel: Identifiable {
         case .clear:
             externalLaunchdLabel = nil
         case .lookUp(let port, let epoch):
-            let owner = await PortProbe.owner(of: port, backend: service)
+            // The driver's injected seam (default `PortProbe.owner`), as the Start-path lookup uses.
+            let portOwner = driver.dependencies.portOwner
+            let owner = await portOwner(port, service)
             externalLaunchdLabel = Lookup.settle(
                 found: owner.launchdLabel, startedAt: epoch, cancelled: Task.isCancelled,
                 current: externalLaunchdLabel, in: driver.state)

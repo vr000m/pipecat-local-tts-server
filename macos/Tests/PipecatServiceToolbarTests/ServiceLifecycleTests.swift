@@ -787,18 +787,52 @@ import Testing
         }
     }
 
-    /// Adopted from `.checking` before the first refresh lands: the refresh must still record
-    /// `requested` (External's `isInstalled` reads it), without moving the External phase.
-    @Test func aRefreshAfterAdoptionRecordsRequestedAndKeepsExternal() {
+    /// Adopted from `.checking` while the bootstrap read is in flight: the adoption advances the
+    /// epoch and orphans that read, so it is re-issued under the new epoch, and its answer records
+    /// `requested` (External's `isInstalled` reads it) without moving the External phase. The
+    /// answer to the orphaned read is still dropped.
+    @Test func aReadInFlightAtAdoptionIsReissuedAndRecordsRequested() {
         var s = Self.state(.checking, server: nil)
         s.externalEpoch = 3
         s.requested = false
-        _ = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+        s.environment = .missing
+        let bootstrap = Self.issueRead(&s)
+        let adopted = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
         #expect(s.phase == Self.external)
-        _ = ServiceLifecycle.reduce(&s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: s.epoch))
+        #expect(s.epoch != bootstrap)
+        #expect(adopted == [.refresh(epoch: s.epoch)], "the orphaned read was not issued again: \(adopted)")
+        #expect(adopted.allSatisfy(Self.allowedForExternal))
+        #expect(s.reading == s.epoch && !s.startAfterRead)
+        // Answer the read the reducer actually issued, not one forged at the current epoch.
+        guard case .refresh(let reissued) = adopted.last else {
+            Issue.record("no read re-issued: \(adopted)")
+            return
+        }
+
+        // The orphaned read's answer is stale: nothing changes.
+        let before = s
+        let late = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: bootstrap))
+        #expect(late.isEmpty && s == before, "the orphaned read applied")
+        #expect(!s.isInstalled)
+
+        // The re-issued read records `requested` and the environment; External stays put.
+        let landed = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: reissued))
+        #expect(landed.isEmpty, "\(landed)")
         #expect(s.phase == Self.external, "a refresh never moves External")
-        #expect(s.requested)
+        #expect(s.requested && s.environment == .ready(Self.marker))
         #expect(s.isInstalled)
+        #expect(s.reading == nil, "the answered read is not issued again")
+    }
+
+    /// No read in flight: the adoption issues none (rule 4 re-issues only an orphaned read).
+    @Test func adoptionWithNoReadInFlightIssuesNoRead() {
+        var s = Self.state(.checking, server: nil)
+        s.externalEpoch = 3
+        #expect(s.reading == nil)
+        #expect(ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo)).isEmpty)
+        #expect(s.phase == Self.external && s.reading == nil)
     }
 
     /// An owned phase is never moved, so a found can't drop `s.server` and leak the process.

@@ -447,7 +447,8 @@ def test_ui_smoke_skips_when_canonical_port_held() -> None:
     code = "\n".join(
         ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")
     )
-    assert re.search(r"^EXT_PORT=8665\b", code, re.MULTILINE), (
+    tone_port = _macos_catalog_ports("tts")["tone"]
+    assert re.search(rf"^EXT_PORT={tone_port}\b", code, re.MULTILINE), (
         "the external step must use tone's canonical port"
     )
     held = re.search(r'lsof -nP -iTCP:"\$EXT_PORT" -sTCP:LISTEN', code)

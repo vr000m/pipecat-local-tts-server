@@ -610,8 +610,10 @@ public enum ServiceLifecycle {
     ///    probe that ends any other way than its own answer is cancelled, by
     ///    the first effect (so no other effect's wait delays it).
     /// 4. A read the advance orphaned is issued again when nothing owns the
-    ///    phase (otherwise the owner's own end re-reads it); it never carries a
-    ///    start with it.
+    ///    phase, or when the phase is `.external` (otherwise the owner's own end
+    ///    re-reads it; External has no such end until the server is lost, and its
+    ///    `isInstalled` reads what the read records). It never carries a start
+    ///    with it, and only a read already in flight is re-issued.
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
     ///    transition into or out of `.external`, and for the kinds in `changesExternalEpoch`.
     ///    A kind in `keepsEpochWhenItOnlyCounts` (a count-only `externalLost`) that left an
@@ -641,7 +643,9 @@ public enum ServiceLifecycle {
         }
         if let reading = s.reading, reading != s.epoch {
             s.startAfterRead = false
-            if s.hasLiveWork {
+            // External has no owner's end that re-reads until the server is lost, yet its
+            // `isInstalled` depends on what the read records: re-issue it there too.
+            if s.hasLiveWork, !s.phase.isExternal {
                 s.reading = nil
             } else {
                 effects.append(read(&s))
@@ -666,8 +670,9 @@ public enum ServiceLifecycle {
             if let environment { s.environment = environment }
             if let cache { s.cache = cache }
             // External reads installed from `requested`, and `.external` counts as live work, so a
-            // refresh that lands after the adoption (the panel opened mid-bootstrap) must still
-            // record it; the phase itself stays put.
+            // refresh that lands after the adoption must still record it; the phase itself stays
+            // put. A read in flight when the adoption advanced the epoch is re-issued under the new
+            // one (`reduce` rule 4), so this is the refresh that answers it.
             if let requested, case .external = s.phase { s.requested = requested }
             // A server, install, probe or removal owns the phase; only its own end moves it.
             guard !s.hasLiveWork else { return [] }

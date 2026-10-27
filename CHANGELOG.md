@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the panel is open (every 15 s) the app probes the catalog ports (loopback TCP) with
   a `server.hello` and shows a matching server it did not start as **External**;
   it starts its own only when none answers. External rows offer Try it (for STT, the
-  test clip only, never the microphone) and Copy but no Stop, Delete, Get, Install or
-  Reset, show the LaunchAgent label when `launchctl`
+  test clip only, never the microphone) and Copy but no per-service Stop, Delete, Get
+  or Install (the app-wide Reset deletes only the app's own environments and layout
+  file, never signals an External server, and is not blocked by one), show the
+  LaunchAgent label when `launchctl`
   confirms it holds the port (else `127.0.0.1:<port>`), and **Quit leaves them
   running** ("Stop All & Quit" appears only when the app started a server). The app
   only signals, stops or deletes processes it started. An app-started server and a

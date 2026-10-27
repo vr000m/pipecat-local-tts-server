@@ -65,8 +65,10 @@ for running both.
   nothing answers. Discovery runs once at launch, then every 15 s while the panel
   is open.
 - **Ownership.** The app only signals, stops or deletes processes it started.
-  An External service has no Stop, Delete, Reset, Get or Install; it offers
+  An External service has no per-service Stop, Delete, Get or Install; it offers
   Try it (for STT, the test clip only, never the microphone) and the Copy items.
+  Reset is app-wide: it deletes only the app's own `envs` directory and layout
+  file, never signals or stops an External server, and is not blocked by one.
   **Quit leaves it running**
   (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
 - **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the

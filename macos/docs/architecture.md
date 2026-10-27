@@ -154,6 +154,12 @@ or an install each invalidate the read in flight. A read orphaned that way is
 issued again when nothing owns the phase (an install, a probe, a removal, a
 server not yet asked to stop, the native server, or the `starting`/`running`/
 `stopping`/`removing` phases: `hasLiveWork`); otherwise the owner's end re-reads.
+`.external` is the exception: it counts as live work but has no end that re-reads
+until the server is lost, and its `isInstalled` reads the `requested` and
+environment the read records, so an orphaned read (the bootstrap read in flight
+when discovery adopts) is issued again there too. Its answer records those fields
+and never moves the External phase; only a read already in flight is re-issued,
+and never with a start.
 A current read re-reads the environment but moves the phase only when nothing
 owns it, so Reset, Try Again or a sibling's refresh never hides a running server
 or undoes a Delete. A port probe lives only while the phase is `starting` with
@@ -228,10 +234,13 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
   allowed in `.external` are `.cancelProbe`, `.openTryIt` and `.tearDown`, plus a
   state re-read; the reducer never issues `.probePortOwner` for `.external`; the
   read-only owner lookup that confirms an agent's label is
-  `ServiceModel.refreshExternalOwner` calling `PortProbe.owner` on each discovery
-  pass, outside the reducer), and the views do not offer
-  Stop, Delete, Get, Install or Reset (each External row reads its buttons from
-  `ExternalPresentation.Actions`). STT Try it on an External row offers the test
+  `ServiceModel.refreshExternalOwner` calling `PortProbe.owner` (through the
+  driver's `ServiceDependencies.portOwner` seam) on each discovery
+  pass, outside the reducer), and the views do not offer a per-service
+  Stop, Delete, Get or Install (each External row reads its buttons from
+  `ExternalPresentation.Actions`). Reset is app-wide (`AppEvent.reset`), gated by
+  `blocksReset`, which is false for `.external`: it deletes only the app's own
+  `envs` directory and layout file and never signals or stops an External server. STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
   for the discovery pass it cancels (`SerialPass`), so no probe or owner lookup

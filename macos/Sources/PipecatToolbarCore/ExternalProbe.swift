@@ -32,7 +32,7 @@ public struct ExternalProbe: Sendable {
     public let helloTimeout: TimeInterval
     public let host: String
 
-    public init(helloTimeout: TimeInterval = ExternalProbe.helloTimeout, host: String = "127.0.0.1") {
+    public init(helloTimeout: TimeInterval = ExternalProbe.helloTimeout, host: String = ServiceCatalog.host) {
         self.helloTimeout = helloTimeout
         self.host = host
     }
