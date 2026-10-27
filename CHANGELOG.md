@@ -25,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   naming it when `launchctl` confirms it. Unix sockets, LAN endpoints and
   token-protected servers are not discovered.
 - **Parakeet (9765) and Nemotron (9865)** STT services, matching the
-  `pipecat.stt-server.parakeet` / `nemotron` agent ports. Parakeet needs `ffmpeg` on
+  `pipecat.stt-server.parakeet` / `nemotron` agent ports, installed against their own
+  hash-pinned `macos/constraints/stt-parakeet.txt` / `stt-nemotron.txt` (regenerate with
+  `uv run python macos/scripts/compile_stt_constraints.py`). Parakeet needs `ffmpeg` on
   the machine (Homebrew `/opt/homebrew/bin` or `/usr/local/bin`; the app adds those to
   Parakeet's server `PATH` only); without it the server exits with `BackendStartError:
   FFmpeg is not installed or not in your PATH`.
