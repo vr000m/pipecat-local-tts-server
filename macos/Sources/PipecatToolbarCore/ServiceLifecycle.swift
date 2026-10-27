@@ -487,7 +487,8 @@ extension LifecycleState {
     /// The live work owning the phase re-reads when it ends, so a read it orphaned
     /// need not be issued again (`reduce` rule 4). `.external` is the one live phase
     /// with no such end until the server is lost, and its `isInstalled` reads what
-    /// the read records (`requested`, the environment), so it is excluded.
+    /// the read records (`requested`, the environment), so it is excluded; going
+    /// External issues its own read for the same reason (`adopt`).
     public var ownerEndRereads: Bool { hasLiveWork && !phase.isExternal }
 
     /// Reset is refused: a server, or an install or removal, still uses the
@@ -616,8 +617,14 @@ public enum ServiceLifecycle {
     ///    probe that ends any other way than its own answer is cancelled, by
     ///    the first effect (so no other effect's wait delays it).
     /// 4. A read the advance orphaned is issued again unless `ownerEndRereads`
-    ///    (the owner's own end re-reads it). It never carries a start with it,
-    ///    and only a read already in flight is re-issued.
+    ///    (the owner's own end re-reads it), in which case it is dropped. It never
+    ///    carries a start with it, and only a read already in flight is re-issued.
+    ///    Invariant: once a transition into `.external` has run, a read issued under
+    ///    the current epoch is in flight or has landed since. The transition itself
+    ///    issues it (`adopt`, the one producer of `.external`), because an earlier
+    ///    owner may have dropped the read in flight and going External ends that
+    ///    owner without the re-read its end promised; while External, an orphaned
+    ///    read is re-issued here (External is not `ownerEndRereads`).
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
     ///    transition into or out of `.external`, and for the kinds in `changesExternalEpoch`.
     ///    A kind in `keepsEpochWhenItOnlyCounts` (a count-only `externalLost`) that left an
@@ -673,8 +680,7 @@ public enum ServiceLifecycle {
             if let cache { s.cache = cache }
             // External reads installed from `requested`, and `.external` counts as live work, so a
             // refresh that lands after the adoption must still record it; the phase itself stays
-            // put. External is not `ownerEndRereads`, so a read orphaned by the adoption is
-            // re-issued under the new epoch (`reduce` rule 4) and this is the refresh that answers it.
+            // put. This answers the read the adoption issued (`reduce` rule 4).
             if let requested, case .external = s.phase { s.requested = requested }
             // A server, install, probe or removal owns the phase; only its own end moves it.
             guard !s.hasLiveWork else { return [] }
@@ -961,13 +967,19 @@ public enum ServiceLifecycle {
         }
     }
 
-    /// Goes (or stays) External. Only called from the phases that accept a discovery.
+    /// Goes (or stays) External. Only called from the phases that accept a discovery, and from
+    /// the Start-path probe chain (`startProbeResult`, after Start or an `EADDRINUSE` exit).
+    /// Going External issues a read (`reduce` rule 4): an earlier event may have dropped the
+    /// read in flight because the work then owning the phase was `ownerEndRereads`, and no end
+    /// re-reads after the adoption (`.external` has none until the server is lost), while
+    /// External's `isInstalled` reads what the read records. Staying External issues none.
     private static func adopt(_ s: inout LifecycleState, _ info: ExternalInfo) -> [LifecycleEffect] {
+        let entering = !s.phase.isExternal
         s.endStartProbe()
         s.startAfterRead = false
         s.externalFailures = 0
         s.phase = .external(s.port, info)
-        return []
+        return entering ? [read(&s)] : []
     }
 
     private static func found(_ outcome: ExternalProbe.Outcome) -> PortFound {

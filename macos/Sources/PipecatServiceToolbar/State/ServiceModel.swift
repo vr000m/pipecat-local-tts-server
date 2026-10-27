@@ -52,8 +52,9 @@ final class ServiceModel: Identifiable {
             }
         }
         dependencies.appleSpeechInstall = { progress in try await AppleSpeech.install(progress: progress) }
+        let nativeName = info.expectedBackendName  // what its hello reports
         dependencies.makeNativeServer = {
-            STTWebSocketServer(identity: .init(name: "apple_speech", model: "SpeechTranscriber")) { pcm, language in
+            STTWebSocketServer(identity: .init(name: nativeName, model: "SpeechTranscriber")) { pcm, language in
                 try await AppleSpeech.transcribe(pcm16: pcm, language: language)
             }
         }
@@ -194,8 +195,9 @@ extension ServiceModel: ServiceHost {
         }
     }
 
+    /// The Start-path probe, through the app's one prober (the one discovery uses).
     func probeExternal(port: Int) async -> ExternalProbe.Outcome {
-        await ExternalProbe().probe(port: port)
+        await (app?.prober ?? ExternalProbe()).probe(port: port)
     }
 
     func closeTryIt() {

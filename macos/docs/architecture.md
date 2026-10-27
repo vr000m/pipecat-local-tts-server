@@ -156,10 +156,14 @@ server not yet asked to stop, the native server, or the `starting`/`running`/
 `stopping`/`removing` phases: `hasLiveWork`); otherwise the owner's end re-reads
 (`ownerEndRereads`). `.external` is the exception: it counts as live work but has no end that re-reads
 until the server is lost, and its `isInstalled` reads the `requested` and
-environment the read records, so an orphaned read (the bootstrap read in flight
-when discovery adopts) is issued again there too. Its answer records those fields
-and never moves the External phase; only a read already in flight is re-issued,
-and never with a start.
+environment the read records. So every transition into External issues a read
+itself (`adopt`, the one producer of `.external`: discovery, a Start-path probe, the
+`EADDRINUSE` chain), because the owner it ends (a Start-path probe) or an earlier one
+may have dropped the read in flight; and while External, an orphaned read is issued
+again. The invariant: once a transition into `.external` has run, a read under the
+current epoch is in flight or has landed since. Its answer records those fields and
+never moves the External phase; it never carries a start, and staying External
+(a re-probe's found) issues none.
 A current read re-reads the environment but moves the phase only when nothing
 owns it, so Reset, Try Again or a sibling's refresh never hides a running server
 or undoes a Delete. A port probe lives only while the phase is `starting` with
@@ -508,7 +512,10 @@ fields, types and error codes are fixed in `docs/supervised-contract.json`.
 `tests/test_supervised_contract.py` runs the TTS emitter on stub inputs and checks each
 line against it. The lean job cannot install the STT server, so the STT side is checked
 against recorded upstream artifacts instead: a real 0.4.0 `ready` and `error` line
-(`tests/fixtures/stt_supervised_lines.jsonl`) and a verbatim excerpt of the 0.4.0 source
+(`tests/fixtures/stt_supervised_lines.jsonl`), a real 0.4.0 kyutai `prefetch --check --json`
+(`tests/fixtures/stt_prefetch_check_lines.jsonl`: the `check` row then the `summary` that
+`EnvironmentManager.cacheStatus` reads, recorded offline on an empty cache and re-recorded by
+the opt-in `-k verbatim` run), and a verbatim excerpt of the 0.4.0 source
 (`tests/fixtures/stt_server_0.4.0_source.txt`: its `CODE_*` error codes and backend
 registry, checked against the live package too where it is importable). The test also
 checks the Swift decoder (`ServerCLIEvent`), the error codes (`SupervisedErrorCode`, the

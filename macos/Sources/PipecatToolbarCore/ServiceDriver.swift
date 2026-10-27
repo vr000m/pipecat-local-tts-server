@@ -281,7 +281,8 @@ public final class ServiceDriver {
                 self.probes[probe] = nil
                 // A cancelled probe (Stop, quit) reports nothing.
                 guard !Task.isCancelled else { return }
-                self.send(.portOwnerFound(owner, probe: probe))
+                // Its effects run like any other event's: ending the probe can re-issue a read it orphaned.
+                self.execute(self.send(.portOwnerFound(owner, probe: probe)))
             }
         case .probeExternal(let port, let probe):
             probes[probe] = Task {
@@ -352,7 +353,8 @@ public final class ServiceDriver {
             do {
                 try await environment.remove(service, deleteModel: deleteModel, known: state.cache)
             } catch {
-                send(.removalFailed(error.localizedDescription, removal: removal))
+                // Its effects run like any other event's: ending the removal can re-issue a read it orphaned.
+                await run(send(.removalFailed(error.localizedDescription, removal: removal)))
                 return
             }
             ServiceLog.install.info("\(self.service.rawValue, privacy: .public): removed (model files: \(deleteModel))")
@@ -446,7 +448,7 @@ public final class ServiceDriver {
 
     private func launchNative(port: Int) {
         guard let paths = host?.servicePaths, let native = dependencies.makeNativeServer() else {
-            send(.launchFailed("Apple Speech is unavailable."))
+            execute(send(.launchFailed("Apple Speech is unavailable.")))
             return
         }
         let sink = LogSink(url: paths.appLog(service))
@@ -473,14 +475,14 @@ public final class ServiceDriver {
                 self.execute(effects)
             } catch {
                 if self.state.native == id { self.nativeServer = nil }
-                self.send(.nativeFailed(id, error.localizedDescription))
+                self.execute(self.send(.nativeFailed(id, error.localizedDescription)))
             }
         }
     }
 
     private func launch(port: Int) {
         guard let paths = host?.servicePaths, let args = environment?.serveArguments(for: info, port: port) else {
-            send(.launchFailed("This service cannot be started by the app."))
+            execute(send(.launchFailed("This service cannot be started by the app.")))
             return
         }
         let sub = dependencies.makeProcess(
@@ -491,7 +493,7 @@ public final class ServiceDriver {
             try sub.run()
         } catch {
             sink.close()
-            send(.launchFailed(error.localizedDescription))
+            execute(send(.launchFailed(error.localizedDescription)))
             return
         }
         nextID += 1

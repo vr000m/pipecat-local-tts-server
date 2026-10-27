@@ -34,7 +34,9 @@ final class AppModel {
     /// The quit shutdown, shared by every quit request.
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     /// Finds servers already running on the catalog ports (one pass at bootstrap, on panel open and every 15 s).
-    @ObservationIgnored private(set) lazy var discovery = ExternalDiscovery(app: self)
+    @ObservationIgnored private(set) lazy var discovery = ExternalDiscovery(app: self, prober: prober)
+    /// The one hello prober: discovery's passes and every service's Start-path probe use it.
+    @ObservationIgnored let prober: any HelloProber
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
@@ -43,8 +45,9 @@ final class AppModel {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
     }
 
-    init(paths: AppPaths = .standard()) {
+    init(paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe()) {
         self.paths = paths
+        self.prober = prober
         services = Service.allCases.map { ServiceModel(info: $0.info) }
         for model in services { model.app = self }
     }

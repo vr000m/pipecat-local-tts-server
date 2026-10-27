@@ -11,9 +11,6 @@ import PipecatToolbarCore
 /// quit cancels it, and quit waits for it to unwind (`drain()`, `SerialPass` in Core).
 @MainActor
 final class ExternalDiscovery {
-    /// Longer than `ExternalProbe.helloTimeout`, so a pass is over before the next tick.
-    static let period: Duration = .seconds(15)
-
     private unowned let app: AppModel
     private let prober: any HelloProber
     private var timer: Task<Void, Never>?
@@ -35,7 +32,7 @@ final class ExternalDiscovery {
         timer = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.runPass()
-                try? await Task.sleep(for: Self.period)
+                try? await Task.sleep(for: ExternalDiscoveryPolicy.period)
             }
         }
     }

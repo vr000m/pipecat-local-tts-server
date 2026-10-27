@@ -855,13 +855,93 @@ import Testing
         Self.expectOrphanedReadReissuedWhileExternal(&s, effects, orphaned: orphaned, "externalFound")
     }
 
-    /// No read in flight: the adoption issues none (rule 4 re-issues only an orphaned read).
-    @Test func adoptionWithNoReadInFlightIssuesNoRead() {
+    /// No read in flight: going External still issues exactly one, under the new epoch (an
+    /// earlier owner may have dropped one; `reduce` rule 4). Staying External issues none.
+    @Test func adoptionWithNoReadInFlightIssuesOneRead() {
         var s = Self.state(.checking, server: nil)
         s.externalEpoch = 3
         #expect(s.reading == nil)
-        #expect(ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo)).isEmpty)
-        #expect(s.phase == Self.external && s.reading == nil)
+        let effects = ServiceLifecycle.reduce(&s, .externalFound(epoch: 3, info: Self.externalInfo))
+        #expect(effects == [.refresh(epoch: s.epoch)], "\(effects)")
+        #expect(s.phase == Self.external && s.reading == s.epoch && !s.startAfterRead)
+        // Answered: a further found on the same server (External to External) issues none.
+        _ = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(Self.marker), requested: true, epoch: s.epoch))
+        #expect(s.reading == nil)
+        let again = ServiceLifecycle.reduce(&s, .externalFound(epoch: s.externalEpoch, info: Self.externalInfo))
+        #expect(again.isEmpty && s.reading == nil, "\(again)")
+    }
+
+    /// Asserts a transition into External left a stale row re-read: `effects` carries a read at
+    /// the current epoch, and its answer records `requested` and the environment.
+    static func expectAdoptionRereads(_ s: inout LifecycleState, _ effects: [LifecycleEffect], _ label: String) {
+        #expect(s.phase.isExternal, "\(label): \(s.phase)")
+        #expect(effects.contains(.refresh(epoch: s.epoch)), "\(label): no read after the adoption: \(effects)")
+        #expect(effects.allSatisfy(allowedForExternal), "\(label): \(effects)")
+        #expect(s.reading == s.epoch && !s.startAfterRead, "\(label)")
+        #expect(!s.isInstalled, "\(label): the stale row already reads installed")
+        let landed = ServiceLifecycle.reduce(
+            &s, .refreshed(.installed, environment: .ready(marker), requested: true, epoch: s.epoch))
+        #expect(landed.isEmpty && s.phase.isExternal, "\(label): \(landed)")
+        #expect(s.requested && s.environment == .ready(marker) && s.isInstalled, "\(label)")
+    }
+
+    /// A read in flight when a busy-port Start begins is dropped (the Start-path probe owns the
+    /// phase, `ownerEndRereads`); the probe then adopts, an end that re-reads nothing by itself.
+    @Test func aReadDroppedByTheStartProbeIsIssuedAgainWhenItAdopts() {
+        var s = Self.state(.installed, server: nil)
+        s.requested = false
+        s.environment = .missing
+        let inFlight = Self.issueRead(&s)
+        let started = ServiceLifecycle.reduce(
+            &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        guard case .probeExternal(_, let probe)? = started.last else {
+            Issue.record("no hello probe: \(started)")
+            return
+        }
+        #expect(s.reading == nil, "the probe dropped the read in flight (ownerEndRereads)")
+        let adopted = ServiceLifecycle.reduce(
+            &s, .startProbeResult(tag: probe, outcome: .adopt(Service.tone.info, Self.toneHello)))
+        #expect(s.epoch != inFlight)
+        Self.expectAdoptionRereads(&s, adopted, "Start-path adopt")
+    }
+
+    /// The bind-race chain: a read issued while the app's server starts is dropped by the
+    /// `EADDRINUSE` exit (its `probeAfterBind` probe owns the phase); the probe then adopts.
+    @Test func aReadDroppedByTheBindRaceProbeIsIssuedAgainWhenItAdopts() {
+        var s = Self.state(.starting)
+        s.requested = false
+        s.environment = .missing
+        _ = Self.issueRead(&s)
+        _ = ServiceLifecycle.reduce(&s, .supervisedError(Self.current, SupervisedError(code: "EADDRINUSE", message: nil)))
+        let exited = ServiceLifecycle.reduce(&s, .exited(Self.current, status: 1, logTail: []))
+        guard case .probeExternal(8665, let probe)? = exited.last else {
+            Issue.record("no hello probe: \(exited)")
+            return
+        }
+        #expect(s.probeAfterBind && s.reading == nil, "the probe dropped the read in flight")
+        let adopted = ServiceLifecycle.reduce(
+            &s, .startProbeResult(tag: probe, outcome: .adopt(Service.tone.info, Self.toneHello)))
+        Self.expectAdoptionRereads(&s, adopted, "bind-race adopt")
+    }
+
+    /// A read dropped by a Start-path probe that then failed busy (no re-read: the failure is
+    /// shown), adopted later by discovery from that `.failed` phase.
+    @Test func aReadDroppedBeforeABusyFailureIsIssuedAgainWhenDiscoveryAdopts() {
+        var s = Self.state(.installed, server: nil)
+        s.requested = false
+        s.environment = .missing
+        _ = Self.issueRead(&s)
+        let started = ServiceLifecycle.reduce(
+            &s, .startRequested(appAvailable: true, managerAvailable: true, portFree: false))
+        guard case .probeExternal(_, let probe)? = started.last else {
+            Issue.record("no hello probe: \(started)")
+            return
+        }
+        let failed = ServiceLifecycle.reduce(&s, .startProbeResult(tag: probe, outcome: .timeout))
+        #expect(failed.isEmpty && s.reading == nil, "\(failed)")
+        let adopted = ServiceLifecycle.reduce(&s, .externalFound(epoch: s.externalEpoch, info: Self.externalInfo))
+        Self.expectAdoptionRereads(&s, adopted, "discovery adopt from .failed")
     }
 
     /// An owned phase is never moved, so a found can't drop `s.server` and leak the process.

@@ -11,8 +11,10 @@ stt wire rate. The lean job has no STT server installed, so:
     contract, JSON types); every contract event is exercised;
   * the STT emitter's lines are a recorded 0.4.0 fixture
     (``tests/fixtures/stt_supervised_lines.jsonl``: a real ``ready`` and ``error``
-    line), checked against the same contract and against the key sets the TTS emitter
-    writes for the same events; the lean job never imports ``stt_server``;
+    line) and ``tests/fixtures/stt_prefetch_check_lines.jsonl`` (a real kyutai
+    ``prefetch --check --json``: a ``check`` row then the ``summary``, recorded offline on
+    an empty cache), checked against the same contract and against the key sets the TTS
+    emitter writes for the same events; the lean job never imports ``stt_server``;
   * every ``"event": "<name>"`` literal in ``tts_server`` is a contract event;
   * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``; the ``stt``
     list == upstream ``stt_server.supervise.CODE_*``, read from a verbatim recorded
@@ -58,6 +60,7 @@ CONTRACT = json.loads((REPO / "docs" / "supervised-contract.json").read_text())
 CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
 SERVICE_SWIFT = CORE / "Service.swift"
 STT_FIXTURE = REPO / "tests" / "fixtures" / "stt_supervised_lines.jsonl"
+STT_PREFETCH_FIXTURE = REPO / "tests" / "fixtures" / "stt_prefetch_check_lines.jsonl"
 SCOPES = ("serve", "prefetch")
 TTS_CODES = set(CONTRACT["error_codes"]["tts"])
 STT_CODES = set(CONTRACT["error_codes"]["stt"])
@@ -221,6 +224,66 @@ def test_tts_check_dialect_is_check_rows_then_summary(emitted):
     swift = (CORE / "EnvironmentManager.swift").read_text()
     body = swift.split("static func cacheStatus(checkOutput", 1)[1].split("\n    }\n", 1)[0]
     assert "summary.path" not in body
+
+
+def stt_prefetch_check_lines() -> list[dict]:
+    """The recorded 0.4.0 ``stt_server prefetch --backend kyutai --check --json`` lines."""
+    return [
+        json.loads(line) for line in STT_PREFETCH_FIXTURE.read_text().splitlines() if line.strip()
+    ]
+
+
+def test_recorded_stt_prefetch_check_conforms_to_the_contract(emitted):
+    """``EnvironmentManager.cacheStatus`` reads the STT emitter's ``prefetch --check --json``:
+    check rows then a summary, with the same key sets the TTS emitter writes."""
+    lines = stt_prefetch_check_lines()
+    assert [line["event"] for line in lines] == ["check", "summary"]
+    for line in lines:
+        conform("prefetch", line, "stt")
+    check, summary = lines
+    assert set(check) == set(CONTRACT["prefetch"]["check"]["fields"])
+    assert set(summary) == set(CONTRACT["prefetch"]["summary"]["fields"])
+    assert summary["backend"] == "kyutai" and summary["cached"] == check["cached"]
+    tts = {
+        kind: [set(e) for e in emitted["prefetch"] if e["event"] == kind]
+        for kind in ("check", "summary")
+    }
+    assert set(check) in tts["check"]
+    assert set(summary) in tts["summary"]
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PIPECAT_STT_SERVER_SITE"),
+    reason="opt-in: set PIPECAT_STT_SERVER_SITE to an installed pipecat-local-stt-server release",
+)
+def test_recorded_stt_prefetch_check_is_verbatim_upstream_output(tmp_path):
+    """Re-records the prefetch fixture from the release at ``PIPECAT_STT_SERVER_SITE``, offline
+    against an empty Hugging Face cache (``--check`` never downloads), and compares it."""
+    pytest.importorskip("huggingface_hub")
+    site = Path(os.environ["PIPECAT_STT_SERVER_SITE"])
+    cache = tmp_path / "hf"
+    env = {
+        **os.environ,
+        "HF_HOME": str(cache),
+        "HF_HUB_CACHE": str(cache / "hub"),
+        "XDG_CACHE_HOME": str(tmp_path / "xdg"),
+        "HF_HUB_OFFLINE": "1",
+    }
+    run = (
+        "import runpy, sys; sys.path.insert(0, sys.argv[1]);"
+        " sys.argv = ['stt_server', 'prefetch', '--backend', 'kyutai', '--check', '--json'];"
+        " runpy.run_module('stt_server', run_name='__main__')"
+    )
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", run, str(site)],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    assert out == STT_PREFETCH_FIXTURE.read_text()
 
 
 _EVENT_LITERAL = re.compile(r'"event": "(\w+)"')

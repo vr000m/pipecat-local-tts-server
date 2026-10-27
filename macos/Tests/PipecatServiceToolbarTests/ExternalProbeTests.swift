@@ -244,9 +244,9 @@ final class FakeHelloServer: @unchecked Sendable {
     // MARK: Constant
 
     @Test func defaultHelloTimeoutStaysBelowTheReprobePeriod() {
-        // A discovery pass probes each port once per 15 s and skips a port still in flight.
+        // A discovery pass probes each port once per period and skips a port still in flight.
         #expect(ExternalProbe.helloTimeout > 0)
-        #expect(ExternalProbe.helloTimeout < 15)
+        #expect(Duration.milliseconds(Int(ExternalProbe.helloTimeout * 1000)) < ExternalDiscoveryPolicy.period)
         #expect(ExternalProbe().helloTimeout == ExternalProbe.helloTimeout)
     }
 

@@ -9,6 +9,10 @@ import Foundation
 /// the entry that owns the port (a second server for the same entry on another port is not
 /// adopted); a re-probe event is sent only for a service that is External.
 public enum ExternalDiscoveryPolicy {
+    /// How often `ExternalDiscovery` repeats a pass while the panel is open. Longer than
+    /// `ExternalProbe.helloTimeout`, so a pass is over before the next tick.
+    public static let period: Duration = .seconds(15)
+
     /// One service as it stood when its probe started.
     public struct Snapshot: Equatable, Sendable {
         public var service: Service

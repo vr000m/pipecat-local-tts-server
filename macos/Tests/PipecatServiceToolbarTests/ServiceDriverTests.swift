@@ -800,6 +800,65 @@ import Testing
         #expect(processes.launches == 0)
     }
 
+    /// A read issued while the owner lookup runs is orphaned when the lookup answers (busy
+    /// failure); the reducer re-issues it (rule 4) and the driver must run that effect, or the
+    /// service is left with `reading` set and no read in flight.
+    @Test func thePortOwnerAnswerRunsTheReadItReissues() async {
+        let environment = ArmableEnvironment()
+        let host = FakeHost(environment: environment)  // answers kokoro: the owner lookup follows
+        let answer = Flag()
+        let asked = Flag()
+        let driver = makeDriver(FakeProcess(), host: host) {
+            $0.isPortFree = { _ in false }
+            $0.portOwner = { _, _ in
+                await MainActor.run { asked.value = true }
+                while !(await MainActor.run { answer.value }) { try? await Task.sleep(for: .milliseconds(5)) }
+                return PortProbe.Owner(pid: 1, command: "other")
+            }
+        }
+        await driver.refresh()
+        driver.start()
+        await until { asked.value }
+        #expect(asked.value, "the owner lookup never started")
+        environment.arm()
+        let inFlight = Task { await driver.refresh() }  // blocks in the cache probe
+        await until { driver.state.reading != nil }
+        let orphaned = driver.state.reading
+        answer.value = true
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        #expect(driver.state.reading != orphaned, "the owner answer did not re-issue the orphaned read")
+        environment.slow.release()
+        await inFlight.value
+        await until { driver.state.reading == nil }
+        #expect(driver.state.reading == nil, "the re-issued read was never run")
+    }
+
+    /// Start on a busy port while a read is in flight: the probe drops the read, the adoption
+    /// issues one, and the driver runs it, so the External row is re-read.
+    @Test func aStartPathAdoptionRereadsTheService() async {
+        let environment = ArmableEnvironment()
+        let host = FakeHost(environment: environment)
+        let answer = Flag()
+        host.externalHandler = { _ in
+            while !answer.value { try? await Task.sleep(for: .milliseconds(5)) }
+            return .adopt(Service.tone.info, ServiceDriverTests.toneHello)
+        }
+        let driver = busyDriver(host)
+        await driver.refresh()
+        environment.arm()
+        let inFlight = Task { await driver.refresh() }  // blocks in the cache probe
+        await until { driver.state.reading != nil }
+        driver.start()
+        #expect(driver.state.phase == .starting && driver.state.reading == nil, "the probe kept the read")
+        answer.value = true
+        await until { driver.state.phase.isExternal }
+        #expect(driver.state.phase.isExternal && driver.state.reading != nil, "the adoption issued no read")
+        environment.slow.release()
+        await inFlight.value
+        await until { driver.state.reading == nil }
+        #expect(driver.state.reading == nil && driver.state.phase.isExternal, "\(driver.state.phase)")
+    }
+
     @Test func stopCancelsTheHelloProbeAndItsAdoptNeverLands() async {
         let hello = SlowHello()
         let host = FakeHost()
