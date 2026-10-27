@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-27
+
 ### Added
 
 - **Pipecat Service Toolbar adopts running servers (External).** At launch and while
@@ -620,7 +622,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.5.0...v0.6.0
