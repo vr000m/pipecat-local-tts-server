@@ -482,12 +482,23 @@ Installed and Available.
 Python itself is not bundled, and the bundle is about 43 MB, mostly `uv`.
 
 `just app-open` and `just app-install` build with `build_app.sh`, then call
-`macos/scripts/quit_app.sh <bundle-id>`, which quits a running copy and waits for it
-to exit (the quit is asynchronous, and the app stops its servers first) before
-launching the new build or replacing the installed bundle. Both also ask
-`macos/scripts/has_sign_identity.sh <name>` whether the keychain holds the signing
-identity (`app-open` to choose between `Code Signing` and ad hoc, `app-install` to fail
-before the build).
+`macos/scripts/quit_app.sh <bundle-id>`, which quits a running copy and waits for it to
+exit (the quit is asynchronous, and the app stops its servers first) before launching
+the new build or replacing the installed bundle; `QUIT_WAIT_SECS` (default 30) is one
+deadline for the whole step (the exact bound and exit codes are in the `quit_app.sh`
+header), an osascript call that ignores SIGTERM is killed, and no osascript outlives the
+script on any exit path; an osascript failure stops the recipe rather than reading as
+"not running". Before the build, both take the signing identity from
+`macos/scripts/resolve_sign_identity.sh`, where both recipes choose their default (`Code
+Signing`; `build_app.sh` alone keeps its ad-hoc default for `just app-build`): an
+explicit `SIGN_IDENTITY` wins; unset, `app-open` gets `Code Signing` when the keychain
+has it, else ad hoc, and `app-install` (`--require`) fails before the build. It asks the
+keychain through `macos/scripts/has_sign_identity.sh <identity>`, which reads the
+identity as codesign does: exactly 40 hex digits is a SHA-1 hash, matched in any case
+against the listed hashes alone; anything else is a case-insensitive substring of the
+quoted identity names. Nothing else (the header, a partial hash, the status) matches,
+and it fails (exit 2) when `security` itself fails. The check is advisory: it does not
+detect two identities sharing a name, which codesign decides at signing.
 
 uv 0.12.5 splits a `--constraint` path at spaces, and the bundle path has
 them. So the install step runs from the constraints file's folder and passes
