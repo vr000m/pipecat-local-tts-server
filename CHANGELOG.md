@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-28
+
 ### Fixed
 
 - `just app-open` waits for a running Pipecat Service Toolbar to exit before launching (the quit is
@@ -666,7 +668,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...v0.8.0
