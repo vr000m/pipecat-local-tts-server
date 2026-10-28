@@ -118,6 +118,7 @@ the weights on demand. Python is never bundled.
 
 ```sh
 just app-open    # build macos/build/Pipecat Service Toolbar.app and launch it
+just app-install # build it signed with a stable identity and install into ~/Applications
 ```
 
 See [`macos/README.md`](macos/README.md). The app drives the
@@ -741,7 +742,7 @@ re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifa
 - `tts_server/supervise.py` / `tts_server/prefetch.py` — the `serve --supervised`
   JSON channel and the `prefetch` subcommand.
 - `justfile` — macOS operator recipes (`tts-list`, `tts-status`, …) and the menu
-  bar app's `app-build` / `app-open` / `app-run` / `app-test`.
+  bar app's `app-build` / `app-open` / `app-install` / `app-run` / `app-test`.
 - `macos/` — Pipecat Service Toolbar, the native menu bar app (see `macos/README.md`).
 - `docs/protocol.md` — the wire protocol specification.
 - `docs/dev_plans/` — development plans.

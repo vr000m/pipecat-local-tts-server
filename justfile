@@ -464,27 +464,50 @@ app-open: app-build
     osascript -e "quit app id \"$id\"" 2>/dev/null || true
     open "$app"
 
-# Build, then install into ~/Applications (APP_INSTALL_DIR overrides), replacing any
-# installed copy. Signs with SIGN_IDENTITY, default the self-signed "Code Signing"
-# identity: its designated requirement (bundle id + cert) is stable across rebuilds,
-# so Microphone / Speech Recognition grants survive an update; the ad-hoc default of
-# app-build is cdhash-bound and resets them on every rebuild. Quits a running copy
-# first (found by the id the build wrote).
+# Signs with SIGN_IDENTITY, default the self-signed "Code Signing" identity: its
+# designated requirement (bundle id + cert) is stable across rebuilds, so Microphone /
+# Speech Recognition grants survive an update; the ad-hoc default of app-build is
+# cdhash-bound and resets them on every rebuild. Quits a running copy first (found by
+# the id the build wrote) and waits for it to exit.
+# Build, then install into ~/Applications (APP_INSTALL_DIR overrides), replacing any installed copy.
 app-install:
     #!/usr/bin/env bash
     set -euo pipefail
     export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"
+    # Signing is the last build step: check the identity first, not after the whole build.
+    # (Capture, then grep: grep -q closing the pipe early would trip pipefail.)
+    if [[ "$SIGN_IDENTITY" != "-" ]]; then
+        ids="$(security find-identity -p codesigning)"
+        grep -qF -- "$SIGN_IDENTITY" <<<"$ids" || {
+            echo "error: no code-signing identity matching '$SIGN_IDENTITY' (security find-identity -p codesigning)" >&2
+            exit 1
+        }
+    fi
     macos/scripts/build_app.sh
     name="Pipecat Service Toolbar.app"
     src="macos/build/$name"
     dest="${APP_INSTALL_DIR:-$HOME/Applications}"
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$src/Contents/Info.plist")"
-    osascript -e "quit app id \"$id\"" 2>/dev/null || true
+    # Quit is asynchronous (the app stops its servers first) and can be refused: wait for the
+    # process to go before touching the bundle, or a surviving copy keeps running the old build.
+    running() { [[ "$(osascript -e "application id \"$id\" is running" 2>/dev/null)" == true ]]; }
+    if running; then
+        osascript -e "quit app id \"$id\"" 2>/dev/null || true
+        for _ in $(seq 1 60); do running || break; sleep 0.5; done
+        if running; then
+            echo "error: $name ($id) did not quit within 30s; quit it and re-run" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$dest"
-    # rm before ditto: ditto merges into an existing tree and would keep stale files.
+    # Stage beside the target and verify the copy before removing the installed app, so a failed
+    # copy leaves the old install in place; rm before mv because ditto/mv would merge or nest.
+    stage="$(mktemp -d "$dest/.install.XXXXXX")"
+    trap 'rm -rf "$stage"' EXIT
+    ditto "$src" "$stage/$name"
+    codesign --verify --deep --strict "$stage/$name"
     rm -rf "${dest:?}/$name"
-    ditto "$src" "$dest/$name"
-    codesign --verify --deep --strict "$dest/$name"
+    mv "$stage/$name" "$dest/$name"
     echo "installed $dest/$name"
     codesign -dr - "$dest/$name" 2>&1 | tail -1
 
