@@ -38,7 +38,8 @@ struct AppGlyph: View {
 /// current menu bar appearance. A badge in the top-right corner shows activity.
 @MainActor
 enum MenuBarArt {
-    enum Badge { case none, running, installing }
+    /// The menu bar icon state; `ServiceCounts.badge` is the one definition.
+    typealias Badge = ServiceCounts.Badge
 
     static let idle = make(.none)
     static let running = make(.running)

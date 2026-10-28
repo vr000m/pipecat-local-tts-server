@@ -555,8 +555,9 @@ public enum ServiceLifecycle {
     /// Failed re-probes (refused or timeout) in a row before an External service is
     /// re-read. It counts discovery passes, not time: with the panel left open the passes
     /// are 15 s apart (about 45 s, meant to outlast a KeepAlive restart), but the bootstrap
-    /// pass and every panel open add one, so reopening the panel reaches it sooner. The
-    /// cold-start measurement that would confirm 45 s is still open (plan Findings, Phase 1 (b)).
+    /// pass and every panel open add one, so reopening the panel reaches it sooner. Measured
+    /// (plan Findings, Phase 1 (b)): the longest unreachable window is 5.6 s (fish_tts) and about
+    /// 1.2 s for the real agents, so 3 passes outlast a restart with the 10 s `ThrottleInterval`.
     public static let externalFailureThreshold = 3
 
     /// The phases a discovery `externalFound` adopts from; `ExternalDiscoveryPolicy.probes`
