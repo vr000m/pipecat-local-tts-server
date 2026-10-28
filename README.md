@@ -117,8 +117,9 @@ protocol. It ships a pinned `uv` and this repo's wheel, and installs Python and
 the weights on demand. Python is never bundled.
 
 ```sh
-just app-open    # build macos/build/Pipecat Service Toolbar.app and launch it
+just app-open    # build macos/build/Pipecat Service Toolbar.app and launch it (replaces a running copy)
 just app-install # build it signed with a stable identity and install into ~/Applications
+                 # (fails before building when the keychain lacks the `Code Signing` identity)
 ```
 
 See [`macos/README.md`](macos/README.md). The app drives the

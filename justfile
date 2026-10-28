@@ -454,51 +454,45 @@ smoke-supervised-all *args:
 app-build:
     macos/scripts/build_app.sh
 
-# Build the app bundle, then launch it (quits a running copy first). The running
-# copy is found by the identifier the build wrote (BUNDLE_ID overrides it).
-app-open: app-build
+# Signs with SIGN_IDENTITY, else (macos/scripts/resolve_sign_identity.sh) the self-signed
+# "Code Signing" identity when the keychain has it, so Microphone / Speech grants carry over to
+# and from app-install, else ad hoc. Then macos/scripts/quit_app.sh quits a running copy, found
+# by the id the build wrote (BUNDLE_ID overrides it), and waits up to QUIT_WAIT_SECS for it.
+# Build the app bundle, then launch it (quits a running copy first).
+app-open:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Two steps: `export X="$(…)"` would hide the helper's failure from set -e.
+    SIGN_IDENTITY="$(macos/scripts/resolve_sign_identity.sh)"
+    export SIGN_IDENTITY
+    macos/scripts/build_app.sh
     app="macos/build/Pipecat Service Toolbar.app"
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")"
-    osascript -e "quit app id \"$id\"" 2>/dev/null || true
+    macos/scripts/quit_app.sh "$id"
     open "$app"
 
-# Signs with SIGN_IDENTITY, default the self-signed "Code Signing" identity: its
-# designated requirement (bundle id + cert) is stable across rebuilds, so Microphone /
-# Speech Recognition grants survive an update; the ad-hoc default of app-build is
-# cdhash-bound and resets them on every rebuild. Quits a running copy first (found by
-# the id the build wrote) and waits for it to exit.
+# Signs with SIGN_IDENTITY, default the self-signed "Code Signing" identity: its designated
+# requirement (bundle id + cert) is stable across rebuilds, so Microphone / Speech Recognition
+# grants survive an update; the ad-hoc default of app-build is cdhash-bound and resets them on
+# every rebuild. macos/scripts/resolve_sign_identity.sh --require fails before the build when
+# the keychain lacks it. Quits a running copy first (macos/scripts/quit_app.sh, by the id the
+# build wrote) and waits up to QUIT_WAIT_SECS for it.
 # Build, then install into ~/Applications (APP_INSTALL_DIR overrides), replacing any installed copy.
 app-install:
     #!/usr/bin/env bash
     set -euo pipefail
-    export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"
     # Signing is the last build step: check the identity first, not after the whole build.
-    # (Capture, then grep: grep -q closing the pipe early would trip pipefail.)
-    if [[ "$SIGN_IDENTITY" != "-" ]]; then
-        ids="$(security find-identity -p codesigning)"
-        grep -qF -- "$SIGN_IDENTITY" <<<"$ids" || {
-            echo "error: no code-signing identity matching '$SIGN_IDENTITY' (security find-identity -p codesigning)" >&2
-            exit 1
-        }
-    fi
+    # Two steps: `export X="$(…)"` would hide the helper's failure from set -e.
+    SIGN_IDENTITY="$(macos/scripts/resolve_sign_identity.sh --require)"
+    export SIGN_IDENTITY
     macos/scripts/build_app.sh
     name="Pipecat Service Toolbar.app"
     src="macos/build/$name"
     dest="${APP_INSTALL_DIR:-$HOME/Applications}"
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$src/Contents/Info.plist")"
-    # Quit is asynchronous (the app stops its servers first) and can be refused: wait for the
-    # process to go before touching the bundle, or a surviving copy keeps running the old build.
-    running() { [[ "$(osascript -e "application id \"$id\" is running" 2>/dev/null)" == true ]]; }
-    if running; then
-        osascript -e "quit app id \"$id\"" 2>/dev/null || true
-        for _ in $(seq 1 60); do running || break; sleep 0.5; done
-        if running; then
-            echo "error: $name ($id) did not quit within 30s; quit it and re-run" >&2
-            exit 1
-        fi
-    fi
+    # Quit is asynchronous and can be refused: wait for the process to go before touching the
+    # bundle, or a surviving copy keeps running the old build (aborts, bundle untouched, if it stays up).
+    macos/scripts/quit_app.sh "$id"
     mkdir -p "$dest"
     # Stage beside the target and verify the copy before removing the installed app, so a failed
     # copy leaves the old install in place; rm before mv because ditto/mv would merge or nest.

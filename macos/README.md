@@ -19,7 +19,9 @@ just app-open      # build macos/build/Pipecat Service Toolbar.app and launch it
 
 `just app-install` builds and installs it into `~/Applications` instead, signed with the
 self-signed `Code Signing` identity so Microphone / Speech Recognition grants survive
-rebuilds (ad hoc is cdhash-bound and resets them).
+rebuilds (ad hoc is cdhash-bound and resets them). Both recipes pick the identity with
+`macos/scripts/resolve_sign_identity.sh` and quit a running copy first with
+`macos/scripts/quit_app.sh` (see the build knobs below).
 
 Without `just`: `macos/scripts/build_app.sh`, then open the app. Building needs
 Xcode 16+ and [uv](https://docs.astral.sh/uv/).
@@ -272,10 +274,11 @@ Build knobs (environment variables read by `macos/scripts/`):
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `SIGN_IDENTITY` | `build_app.sh` | Code-signing identity (default `-`, ad hoc). Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`. |
+| `SIGN_IDENTITY` | `build_app.sh`, `resolve_sign_identity.sh` | Code-signing identity (default `-`, ad hoc). Unset, `just app-open` and `just app-install` take the self-signed `Code Signing` identity from `resolve_sign_identity.sh` (which asks the keychain through `has_sign_identity.sh`): `app-open` falls back to ad hoc when it is missing, `app-install` fails before the build. An explicit value (a name, or the certificate's full SHA-1 hash) always wins. The keychain check is advisory, as codesign reads the value: a full SHA-1 in any case, or a case-insensitive substring of a name; two identities sharing a name are left to codesign at signing. Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`. |
 | `CONFIG` | `build_app.sh` | Swift build configuration, `release` (default) or `debug`. |
-| `APP_INSTALL_DIR` | `just app-install` | Install destination (default `~/Applications`). `SIGN_IDENTITY` defaults to `Code Signing` there. |
+| `APP_INSTALL_DIR` | `just app-install` | Install destination (default `~/Applications`). For the identity it signs with, see `SIGN_IDENTITY`. |
 | `BUNDLE_ID` | `build_app.sh` | Overrides `CFBundleIdentifier` (default `ai.pipecat.ServiceToolbar`); `just app-open` quits the id the build wrote. |
+| `QUIT_WAIT_SECS` | `quit_app.sh` | Whole seconds (default `30`) that `just app-open` and `just app-install` wait for a running copy to quit before launching or replacing the bundle: one deadline for the whole step, osascript calls included. Either recipe stops, without launching or replacing, on any non-zero exit of `quit_app.sh`; its header is the contract for the timing bound and the exit codes (a missing bundle id or a value that is not whole seconds is a usage error). |
 | `PIPECAT_TTS_BUILD_CACHE` | `fetch_uv.sh` | Root of the build cache for the pinned `uv` download (default `~/Library/Caches/pipecat-tts-build`). |
 | `PIPECAT_UV` | `compile_stt_constraints.py` | The `uv` binary used to compile the STT constraints (default: the app's pinned uv). |
 

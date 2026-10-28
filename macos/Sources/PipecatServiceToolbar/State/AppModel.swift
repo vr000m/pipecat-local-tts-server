@@ -111,13 +111,7 @@ final class AppModel {
         counts.summary(bootstrapping: bootstrapping)
     }
 
-    var menuBarBadge: MenuBarArt.Badge {
-        switch counts.badge {
-        case .installing: .installing
-        case .running: .running
-        case .none: .none
-        }
-    }
+    var menuBarBadge: MenuBarArt.Badge { counts.badge }
 
     /// The Stop-and-Quit title: only servers the app started are stopped.
     var quitTitle: String { counts.quitTitle }

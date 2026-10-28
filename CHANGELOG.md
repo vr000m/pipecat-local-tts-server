@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-28
+
+### Fixed
+
+- `just app-open` waits for a running Pipecat Service Toolbar to exit before launching (the quit is
+  asynchronous, so `open` used to re-activate the old copy) and stops, without launching, when the old copy
+  has not quit within `QUIT_WAIT_SECS`. It now signs with the self-signed `Code Signing` identity when the
+  keychain has it (ad hoc otherwise; it used to always sign ad hoc), so Microphone / Speech Recognition
+  grants carry across `app-open` and `app-install`.
+- Both recipes share `macos/scripts/quit_app.sh`: one `QUIT_WAIT_SECS` deadline for the whole step,
+  osascript calls included (one that ignores SIGTERM is killed). Exit 1 when the app is still running, or
+  osascript gave no answer, at the deadline; exit 3 when osascript fails or answers anything but true/false,
+  so whether the app runs is unknown and the recipe stops instead of reading it as "not running". No
+  osascript outlives the script on any exit path.
+- Both recipes choose their default identity in `macos/scripts/resolve_sign_identity.sh`, which asks
+  `macos/scripts/has_sign_identity.sh`. That check reads only the identity lines of the keychain listing
+  and takes an identity as codesign does: a full 40-hex SHA-1 (any case) or a case-insensitive substring of
+  a name. It is advisory: two identities sharing a name still count as present, and codesign decides at
+  signing. A failing `security` query stops the recipe instead of reading as "no identity". The old
+  `app-install` check matched the listing's own `Policy: Code Signing` header, so it passed for
+  `Code Signing` on every machine and a missing identity failed only at the last build step.
+
 ## [0.8.2] - 2026-10-27
 
 ### Added
@@ -659,7 +681,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...v0.8.0

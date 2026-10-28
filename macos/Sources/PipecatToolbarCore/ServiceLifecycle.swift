@@ -553,10 +553,14 @@ extension LifecycleState {
 
 public enum ServiceLifecycle {
     /// Failed re-probes (refused or timeout) in a row before an External service is
-    /// re-read. It counts discovery passes, not time: with the panel left open the passes
-    /// are 15 s apart (about 45 s, meant to outlast a KeepAlive restart), but the bootstrap
-    /// pass and every panel open add one, so reopening the panel reaches it sooner. The
-    /// cold-start measurement that would confirm 45 s is still open (plan Findings, Phase 1 (b)).
+    /// re-read. It counts discovery passes, not time. With the panel left open the passes
+    /// are 15 s apart, so 3 take about 45 s, meant to outlast a KeepAlive restart. That is a
+    /// tolerance, not a guarantee: the bootstrap pass and every panel open add a pass, and
+    /// `ExternalDiscovery.setPanelVisible` runs it at once, so three quick reopenings can reach
+    /// the threshold within seconds, inside launchd's 10 s `ThrottleInterval`. Measured (plan
+    /// Findings, Phase 1 (b)): the longest unreachable window is 5.6 s (fish_tts) and about
+    /// 1.2 s for the real agents, with warm file caches; launchd's respawn delay was not
+    /// measured and is not in those numbers.
     public static let externalFailureThreshold = 3
 
     /// The phases a discovery `externalFound` adopts from; `ExternalDiscoveryPolicy.probes`

@@ -92,10 +92,21 @@ import Testing
     /// The count reads `ServiceCounts.isStartable`, the predicate `AppModel.startable` (the rows)
     /// also calls; the app target has no test target, so the shared predicate is pinned here.
     @Test func startableCountsExactlyTheStatesIsStartableAccepts() {
-        for phase in ServiceLifecycleTests.phases {
+        // Written out per phase, not derived from the predicate's own formula, so a change to
+        // `isStartable`, `isActive` or `isInstalled` has to change this table as well.
+        // (phase, startable when requested, startable when not requested)
+        let table: [(ServicePhase, Bool, Bool)] = [
+            (.checking, false, false), (.unavailable("old"), false, false), (.notInstalled, false, false),
+            (.needsModel, true, true), (.installing(.model), true, true), (.installed, true, true),
+            (.starting, false, false), (.running, false, false), (.stopping, false, false),
+            (.removing, true, false), (.failed(ServiceLifecycleTests.failure), true, false),
+            (ServiceLifecycleTests.external, false, false),
+        ]
+        #expect(table.count == ServiceLifecycleTests.phases.count, "a new phase needs a row here")
+        for (phase, whenRequested, whenNotRequested) in table {
             for requested in [true, false] {
                 let s = Self.state(phase, requested: requested)
-                let expected = !s.isActive && (s.isInstalled || s.isInstalling)
+                let expected = requested ? whenRequested : whenNotRequested
                 #expect(ServiceCounts.isStartable(s) == expected, "\(phase) requested=\(requested)")
                 #expect(ServiceCounts([s]).startable == (expected ? 1 : 0), "\(phase) requested=\(requested)")
             }
