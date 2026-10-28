@@ -378,13 +378,24 @@ def _recipe_body(name: str) -> str:
     return "\n".join(body)
 
 
-def test_app_open_quits_the_bundle_id_the_build_used():
+def test_app_open_quits_by_built_id_and_waits_before_opening():
     """``BUNDLE_ID`` overrides the built app's identifier, so ``app-open`` must quit
-    whatever id the build wrote, not a hardcoded default (else it misses the running
-    copy and ``open`` just re-activates it)."""
+    whatever id the build wrote, not a hardcoded default; and the quit is asynchronous,
+    so it must wait for the exit before ``open`` (else ``open`` re-activates the old copy)."""
     body = _recipe_body("app-open")
     assert "CFBundleIdentifier" in body, body
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
+    assert body.index('macos/scripts/quit_app.sh "$id"') < body.index('open "$app"'), body
+
+
+def test_app_open_signs_stably_when_the_identity_exists():
+    """``app-open`` shares ``app-install``'s stable identity (so permission grants carry
+    across the two) but falls back to ad hoc for a checkout without it, and exports the
+    choice before the build (a plain assignment never reaches build_app.sh)."""
+    body = _recipe_body("app-open")
+    assert 'SIGN_IDENTITY="Code Signing"' in body and 'SIGN_IDENTITY="-"' in body, body
+    assert 'if [[ -z "${SIGN_IDENTITY:-}" ]]' in body, body  # an explicit value always wins
+    assert body.index("export SIGN_IDENTITY") < body.index("macos/scripts/build_app.sh"), body
 
 
 def test_app_install_signs_stably_and_quits_by_built_id():
@@ -400,11 +411,69 @@ def test_app_install_signs_stably_and_quits_by_built_id():
     assert "CFBundleIdentifier" in body, body
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
     # Quit (and wait for the exit) before the installed copy is removed.
-    assert body.index("quit app id") < body.index("sleep") < body.index('rm -rf "${dest:?}'), body
+    assert body.index('macos/scripts/quit_app.sh "$id"') < body.index('rm -rf "${dest:?}'), body
     # Stage + verify, then remove the old copy, then move the new one in.
     stage = body.index('ditto "$src" "$stage/$name"')
     assert stage < body.index("codesign --verify") < body.index('rm -rf "${dest:?}'), body
     assert body.index('rm -rf "${dest:?}') < body.index('mv "$stage/$name"'), body
+
+
+# --- quit_app.sh: the shared quit-and-wait step ---------------------------------
+
+_QUIT_APP = REPO_ROOT / "macos" / "scripts" / "quit_app.sh"
+
+
+def _run_quit_app(tmp_path: Path, *, quit_ends_it: bool | None, wait: str = "2", args=("x.y.Z",)):
+    """Run quit_app.sh against a stub ``osascript``.
+
+    ``quit_ends_it`` None: the app is never running. True: running until it is sent
+    ``quit``. False: running forever (a refused quit). Returns (result, quit_was_sent).
+    """
+    state = tmp_path / "running"
+    sent = tmp_path / "quit-sent"
+    if quit_ends_it is not None:
+        state.write_text("1")
+    stub = tmp_path / "bin" / "osascript"
+    stub.parent.mkdir()
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$2" in\n'
+        f'  *"is running"*) [[ -e "{state}" ]] && echo true || echo false ;;\n'
+        f'  *"quit app id"*) : > "{sent}"; {"rm -f " + str(state) if quit_ends_it else "true"} ;;\n'
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    env = {"PATH": f"{stub.parent}:/usr/bin:/bin", "QUIT_WAIT_SECS": wait}
+    result = subprocess.run(
+        ["/bin/bash", str(_QUIT_APP), *args], env=env, capture_output=True, text=True, timeout=30
+    )
+    return result, sent.exists()
+
+
+def test_quit_app_does_nothing_when_the_app_is_not_running(tmp_path):
+    """Sending ``quit`` to a stopped app can launch it just to quit it."""
+    result, sent = _run_quit_app(tmp_path, quit_ends_it=None)
+    assert result.returncode == 0, result.stderr
+    assert not sent
+
+
+def test_quit_app_waits_for_a_running_app_to_exit(tmp_path):
+    result, sent = _run_quit_app(tmp_path, quit_ends_it=True)
+    assert result.returncode == 0, result.stderr
+    assert sent
+
+
+def test_quit_app_fails_when_the_quit_is_refused(tmp_path):
+    """A surviving process must stop the caller before it opens or replaces the bundle."""
+    result, sent = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
+    assert result.returncode == 1, (result.returncode, result.stderr)
+    assert sent
+    assert "did not quit" in result.stderr
+
+
+def test_quit_app_requires_a_bundle_id(tmp_path):
+    result, _ = _run_quit_app(tmp_path, quit_ends_it=None, args=())
+    assert result.returncode == 2
 
 
 # --- Phase 6: docs + out-of-process smoke contract -------------------------

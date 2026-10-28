@@ -272,7 +272,7 @@ Build knobs (environment variables read by `macos/scripts/`):
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `SIGN_IDENTITY` | `build_app.sh` | Code-signing identity (default `-`, ad hoc). Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`. |
+| `SIGN_IDENTITY` | `build_app.sh` | Code-signing identity (default `-`, ad hoc; `just app-open` and `just app-install` default to the self-signed `Code Signing` identity when present). Sign for distribution with `SIGN_IDENTITY="Developer ID Application: …" just app-build`. |
 | `CONFIG` | `build_app.sh` | Swift build configuration, `release` (default) or `debug`. |
 | `APP_INSTALL_DIR` | `just app-install` | Install destination (default `~/Applications`). `SIGN_IDENTITY` defaults to `Code Signing` there. |
 | `BUNDLE_ID` | `build_app.sh` | Overrides `CFBundleIdentifier` (default `ai.pipecat.ServiceToolbar`); `just app-open` quits the id the build wrote. |

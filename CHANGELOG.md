@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `just app-open` waits for a running Pipecat Service Toolbar to exit before launching (the quit is
+  asynchronous, so `open` used to re-activate the old copy), and signs with the self-signed `Code Signing`
+  identity when the keychain has it, so Microphone / Speech Recognition grants carry across `app-open` and
+  `app-install` (ad hoc otherwise). Both recipes share `macos/scripts/quit_app.sh`.
+
 ## [0.8.2] - 2026-10-27
 
 ### Added
