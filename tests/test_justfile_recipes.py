@@ -23,6 +23,7 @@ import importlib.util
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -393,6 +394,7 @@ def test_app_open_signs_stably_when_the_identity_exists():
     across the two) but falls back to ad hoc for a checkout without it, and exports the
     choice before the build (a plain assignment never reaches build_app.sh)."""
     body = _recipe_body("app-open")
+    assert 'has_sign_identity.sh "Code Signing"' in body, body  # not a grep of the raw listing
     assert 'SIGN_IDENTITY="Code Signing"' in body and 'SIGN_IDENTITY="-"' in body, body
     assert 'if [[ -z "${SIGN_IDENTITY:-}" ]]' in body, body  # an explicit value always wins
     assert body.index("export SIGN_IDENTITY") < body.index("macos/scripts/build_app.sh"), body
@@ -408,6 +410,9 @@ def test_app_install_signs_stably_and_quits_by_built_id():
     export = 'export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"'
     assert export in body, body
     assert body.index(export) < body.index("macos/scripts/build_app.sh"), body
+    assert 'has_sign_identity.sh "$SIGN_IDENTITY"' in body, (
+        body
+    )  # pre-flight, not a grep of the raw listing
     assert "CFBundleIdentifier" in body, body
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
     # Quit (and wait for the exit) before the installed copy is removed.
@@ -423,23 +428,39 @@ def test_app_install_signs_stably_and_quits_by_built_id():
 _QUIT_APP = REPO_ROOT / "macos" / "scripts" / "quit_app.sh"
 
 
-def _run_quit_app(tmp_path: Path, *, quit_ends_it: bool | None, wait: str = "2", args=("x.y.Z",)):
+def _run_quit_app(
+    tmp_path: Path,
+    *,
+    quit_ends_it: bool | None,
+    exit_after_polls: int = 0,
+    wait: str = "2",
+    args=("x.y.Z",),
+):
     """Run quit_app.sh against a stub ``osascript``.
 
-    ``quit_ends_it`` None: the app is never running. True: running until it is sent
-    ``quit``. False: running forever (a refused quit). Returns (result, quit_was_sent).
+    ``quit_ends_it`` None: the app is never running. True: running until it has been sent
+    ``quit`` and then polled ``exit_after_polls`` more times (a slow exit). False: running
+    forever (a refused quit). Returns (result, quit_was_sent, polls_after_quit).
     """
     state = tmp_path / "running"
     sent = tmp_path / "quit-sent"
+    polls = tmp_path / "polls"
     if quit_ends_it is not None:
         state.write_text("1")
+    ends = "1" if quit_ends_it else ""
     stub = tmp_path / "bin" / "osascript"
     stub.parent.mkdir()
     stub.write_text(
         "#!/usr/bin/env bash\n"
         'case "$2" in\n'
-        f'  *"is running"*) [[ -e "{state}" ]] && echo true || echo false ;;\n'
-        f'  *"quit app id"*) : > "{sent}"; {"rm -f " + str(state) if quit_ends_it else "true"} ;;\n'
+        '  *"is running"*)\n'
+        f'    [[ -e "{state}" ]] || {{ echo false; exit 0; }}\n'
+        f'    if [[ -e "{sent}" ]]; then\n'
+        f'      n=$(cat "{polls}" 2>/dev/null || echo 0); echo $((n + 1)) > "{polls}"\n'
+        f'      if [[ -n "{ends}" ]] && (( n >= {exit_after_polls} )); then rm -f "{state}"; echo false; exit 0; fi\n'
+        "    fi\n"
+        "    echo true ;;\n"
+        f'  *"quit app id"*) : > "{sent}" ;;\n'
         "esac\n"
     )
     stub.chmod(0o755)
@@ -447,33 +468,106 @@ def _run_quit_app(tmp_path: Path, *, quit_ends_it: bool | None, wait: str = "2",
     result = subprocess.run(
         ["/bin/bash", str(_QUIT_APP), *args], env=env, capture_output=True, text=True, timeout=30
     )
-    return result, sent.exists()
+    n_polls = int(polls.read_text()) if polls.exists() else 0
+    return result, sent.exists(), n_polls
 
 
 def test_quit_app_does_nothing_when_the_app_is_not_running(tmp_path):
     """Sending ``quit`` to a stopped app can launch it just to quit it."""
-    result, sent = _run_quit_app(tmp_path, quit_ends_it=None)
+    result, sent, _ = _run_quit_app(tmp_path, quit_ends_it=None)
     assert result.returncode == 0, result.stderr
     assert not sent
 
 
 def test_quit_app_waits_for_a_running_app_to_exit(tmp_path):
-    result, sent = _run_quit_app(tmp_path, quit_ends_it=True)
+    """The exit lands a few polls after the quit: returning right after sending it would
+    leave the old process alive for the caller's ``open`` / bundle replacement."""
+    result, sent, polls = _run_quit_app(tmp_path, quit_ends_it=True, exit_after_polls=3)
     assert result.returncode == 0, result.stderr
     assert sent
+    assert polls == 4, polls  # three "still running" answers, then the exit
 
 
 def test_quit_app_fails_when_the_quit_is_refused(tmp_path):
     """A surviving process must stop the caller before it opens or replaces the bundle."""
-    result, sent = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
+    result, sent, _ = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
     assert result.returncode == 1, (result.returncode, result.stderr)
     assert sent
-    assert "did not quit" in result.stderr
+    assert "did not quit within 1s" in result.stderr
+
+
+def test_quit_app_wait_is_bounded_by_the_clock_not_the_poll_count(tmp_path):
+    """Each poll spawns osascript, so a poll-count bound would overshoot the stated wait."""
+    start = time.monotonic()
+    result, _, polls = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
+    assert result.returncode == 1
+    assert time.monotonic() - start < 4
+    assert 1 <= polls < 30, polls
 
 
 def test_quit_app_requires_a_bundle_id(tmp_path):
-    result, _ = _run_quit_app(tmp_path, quit_ends_it=None, args=())
+    result, _, _ = _run_quit_app(tmp_path, quit_ends_it=None, args=())
     assert result.returncode == 2
+
+
+def test_quit_app_rejects_a_non_numeric_wait(tmp_path):
+    result, sent, _ = _run_quit_app(tmp_path, quit_ends_it=True, wait="soon")
+    assert result.returncode == 2, result.stderr
+    assert not sent
+
+
+# --- has_sign_identity.sh: the keychain probe both app recipes share -------------
+
+_HAS_IDENTITY = REPO_ROOT / "macos" / "scripts" / "has_sign_identity.sh"
+
+# `security find-identity -p codesigning` on a keychain with no identity at all: the
+# "Policy: Code Signing" header is printed regardless of what the keychain holds.
+_NO_IDENTITIES = (
+    "Policy: Code Signing\n  Matching identities\n     0 identities found\n\n"
+    "  Valid identities only\n     0 valid identities found\n"
+)
+_ONE_UNTRUSTED = (
+    "Policy: Code Signing\n  Matching identities\n"
+    '  1) AAC7E2B994E42BED55FAD8E292CF3BA1A4629CEE "Code Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
+    "     1 identities found\n\n  Valid identities only\n     0 valid identities found\n"
+)
+
+
+def _run_has_identity(tmp_path: Path, listing: str, *args: str):
+    stub = tmp_path / "bin" / "security"
+    stub.parent.mkdir(exist_ok=True)
+    listing_file = tmp_path / "listing"
+    listing_file.write_text(listing)
+    stub.write_text(f'#!/usr/bin/env bash\ncat "{listing_file}"\n')
+    stub.chmod(0o755)
+    env = {"PATH": f"{stub.parent}:/usr/bin:/bin"}
+    return subprocess.run(
+        ["/bin/bash", str(_HAS_IDENTITY), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_has_sign_identity_ignores_the_policy_header(tmp_path):
+    """The listing's own ``Policy: Code Signing`` line must not count as an identity: it made
+    ``app-open`` pick an identity that did not exist and fail at the last build step."""
+    assert _run_has_identity(tmp_path, _NO_IDENTITIES, "Code Signing").returncode == 1
+
+
+def test_has_sign_identity_finds_an_untrusted_self_signed_identity(tmp_path):
+    """The non -v listing is searched: codesign signs with a self-signed, untrusted identity."""
+    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED, "Code Signing").returncode == 0
+
+
+def test_has_sign_identity_matches_a_partial_name_and_rejects_another(tmp_path):
+    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED, "Code Sign").returncode == 0
+    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED, "Developer ID Application").returncode == 1
+
+
+def test_has_sign_identity_requires_a_name(tmp_path):
+    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED).returncode == 2
 
 
 # --- Phase 6: docs + out-of-process smoke contract -------------------------

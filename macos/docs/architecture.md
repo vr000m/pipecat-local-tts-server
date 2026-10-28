@@ -484,7 +484,10 @@ Python itself is not bundled, and the bundle is about 43 MB, mostly `uv`.
 `just app-open` and `just app-install` build with `build_app.sh`, then call
 `macos/scripts/quit_app.sh <bundle-id>`, which quits a running copy and waits for it
 to exit (the quit is asynchronous, and the app stops its servers first) before
-launching the new build or replacing the installed bundle.
+launching the new build or replacing the installed bundle. Both also ask
+`macos/scripts/has_sign_identity.sh <name>` whether the keychain holds the signing
+identity (`app-open` to choose between `Code Signing` and ad hoc, `app-install` to fail
+before the build).
 
 uv 0.12.5 splits a `--constraint` path at spaces, and the bundle path has
 them. So the install step runs from the constraints file's folder and passes

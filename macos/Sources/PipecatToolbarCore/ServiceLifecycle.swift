@@ -557,7 +557,8 @@ public enum ServiceLifecycle {
     /// are 15 s apart (about 45 s, meant to outlast a KeepAlive restart), but the bootstrap
     /// pass and every panel open add one, so reopening the panel reaches it sooner. Measured
     /// (plan Findings, Phase 1 (b)): the longest unreachable window is 5.6 s (fish_tts) and about
-    /// 1.2 s for the real agents, so 3 passes outlast a restart with the 10 s `ThrottleInterval`.
+    /// 1.2 s for the real agents, so 3 passes outlast a restart with the 10 s `ThrottleInterval`
+    /// (warm file caches, and without launchd's respawn in the numbers).
     public static let externalFailureThreshold = 3
 
     /// The phases a discovery `externalFound` adopts from; `ExternalDiscoveryPolicy.probes`

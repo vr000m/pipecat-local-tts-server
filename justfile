@@ -463,8 +463,7 @@ app-open:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -z "${SIGN_IDENTITY:-}" ]]; then
-        ids="$(security find-identity -p codesigning)"
-        if grep -qF -- "Code Signing" <<<"$ids"; then SIGN_IDENTITY="Code Signing"; else SIGN_IDENTITY="-"; fi
+        if macos/scripts/has_sign_identity.sh "Code Signing"; then SIGN_IDENTITY="Code Signing"; else SIGN_IDENTITY="-"; fi
     fi
     export SIGN_IDENTITY
     macos/scripts/build_app.sh
@@ -483,10 +482,8 @@ app-install:
     set -euo pipefail
     export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"
     # Signing is the last build step: check the identity first, not after the whole build.
-    # (Capture, then grep: grep -q closing the pipe early would trip pipefail.)
     if [[ "$SIGN_IDENTITY" != "-" ]]; then
-        ids="$(security find-identity -p codesigning)"
-        grep -qF -- "$SIGN_IDENTITY" <<<"$ids" || {
+        macos/scripts/has_sign_identity.sh "$SIGN_IDENTITY" || {
             echo "error: no code-signing identity matching '$SIGN_IDENTITY' (security find-identity -p codesigning)" >&2
             exit 1
         }

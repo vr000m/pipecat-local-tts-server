@@ -14,7 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `just app-open` waits for a running Pipecat Service Toolbar to exit before launching (the quit is
   asynchronous, so `open` used to re-activate the old copy), and signs with the self-signed `Code Signing`
   identity when the keychain has it, so Microphone / Speech Recognition grants carry across `app-open` and
-  `app-install` (ad hoc otherwise). Both recipes share `macos/scripts/quit_app.sh`.
+  `app-install` (ad hoc otherwise). Both recipes share `macos/scripts/quit_app.sh` (a wait bounded by the
+  clock) and `macos/scripts/has_sign_identity.sh`, which searches only the keychain listing's identity
+  lines: the listing's own `Policy: Code Signing` header made the old check find an identity on every
+  machine, so `app-install` skipped its up-front identity check and an `app-open` without the certificate
+  failed at the last build step instead of signing ad hoc.
 
 ## [0.8.2] - 2026-10-27
 
