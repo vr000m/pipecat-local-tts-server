@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-27
+
+### Added
+
+- `just app-install`: build Pipecat Service Toolbar signed with the self-signed `Code Signing`
+  identity (so Microphone / Speech Recognition grants survive rebuilds) and install it into
+  `~/Applications`, replacing any installed copy.
+
 ## [0.8.1] - 2026-10-27
 
 ### Changed
@@ -651,7 +659,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.6.1...v0.7.0

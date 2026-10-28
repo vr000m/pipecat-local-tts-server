@@ -387,6 +387,26 @@ def test_app_open_quits_the_bundle_id_the_build_used():
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
 
 
+def test_app_install_signs_stably_and_quits_by_built_id():
+    """``app-install`` must not ship the ad-hoc default (cdhash-bound, so every rebuild
+    resets TCC grants), must quit the id the build wrote and wait for it to exit before
+    touching the bundle, and must replace the installed copy (staged + verified first)
+    rather than ditto-merge into it."""
+    body = _recipe_body("app-install")
+    # ``export``: a plain assignment never reaches build_app.sh, which would silently go ad hoc.
+    export = 'export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"'
+    assert export in body, body
+    assert body.index(export) < body.index("macos/scripts/build_app.sh"), body
+    assert "CFBundleIdentifier" in body, body
+    assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
+    # Quit (and wait for the exit) before the installed copy is removed.
+    assert body.index("quit app id") < body.index("sleep") < body.index('rm -rf "${dest:?}'), body
+    # Stage + verify, then remove the old copy, then move the new one in.
+    stage = body.index('ditto "$src" "$stage/$name"')
+    assert stage < body.index("codesign --verify") < body.index('rm -rf "${dest:?}'), body
+    assert body.index('rm -rf "${dest:?}') < body.index('mv "$stage/$name"'), body
+
+
 # --- Phase 6: docs + out-of-process smoke contract -------------------------
 
 _MACOS = REPO_ROOT / "macos"
