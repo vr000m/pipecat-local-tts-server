@@ -1,6 +1,6 @@
 # Task: Adopt servers that are already running, and start one only when none is
 
-**Status**: Complete on `feature/macos-adopt-external-servers` (PR #24); manual checks and live measurements outstanding
+**Status**: Complete; shipped in 0.8.0 (PR #24). Both live measurements are recorded under Findings (hello latency in 0.8.1, cold start 2026-10-27); the External and owned rows were checked by hand against real agents, including a call through onoats. The edge-case checklist below is not ticked item by item.
 **Component**: macos
 **Assigned to**: Varun / Claude
 **Priority**: High
