@@ -454,17 +454,16 @@ smoke-supervised-all *args:
 app-build:
     macos/scripts/build_app.sh
 
-# Signs with SIGN_IDENTITY; unset, it uses the self-signed "Code Signing" identity when the
-# keychain has it (the same stable requirement as app-install, so permission grants carry
-# across the two), else ad hoc. The running copy is found by the id the build wrote (BUNDLE_ID
-# overrides it) and waited on until it exits.
+# Signs with SIGN_IDENTITY, else (macos/scripts/resolve_sign_identity.sh) the self-signed
+# "Code Signing" identity when the keychain has it, so Microphone / Speech grants carry over to
+# and from app-install, else ad hoc. Then macos/scripts/quit_app.sh quits a running copy, found
+# by the id the build wrote (BUNDLE_ID overrides it), and waits up to QUIT_WAIT_SECS for it.
 # Build the app bundle, then launch it (quits a running copy first).
 app-open:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ -z "${SIGN_IDENTITY:-}" ]]; then
-        if macos/scripts/has_sign_identity.sh "Code Signing"; then SIGN_IDENTITY="Code Signing"; else SIGN_IDENTITY="-"; fi
-    fi
+    # Two steps: `export X="$(…)"` would hide the helper's failure from set -e.
+    SIGN_IDENTITY="$(macos/scripts/resolve_sign_identity.sh)"
     export SIGN_IDENTITY
     macos/scripts/build_app.sh
     app="macos/build/Pipecat Service Toolbar.app"
@@ -475,19 +474,17 @@ app-open:
 # Signs with SIGN_IDENTITY, default the self-signed "Code Signing" identity: its designated
 # requirement (bundle id + cert) is stable across rebuilds, so Microphone / Speech Recognition
 # grants survive an update; the ad-hoc default of app-build is cdhash-bound and resets them on
-# every rebuild. Quits a running copy first (found by the id the build wrote) and waits for it.
+# every rebuild. macos/scripts/resolve_sign_identity.sh --require fails before the build when
+# the keychain lacks it. Quits a running copy first (macos/scripts/quit_app.sh, by the id the
+# build wrote) and waits up to QUIT_WAIT_SECS for it.
 # Build, then install into ~/Applications (APP_INSTALL_DIR overrides), replacing any installed copy.
 app-install:
     #!/usr/bin/env bash
     set -euo pipefail
-    export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"
     # Signing is the last build step: check the identity first, not after the whole build.
-    if [[ "$SIGN_IDENTITY" != "-" ]]; then
-        macos/scripts/has_sign_identity.sh "$SIGN_IDENTITY" || {
-            echo "error: no code-signing identity matching '$SIGN_IDENTITY' (security find-identity -p codesigning)" >&2
-            exit 1
-        }
-    fi
+    # Two steps: `export X="$(…)"` would hide the helper's failure from set -e.
+    SIGN_IDENTITY="$(macos/scripts/resolve_sign_identity.sh --require)"
+    export SIGN_IDENTITY
     macos/scripts/build_app.sh
     name="Pipecat Service Toolbar.app"
     src="macos/build/$name"

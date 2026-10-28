@@ -178,10 +178,12 @@ jobs:
           python-version: "3.12"
       - name: Sync lean env (for the live tone-server test)
         run: uv sync --extra client
-      # The ui_smoke.sh job-signal tests also run under the stock /bin/bash 3.2 here
-      # (the lean job's Ubuntu bash is 5.x, which does not reuse a reaped job's number).
-      - name: ui_smoke.sh job-signal tests under macOS bash
-        run: uv run pytest tests/test_justfile_recipes.py -k ui_smoke
+      # The shell-script tests (ui_smoke.sh job signals, quit_app.sh, has_sign_identity.sh /
+      # resolve_sign_identity.sh) also run here under the stock macOS /bin/bash 3.2, which the
+      # app recipes use: the lean job's Ubuntu bash is 5.x (it does not reuse a reaped job's
+      # number, and its builtins differ).
+      - name: Shell-script tests under macOS bash 3.2
+        run: uv run pytest tests/test_justfile_recipes.py -k "ui_smoke or quit_app or sign_identity"
       - name: Build the app package
         run: swift build --package-path macos
       - name: Swift tests

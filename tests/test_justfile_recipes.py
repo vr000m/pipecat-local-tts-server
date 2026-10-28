@@ -19,9 +19,12 @@ tests skip gracefully.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
+import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -389,30 +392,29 @@ def test_app_open_quits_by_built_id_and_waits_before_opening():
     assert body.index('macos/scripts/quit_app.sh "$id"') < body.index('open "$app"'), body
 
 
-def test_app_open_signs_stably_when_the_identity_exists():
-    """``app-open`` shares ``app-install``'s stable identity (so permission grants carry
-    across the two) but falls back to ad hoc for a checkout without it, and exports the
-    choice before the build (a plain assignment never reaches build_app.sh)."""
+def test_app_open_resolves_the_identity_before_the_build():
+    """``app-open`` takes its identity from the shared resolver (its fallback behaviour is
+    tested on the script below) and exports it before the build: a plain assignment never
+    reaches build_app.sh, and ``export X="$(…)"`` would hide the resolver's failure."""
     body = _recipe_body("app-open")
-    assert 'has_sign_identity.sh "Code Signing"' in body, body  # not a grep of the raw listing
-    assert 'SIGN_IDENTITY="Code Signing"' in body and 'SIGN_IDENTITY="-"' in body, body
-    assert 'if [[ -z "${SIGN_IDENTITY:-}" ]]' in body, body  # an explicit value always wins
+    assign = 'SIGN_IDENTITY="$(macos/scripts/resolve_sign_identity.sh)"'
+    assert assign in body, body
+    assert body.index(assign) < body.index("export SIGN_IDENTITY"), body
     assert body.index("export SIGN_IDENTITY") < body.index("macos/scripts/build_app.sh"), body
+    assert "Code Signing" not in body, body  # the default name lives in the resolver only
 
 
 def test_app_install_signs_stably_and_quits_by_built_id():
     """``app-install`` must not ship the ad-hoc default (cdhash-bound, so every rebuild
-    resets TCC grants), must quit the id the build wrote and wait for it to exit before
-    touching the bundle, and must replace the installed copy (staged + verified first)
-    rather than ditto-merge into it."""
+    resets TCC grants): it requires the resolved identity before the build. It must quit
+    the id the build wrote and wait for it to exit before touching the bundle, and must
+    replace the installed copy (staged + verified first) rather than ditto-merge into it."""
     body = _recipe_body("app-install")
-    # ``export``: a plain assignment never reaches build_app.sh, which would silently go ad hoc.
-    export = 'export SIGN_IDENTITY="${SIGN_IDENTITY:-Code Signing}"'
-    assert export in body, body
-    assert body.index(export) < body.index("macos/scripts/build_app.sh"), body
-    assert 'has_sign_identity.sh "$SIGN_IDENTITY"' in body, (
-        body
-    )  # pre-flight, not a grep of the raw listing
+    assign = 'SIGN_IDENTITY="$(macos/scripts/resolve_sign_identity.sh --require)"'
+    assert assign in body, body
+    assert body.index(assign) < body.index("export SIGN_IDENTITY"), body
+    assert body.index("export SIGN_IDENTITY") < body.index("macos/scripts/build_app.sh"), body
+    assert "Code Signing" not in body, body  # the default name lives in the resolver only
     assert "CFBundleIdentifier" in body, body
     assert 'quit app id "ai.pipecat.ServiceToolbar"' not in body, body
     # Quit (and wait for the exit) before the installed copy is removed.
@@ -428,97 +430,443 @@ def test_app_install_signs_stably_and_quits_by_built_id():
 _QUIT_APP = REPO_ROOT / "macos" / "scripts" / "quit_app.sh"
 
 
+@dataclasses.dataclass
+class _QuitRun:
+    result: subprocess.CompletedProcess
+    sent: bool  # the quit request was sent
+    polls: int  # running checks after the quit was sent
+    orphans: list[int]  # stub osascript pids still alive after the script exited
+    leftovers: list[str]  # entries left in the script's TMPDIR
+    elapsed: float
+
+
 def _run_quit_app(
     tmp_path: Path,
     *,
     quit_ends_it: bool | None,
     exit_after_polls: int = 0,
-    wait: str = "2",
+    wait: str = "5",
     args=("x.y.Z",),
-):
+    first_answer: str = "",
+    after_quit: str = "",
+    quit_hangs: bool = False,
+    probe_secs: float = 0,
+    abort_after_quit: bool = False,
+    term_when: str = "",
+    ignore_term: bool = False,
+) -> _QuitRun:
     """Run quit_app.sh against a stub ``osascript``.
 
     ``quit_ends_it`` None: the app is never running. True: running until it has been sent
     ``quit`` and then polled ``exit_after_polls`` more times (a slow exit). False: running
-    forever (a refused quit). Returns (result, quit_was_sent, polls_after_quit).
+    forever (a refused quit). ``first_answer`` / ``after_quit`` replace the running check's
+    answer before / after the quit: ``error`` (osascript fails), ``garbage`` (an answer that
+    is neither true nor false), ``unknown`` (-1728) or ``hang``. ``quit_hangs``: the quit
+    event never returns. ``probe_secs``: each running check takes that long (osascript is not
+    instant). ``abort_after_quit``: the main loop's ``sleep 0.1`` fails once the quit was
+    sent, so set -e aborts the script. ``term_when`` ``quit`` / ``probe``: SIGTERM the script
+    once the quit was sent / the first running check started. ``ignore_term``: every
+    osascript ignores SIGTERM (so only SIGKILL ends a hung one). Every stub records its pid.
     """
     state = tmp_path / "running"
     sent = tmp_path / "quit-sent"
     polls = tmp_path / "polls"
+    pids = tmp_path / "pids"
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
     if quit_ends_it is not None:
         state.write_text("1")
     ends = "1" if quit_ends_it else ""
-    stub = tmp_path / "bin" / "osascript"
-    stub.parent.mkdir()
+    odd = {
+        "": ":",
+        "error": "echo 'execution error: boom (-1712)' >&2; exit 1",
+        "garbage": "echo 'missing value'; exit 0",
+        "unknown": 'echo "syntax error: Can\'t get application id. (-1728)" >&2; exit 1',
+        "hang": "exec sleep 60",
+    }
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "osascript"
     stub.write_text(
         "#!/usr/bin/env bash\n"
-        'case "$2" in\n'
+        f'echo $$ >> "{pids}"\n' + ("trap '' TERM\n" if ignore_term else "") + 'case "$2" in\n'
         '  *"is running"*)\n'
+        + (f"    sleep {probe_secs}\n" if probe_secs else "")
+        + f'    if [[ -e "{sent}" ]]; then {odd[after_quit]}; else {odd[first_answer]}; fi\n'
         f'    [[ -e "{state}" ]] || {{ echo false; exit 0; }}\n'
         f'    if [[ -e "{sent}" ]]; then\n'
         f'      n=$(cat "{polls}" 2>/dev/null || echo 0); echo $((n + 1)) > "{polls}"\n'
         f'      if [[ -n "{ends}" ]] && (( n >= {exit_after_polls} )); then rm -f "{state}"; echo false; exit 0; fi\n'
         "    fi\n"
         "    echo true ;;\n"
-        f'  *"quit app id"*) : > "{sent}" ;;\n'
+        f'  *"quit app id"*) : > "{sent}"' + ("; exec sleep 60" if quit_hangs else "") + " ;;\n"
         "esac\n"
     )
     stub.chmod(0o755)
-    env = {"PATH": f"{stub.parent}:/usr/bin:/bin", "QUIT_WAIT_SECS": wait}
-    result = subprocess.run(
-        ["/bin/bash", str(_QUIT_APP), *args], env=env, capture_output=True, text=True, timeout=30
+    if abort_after_quit:
+        sleep_stub = bindir / "sleep"
+        sleep_stub.write_text(
+            "#!/bin/bash\n"
+            f'if [[ "$1" == 0.1 && -e "{sent}" ]]; then exit 1; fi\n'
+            'exec /bin/sleep "$@"\n'
+        )
+        sleep_stub.chmod(0o755)
+    env = {"PATH": f"{bindir}:/usr/bin:/bin", "QUIT_WAIT_SECS": wait, "TMPDIR": str(tmpdir)}
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        ["/bin/bash", str(_QUIT_APP), *args],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
-    n_polls = int(polls.read_text()) if polls.exists() else 0
-    return result, sent.exists(), n_polls
+    try:
+        if term_when:
+            trigger = {"quit": sent, "probe": pids}[term_when]
+            while not trigger.exists() and proc.poll() is None:
+                assert time.monotonic() - start < 15, "the SIGTERM trigger never fired"
+                time.sleep(0.02)
+            time.sleep(0.2)  # let the pending osascript settle into its wait
+            proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=45)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    elapsed = time.monotonic() - start
+    orphans = []
+    for pid in (int(p) for p in pids.read_text().split()) if pids.exists() else ():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        orphans.append(pid)
+        os.kill(pid, signal.SIGKILL)  # don't leave a 60s sleep behind the test
+    result = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+    return _QuitRun(
+        result=result,
+        sent=sent.exists(),
+        polls=int(polls.read_text()) if polls.exists() else 0,
+        orphans=orphans,
+        leftovers=sorted(p.name for p in tmpdir.iterdir()),
+        elapsed=elapsed,
+    )
 
 
 def test_quit_app_does_nothing_when_the_app_is_not_running(tmp_path):
     """Sending ``quit`` to a stopped app can launch it just to quit it."""
-    result, sent, _ = _run_quit_app(tmp_path, quit_ends_it=None)
-    assert result.returncode == 0, result.stderr
-    assert not sent
+    run = _run_quit_app(tmp_path, quit_ends_it=None)
+    assert run.result.returncode == 0, run.result.stderr
+    assert not run.sent
 
 
 def test_quit_app_waits_for_a_running_app_to_exit(tmp_path):
     """The exit lands a few polls after the quit: returning right after sending it would
     leave the old process alive for the caller's ``open`` / bundle replacement."""
-    result, sent, polls = _run_quit_app(tmp_path, quit_ends_it=True, exit_after_polls=3)
-    assert result.returncode == 0, result.stderr
-    assert sent
-    assert polls == 4, polls  # three "still running" answers, then the exit
+    run = _run_quit_app(tmp_path, quit_ends_it=True, exit_after_polls=3)
+    assert run.result.returncode == 0, run.result.stderr
+    assert run.sent
+    assert run.polls == 4, run.polls  # three "still running" answers, then the exit
 
 
 def test_quit_app_fails_when_the_quit_is_refused(tmp_path):
     """A surviving process must stop the caller before it opens or replaces the bundle."""
-    result, sent, _ = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
-    assert result.returncode == 1, (result.returncode, result.stderr)
-    assert sent
-    assert "did not quit within 1s" in result.stderr
+    run = _run_quit_app(tmp_path, quit_ends_it=False, wait="3")
+    assert run.result.returncode == 1, (run.result.returncode, run.result.stderr)
+    assert run.sent
+    assert "did not quit within 3s" in run.result.stderr
+
+
+def test_quit_app_waits_at_least_the_stated_time(tmp_path):
+    """bash's SECONDS ticks on whole-second boundaries: a ``SECONDS + wait`` deadline gave
+    up anywhere from 0 to ``wait`` seconds in, so ``QUIT_WAIT_SECS=1`` could fail in 0.1s.
+    Only the lower bound is timed tightly; the ceiling just catches an unbounded wait."""
+    run = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
+    assert run.result.returncode == 1, run.result.stderr
+    assert 1.0 <= run.elapsed < 15, run.elapsed
 
 
 def test_quit_app_wait_is_bounded_by_the_clock_not_the_poll_count(tmp_path):
-    """Each poll spawns osascript, so a poll-count bound would overshoot the stated wait."""
-    start = time.monotonic()
-    result, _, polls = _run_quit_app(tmp_path, quit_ends_it=False, wait="1")
-    assert result.returncode == 1
-    assert time.monotonic() - start < 4
-    assert 1 <= polls < 30, polls
+    """Each poll spawns osascript, which takes a while (0.3s here): a poll-count bound
+    (wait x 10 polls of 0.1s sleep, 30 here) overshoots the stated wait; the clock stops at
+    it after about 3 / 0.4 polls. Counted, not timed: a loaded runner only lowers the count."""
+    run = _run_quit_app(tmp_path, quit_ends_it=False, wait="3", probe_secs=0.3)
+    assert run.result.returncode == 1, run.result.stderr
+    assert run.elapsed >= 3.0, run.elapsed
+    assert 1 <= run.polls < 15, run.polls
 
 
-def test_quit_app_requires_a_bundle_id(tmp_path):
-    result, _, _ = _run_quit_app(tmp_path, quit_ends_it=None, args=())
-    assert result.returncode == 2
+@pytest.mark.parametrize(
+    "hang",
+    [
+        dict(quit_ends_it=True, first_answer="hang"),  # the first running check
+        dict(quit_ends_it=False, quit_hangs=True),  # the quit request
+        dict(quit_ends_it=False, after_quit="hang"),  # a running check after the quit
+        dict(quit_ends_it=False, quit_hangs=True, after_quit="hang"),  # both at once
+    ],
+    ids=["probe", "quit", "probe-after-quit", "both"],
+)
+def test_quit_app_stops_an_osascript_that_ignores_sigterm(tmp_path, hang):
+    """A hung osascript that ignores SIGTERM: a bare ``kill`` then ``wait`` blocked on it for
+    its whole 60s sleep, past the deadline. It gets SIGKILL after a short grace, so the script
+    still gives up at the deadline and leaves nothing running. The lower bound is the stated
+    wait; the ceiling only catches the 60s hang (a loaded runner may be slow)."""
+    run = _run_quit_app(tmp_path, wait="3", ignore_term=True, **hang)
+    assert run.result.returncode == 1, (run.result.returncode, run.result.stderr)
+    assert run.orphans == [], f"osascript left running: {run.orphans}"
+    assert run.leftovers == [], run.leftovers
+    assert 3.0 <= run.elapsed < 15, run.elapsed
+    assert "Killed" not in run.result.stderr and "Terminated" not in run.result.stderr, (
+        run.result.stderr
+    )
 
 
-def test_quit_app_rejects_a_non_numeric_wait(tmp_path):
-    result, sent, _ = _run_quit_app(tmp_path, quit_ends_it=True, wait="soon")
-    assert result.returncode == 2, result.stderr
-    assert not sent
+@pytest.mark.parametrize(
+    "case",
+    [
+        # (name, stub kwargs, exit code, quit sent, stderr fragment)
+        # -- clean exits; the probe answers true / false / -1728 / error / odd / hangs
+        ("not running", dict(quit_ends_it=None), 0, False, ""),
+        ("exits after quit", dict(quit_ends_it=True, exit_after_polls=1), 0, True, ""),
+        ("refused", dict(quit_ends_it=False, wait="3"), 1, True, "did not quit within 3s"),
+        ("first check fails", dict(quit_ends_it=True, first_answer="error"), 3, False, "boom"),
+        # A fresh build's id is unknown to LaunchServices until it is opened: osascript then
+        # fails with -1728, and no app with an unknown id can be running.
+        ("id unknown", dict(quit_ends_it=None, first_answer="unknown"), 0, False, ""),
+        (
+            "first check fails, not running",
+            dict(quit_ends_it=None, first_answer="error"),
+            3,
+            False,
+            "boom",
+        ),
+        (
+            "first answer odd",
+            dict(quit_ends_it=True, first_answer="garbage"),
+            3,
+            False,
+            "missing value",
+        ),
+        (
+            "first check hangs",
+            dict(quit_ends_it=True, first_answer="hang", wait="1"),
+            1,
+            False,
+            "did not say",
+        ),
+        # -- after the quit, quit request finished
+        ("check fails after quit", dict(quit_ends_it=False, after_quit="error"), 3, True, "boom"),
+        (
+            "answer odd after quit",
+            dict(quit_ends_it=False, after_quit="garbage"),
+            3,
+            True,
+            "missing value",
+        ),
+        (
+            "check hangs after quit",
+            dict(quit_ends_it=False, after_quit="hang", wait="3"),
+            1,
+            True,
+            "did not quit",
+        ),
+        # -- after the quit, quit request still pending (hung): every exit path reaps it
+        (
+            "quit hangs, app stays",
+            dict(quit_ends_it=False, quit_hangs=True, wait="3"),
+            1,
+            True,
+            "no answer",
+        ),
+        (
+            # The polls run beside the pending quit request, so the exit still counts.
+            "quit hangs, app went",
+            dict(quit_ends_it=True, quit_hangs=True),
+            0,
+            True,
+            "",
+        ),
+        (
+            "quit hangs, id unknown after quit",
+            dict(quit_ends_it=False, quit_hangs=True, after_quit="unknown"),
+            0,
+            True,
+            "",
+        ),
+        (
+            "quit hangs, check fails after quit (exit 3)",
+            dict(quit_ends_it=False, quit_hangs=True, after_quit="error"),
+            3,
+            True,
+            "boom",
+        ),
+        (
+            "quit hangs, answer odd after quit (exit 3)",
+            dict(quit_ends_it=False, quit_hangs=True, after_quit="garbage"),
+            3,
+            True,
+            "missing value",
+        ),
+        (
+            "quit hangs, check hangs after quit",
+            dict(quit_ends_it=False, quit_hangs=True, after_quit="hang", wait="3"),
+            1,
+            True,
+            "no answer",
+        ),
+        # -- set -e abort mid-loop
+        (
+            "set -e abort, quit pending",
+            dict(quit_ends_it=False, quit_hangs=True, abort_after_quit=True),
+            1,
+            True,
+            "",
+        ),
+        (
+            "set -e abort, quit finished",
+            dict(quit_ends_it=False, abort_after_quit=True),
+            1,
+            True,
+            "",
+        ),
+        # -- SIGTERM
+        (
+            "TERM, first check hung",
+            dict(quit_ends_it=True, first_answer="hang", term_when="probe"),
+            143,
+            False,
+            "",
+        ),
+        (
+            "TERM, quit pending",
+            dict(quit_ends_it=False, quit_hangs=True, term_when="quit"),
+            143,
+            True,
+            "",
+        ),
+        (
+            "TERM, quit pending, check hung",
+            dict(quit_ends_it=False, quit_hangs=True, after_quit="hang", term_when="quit"),
+            143,
+            True,
+            "",
+        ),
+        ("TERM, quit finished", dict(quit_ends_it=False, term_when="quit"), 143, True, ""),
+        # -- an osascript that ignores SIGTERM: SIGKILL after the grace, on every path
+        (
+            "first check hangs, ignores TERM",
+            dict(quit_ends_it=True, first_answer="hang", wait="1", ignore_term=True),
+            1,
+            False,
+            "did not say",
+        ),
+        (
+            "check hangs after quit, ignores TERM",
+            dict(quit_ends_it=False, after_quit="hang", wait="3", ignore_term=True),
+            1,
+            True,
+            "did not quit",
+        ),
+        (
+            "quit hangs, app stays, ignores TERM",
+            dict(quit_ends_it=False, quit_hangs=True, wait="3", ignore_term=True),
+            1,
+            True,
+            "no answer",
+        ),
+        (
+            "quit hangs, app went, ignores TERM",
+            dict(quit_ends_it=True, quit_hangs=True, ignore_term=True),
+            0,
+            True,
+            "",
+        ),
+        (
+            "set -e abort, quit pending, ignores TERM",
+            dict(quit_ends_it=False, quit_hangs=True, abort_after_quit=True, ignore_term=True),
+            1,
+            True,
+            "",
+        ),
+        (
+            "TERM, first check hung, ignores TERM",
+            dict(quit_ends_it=True, first_answer="hang", term_when="probe", ignore_term=True),
+            143,
+            False,
+            "",
+        ),
+        (
+            "TERM, quit pending, check hung, ignores TERM",
+            dict(
+                quit_ends_it=False,
+                quit_hangs=True,
+                after_quit="hang",
+                term_when="quit",
+                ignore_term=True,
+            ),
+            143,
+            True,
+            "",
+        ),
+        # -- arguments
+        (
+            "leading-zero wait 08",
+            dict(quit_ends_it=True, exit_after_polls=1, wait="08"),
+            0,
+            True,
+            "",
+        ),
+        (
+            "leading-zero wait 09",
+            dict(quit_ends_it=True, exit_after_polls=1, wait="09"),
+            0,
+            True,
+            "",
+        ),
+        ("non-numeric wait", dict(quit_ends_it=True, wait="soon"), 2, False, "whole seconds"),
+        ("negative wait", dict(quit_ends_it=True, wait="-1"), 2, False, "whole seconds"),
+        ("no bundle id", dict(quit_ends_it=None, args=()), 2, False, "usage"),
+    ],
+    ids=lambda c: c[0],
+)
+def test_quit_app_state_space(tmp_path, case):
+    """Every (who exits x quit request x running check) cell. Only a clean ``false`` or
+    -1728 reads as "not running": an osascript failure or odd answer must stop the caller
+    (exit 3) rather than let it open or replace the bundle under a live copy. On every exit
+    path (0-3, set -e abort, SIGTERM) no osascript the script started is left running and
+    its temp dir is gone, and nothing outlasts the wait."""
+    _, kwargs, code, quit_sent, fragment = case
+    run = _run_quit_app(tmp_path, **kwargs)
+    assert run.orphans == [], f"osascript left running: {run.orphans}"
+    assert run.leftovers == [], f"temp dir left behind: {run.leftovers}"
+    assert run.result.returncode == code, (run.result.returncode, run.result.stderr)
+    assert run.sent == quit_sent
+    assert fragment in run.result.stderr, run.result.stderr
+    # A hung stub sleeps 60s: anything near that is an unbounded osascript call.
+    assert run.elapsed < 20, "an osascript call outlasted QUIT_WAIT_SECS"
 
 
-# --- has_sign_identity.sh: the keychain probe both app recipes share -------------
+def test_quit_app_signals_its_children_only_by_job_spec() -> None:
+    """Every signal quit_app.sh sends names a job spec from ``live_job`` inside ``stop_child``,
+    never a pid: ``kill -0 $pid`` / ``kill $pid`` on a child bash already reaped can hit an
+    unrelated process that took the pid."""
+    code = [ln.split("#", 1)[0] for ln in _QUIT_APP.read_text().splitlines()]
+    kills = [ln.strip() for ln in code if re.search(r"\bkill\b", ln)]
+    assert kills == [
+        'kill -TERM "%$live" || true',
+        '[[ -z "$live" ]] || kill -KILL "%$live" || true',
+    ], kills
+    assert kills[0] in _shell_functions(_QUIT_APP, "stop_child")
+
+
+# --- has_sign_identity.sh: the keychain probe behind resolve_sign_identity.sh ------
 
 _HAS_IDENTITY = REPO_ROOT / "macos" / "scripts" / "has_sign_identity.sh"
+_RESOLVE_IDENTITY = REPO_ROOT / "macos" / "scripts" / "resolve_sign_identity.sh"
+
+_CS_HASH = "AAC7E2B994E42BED55FAD8E292CF3BA1A4629CEE"  # "Code Signing"
+_CS2_HASH = "FEDCBA9876543210FEDCBA9876543210FEDCBA98"  # a second "Code Signing"
+_FOO_HASH = "0123456789ABCDEF0123456789ABCDEF01234567"  # "Developer ID Application: Foo …"
 
 # `security find-identity -p codesigning` on a keychain with no identity at all: the
 # "Policy: Code Signing" header is printed regardless of what the keychain holds.
@@ -528,46 +876,298 @@ _NO_IDENTITIES = (
 )
 _ONE_UNTRUSTED = (
     "Policy: Code Signing\n  Matching identities\n"
-    '  1) AAC7E2B994E42BED55FAD8E292CF3BA1A4629CEE "Code Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
+    f'  1) {_CS_HASH} "Code Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
     "     1 identities found\n\n  Valid identities only\n     0 valid identities found\n"
 )
+_TWO = (
+    "Policy: Code Signing\n  Matching identities\n"
+    f'  1) {_CS_HASH} "Code Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
+    f'  2) {_FOO_HASH} "Developer ID Application: Foo (TEAM123)"\n'
+    "     2 identities found\n\n  Valid identities only\n"
+    f'  1) {_FOO_HASH} "Developer ID Application: Foo (TEAM123)"\n'
+    "     1 valid identities found\n"
+)
+# Two identities with the same name (e.g. a re-created self-signed certificate).
+_DUP = (
+    "Policy: Code Signing\n  Matching identities\n"
+    f'  1) {_CS_HASH} "Code Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
+    f'  2) {_CS2_HASH} "Code Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
+    "     2 identities found\n\n  Valid identities only\n     0 valid identities found\n"
+)
+# A name that holds another identity's full hash: 40 hex digits are a hash, never a name.
+_HEX_NAME = (
+    "Policy: Code Signing\n  Matching identities\n"
+    f'  1) {_CS_HASH} "Build {_FOO_HASH}" (CSSMERR_TP_NOT_TRUSTED)\n'
+    "     1 identities found\n\n  Valid identities only\n     0 valid identities found\n"
+)
+_SECURITY_FAILS = None  # the stub exits non-zero, as `security` does on a keychain error
+_LISTING_IDS = {
+    _NO_IDENTITIES: "empty",
+    _ONE_UNTRUSTED: "one-untrusted",
+    _TWO: "two",
+    _DUP: "two-same-name",
+    _HEX_NAME: "hex-in-name",
+    None: "fails",
+}
 
 
-def _run_has_identity(tmp_path: Path, listing: str, *args: str):
-    stub = tmp_path / "bin" / "security"
-    stub.parent.mkdir(exist_ok=True)
-    listing_file = tmp_path / "listing"
-    listing_file.write_text(listing)
-    stub.write_text(f'#!/usr/bin/env bash\ncat "{listing_file}"\n')
+@pytest.fixture(scope="module")
+def security_bin(tmp_path_factory) -> Path:
+    """One stub ``security`` for the module: macOS scans each new executable on its first
+    run (about 0.3s), so a stub per test would cost that for every cell. It prints the
+    listing file named by ``STUB_SECURITY_LISTING``, or fails like a locked keychain when
+    that is empty, and records each call in ``STUB_SECURITY_CALLS``."""
+    bindir = tmp_path_factory.mktemp("security-bin")
+    stub = bindir / "security"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo x >> "$STUB_SECURITY_CALLS"\n'
+        'if [[ -n "${STUB_SECURITY_LISTING:-}" ]]; then cat "$STUB_SECURITY_LISTING"; exit 0; fi\n'
+        'echo "security: SecKeychainSearchCopyNext: keychain locked" >&2; exit 45\n'
+    )
     stub.chmod(0o755)
-    env = {"PATH": f"{stub.parent}:/usr/bin:/bin"}
-    return subprocess.run(
-        ["/bin/bash", str(_HAS_IDENTITY), *args],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
+    return bindir
+
+
+def _run_identity_script(
+    bindir: Path,
+    tmp_path: Path,
+    script: Path,
+    listing: str | None,
+    *args: str,
+    env_extra=None,
+):
+    listing_file = tmp_path / "listing"
+    calls = tmp_path / "security-calls"
+    if listing is not None:
+        listing_file.write_text(listing)
+    env = {
+        "PATH": f"{bindir}:/usr/bin:/bin",
+        "STUB_SECURITY_LISTING": "" if listing is None else str(listing_file),
+        "STUB_SECURITY_CALLS": str(calls),
+        **(env_extra or {}),
+    }
+    result = subprocess.run(
+        ["/bin/bash", str(script), *args], env=env, capture_output=True, text=True, timeout=30
+    )
+    return result, calls.exists()
+
+
+def _run_has_identity(bindir: Path, tmp_path: Path, listing: str | None, *args: str):
+    return _run_identity_script(bindir, tmp_path, _HAS_IDENTITY, listing, *args)[0]
+
+
+def test_has_sign_identity_ignores_the_policy_header(security_bin, tmp_path):
+    """The listing's own ``Policy: Code Signing`` line must not count as an identity: it made
+    ``app-open`` pick an identity that did not exist and fail at the last build step."""
+    assert _run_has_identity(security_bin, tmp_path, _NO_IDENTITIES, "Code Signing").returncode == 1
+
+
+def test_has_sign_identity_finds_an_untrusted_self_signed_identity(security_bin, tmp_path):
+    """The non -v listing is searched: codesign signs with a self-signed, untrusted identity."""
+    assert _run_has_identity(security_bin, tmp_path, _ONE_UNTRUSTED, "Code Signing").returncode == 0
+
+
+def test_has_sign_identity_matches_a_partial_name_and_rejects_another(security_bin, tmp_path):
+    assert _run_has_identity(security_bin, tmp_path, _ONE_UNTRUSTED, "Code Sign").returncode == 0
+    assert (
+        _run_has_identity(
+            security_bin, tmp_path, _ONE_UNTRUSTED, "Developer ID Application"
+        ).returncode
+        == 1
     )
 
 
-def test_has_sign_identity_ignores_the_policy_header(tmp_path):
-    """The listing's own ``Policy: Code Signing`` line must not count as an identity: it made
-    ``app-open`` pick an identity that did not exist and fail at the last build step."""
-    assert _run_has_identity(tmp_path, _NO_IDENTITIES, "Code Signing").returncode == 1
+def test_has_sign_identity_requires_a_name(security_bin, tmp_path):
+    assert _run_has_identity(security_bin, tmp_path, _ONE_UNTRUSTED).returncode == 2
 
 
-def test_has_sign_identity_finds_an_untrusted_self_signed_identity(tmp_path):
-    """The non -v listing is searched: codesign signs with a self-signed, untrusted identity."""
-    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED, "Code Signing").returncode == 0
+@pytest.mark.parametrize(
+    ("listing", "identity", "code"),
+    [
+        # How the identity is given x what the keychain holds. codesign --sign takes the full
+        # 40-hex SHA-1 (any case, decided on the hashes alone) or a case-insensitive
+        # substring of a name; nothing else names one. Advisory: ambiguity is codesign's call.
+        (_ONE_UNTRUSTED, "Code Signing", 0),  # exact name
+        (_ONE_UNTRUSTED, "Code Sign", 0),  # substring of the name
+        (_ONE_UNTRUSTED, "code signing", 0),  # name, lower case (codesign ignores case)
+        (_ONE_UNTRUSTED, "CODE SIGNING", 0),  # name, upper case
+        (_ONE_UNTRUSTED, "cOdE sIgN", 0),  # substring, odd case
+        (_ONE_UNTRUSTED, "Code Signing!", 1),  # longer than the name
+        (_ONE_UNTRUSTED, _CS_HASH, 0),  # full hash
+        (_ONE_UNTRUSTED, _CS_HASH.lower(), 0),  # full hash, lower case
+        (_ONE_UNTRUSTED, _CS_HASH[:20].lower() + _CS_HASH[20:], 0),  # full hash, mixed case
+        (_ONE_UNTRUSTED, "AAC7E2B9", 1),  # partial hash
+        (_ONE_UNTRUSTED, _CS_HASH[:-1], 1),  # 39 digits
+        (_ONE_UNTRUSTED, _CS_HASH + "0", 1),  # 41 digits
+        (_ONE_UNTRUSTED, f" {_CS_HASH}", 1),  # not exactly the hash
+        (_ONE_UNTRUSTED, _FOO_HASH, 1),  # another keychain's hash
+        (_ONE_UNTRUSTED, "NOT_TRUSTED", 1),  # status text
+        (_ONE_UNTRUSTED, "CSSMERR_TP_NOT_TRUSTED", 1),
+        (_ONE_UNTRUSTED, "cssmerr_tp_not_trusted", 1),  # status text, any case
+        (_ONE_UNTRUSTED, "Policy", 1),  # header text
+        (_ONE_UNTRUSTED, "policy: code signing", 1),  # the header line, any case
+        (_TWO, "Developer ID Application: Foo (TEAM123)", 0),
+        (_TWO, "Developer ID Application: Foo", 0),
+        (_TWO, "TEAM123", 0),  # inside the quoted name
+        (_TWO, "0123456789ABCDEF", 1),  # partial hash, still rejected
+        (_TWO, _FOO_HASH, 0),  # the full hash of the same identity is accepted
+        (_TWO, _FOO_HASH.lower(), 0),
+        (_TWO, "developer id application: foo (team123)", 0),  # whole name, lower case
+        (_TWO, "Apple Development", 1),
+        (_DUP, "Code Signing", 0),  # both match the name
+        (_DUP, _CS_HASH, 0),  # the hash picks one
+        (_DUP, _CS2_HASH.lower(), 0),
+        (_DUP, "code signing", 0),
+        (_DUP, _FOO_HASH, 1),
+        (_HEX_NAME, _CS_HASH, 0),  # the listed hash
+        (_HEX_NAME, _FOO_HASH, 1),  # 40 hex inside a name: a hash, and not a listed one
+        (_HEX_NAME, _FOO_HASH.lower(), 1),
+        (_HEX_NAME, f"Build {_FOO_HASH}", 0),  # the whole name (not 40 hex): a name match
+        (_HEX_NAME, f"build {_FOO_HASH.lower()}", 0),
+        (_HEX_NAME, _FOO_HASH[:16], 0),  # fewer than 40 hex digits read as a name, as codesign
+        (_NO_IDENTITIES, "Code Signing", 1),
+        (_NO_IDENTITIES, "identities found", 1),
+        (_NO_IDENTITIES, _CS_HASH, 1),
+        (_NO_IDENTITIES, "code signing", 1),
+        # A failing `security` is not "no identity": the caller must not fall back to ad hoc.
+        (_SECURITY_FAILS, "Code Signing", 2),
+        (_SECURITY_FAILS, "Developer ID Application: Foo", 2),
+        (_SECURITY_FAILS, _FOO_HASH, 2),
+        (_SECURITY_FAILS, "code signing", 2),
+    ],
+    ids=lambda v: _LISTING_IDS.get(v, str(v)) if isinstance(v, str) or v is None else str(v),
+)
+def test_has_sign_identity_state_space(security_bin, tmp_path, listing, identity, code):
+    result = _run_has_identity(security_bin, tmp_path, listing, identity)
+    assert result.returncode == code, (result.returncode, result.stderr)
+    if listing is _SECURITY_FAILS:
+        assert "security find-identity" in result.stderr, result.stderr
 
 
-def test_has_sign_identity_matches_a_partial_name_and_rejects_another(tmp_path):
-    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED, "Code Sign").returncode == 0
-    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED, "Developer ID Application").returncode == 1
+# --- resolve_sign_identity.sh: how app-open / app-install choose their identity ----
+
+# The SIGN_IDENTITY values tried, by label (None: unset).
+_EXPLICIT = {
+    "unset": None,
+    "empty": "",
+    "adhoc": "-",
+    "exact": "Developer ID Application: Foo (TEAM123)",
+    "substr": "Developer ID Application: Foo",
+    "hash": _FOO_HASH,
+    "hash-lower": _FOO_HASH.lower(),
+    "hash-dup": _CS2_HASH,
+    "lower": "developer id application: foo",
+    "cs-lower": "code signing",
+    "partial": "0123456789ABCDEF",
+    "status": "CSSMERR_TP_NOT_TRUSTED",
+    "absent": "Apple Development: Nope",
+}
+_KEYCHAINS = {
+    "empty": _NO_IDENTITIES,
+    "one": _ONE_UNTRUSTED,
+    "two": _TWO,
+    "dup": _DUP,
+    "fails": _SECURITY_FAILS,
+}
+# Expected outcome per (SIGN_IDENTITY, mode), one token per keychain in _KEYCHAINS order.
+# "=X": prints X without asking the keychain. "?X": asks the keychain, then prints X.
+# "!1": not in the keychain (--require). "!2": the keychain query failed. X is a label of
+# _EXPLICIT, "cs" ("Code Signing", the default) or "-" (ad hoc). Written out, not computed.
+_RESOLVED = {
+    # fallback (just app-open): an explicit value wins as is; unset, the default or ad hoc.
+    ("unset", "fallback"): ("?-", "?cs", "?cs", "?cs", "!2"),
+    ("empty", "fallback"): ("?-", "?cs", "?cs", "?cs", "!2"),
+    ("adhoc", "fallback"): ("=-", "=-", "=-", "=-", "=-"),
+    ("exact", "fallback"): ("=exact", "=exact", "=exact", "=exact", "=exact"),
+    ("substr", "fallback"): ("=substr", "=substr", "=substr", "=substr", "=substr"),
+    ("hash", "fallback"): ("=hash", "=hash", "=hash", "=hash", "=hash"),
+    ("hash-lower", "fallback"): (
+        "=hash-lower",
+        "=hash-lower",
+        "=hash-lower",
+        "=hash-lower",
+        "=hash-lower",
+    ),
+    ("hash-dup", "fallback"): ("=hash-dup", "=hash-dup", "=hash-dup", "=hash-dup", "=hash-dup"),
+    ("lower", "fallback"): ("=lower", "=lower", "=lower", "=lower", "=lower"),
+    ("cs-lower", "fallback"): ("=cs-lower", "=cs-lower", "=cs-lower", "=cs-lower", "=cs-lower"),
+    ("partial", "fallback"): ("=partial", "=partial", "=partial", "=partial", "=partial"),
+    ("status", "fallback"): ("=status", "=status", "=status", "=status", "=status"),
+    ("absent", "fallback"): ("=absent", "=absent", "=absent", "=absent", "=absent"),
+    # --require (just app-install): no ad-hoc fallback; the identity must be in the keychain.
+    ("unset", "require"): ("!1", "?cs", "?cs", "?cs", "!2"),
+    ("empty", "require"): ("!1", "?cs", "?cs", "?cs", "!2"),
+    ("adhoc", "require"): ("=-", "=-", "=-", "=-", "=-"),
+    ("exact", "require"): ("!1", "!1", "?exact", "!1", "!2"),
+    ("substr", "require"): ("!1", "!1", "?substr", "!1", "!2"),
+    ("hash", "require"): ("!1", "!1", "?hash", "!1", "!2"),
+    ("hash-lower", "require"): ("!1", "!1", "?hash-lower", "!1", "!2"),
+    ("hash-dup", "require"): ("!1", "!1", "!1", "?hash-dup", "!2"),
+    ("lower", "require"): ("!1", "!1", "?lower", "!1", "!2"),
+    ("cs-lower", "require"): ("!1", "?cs-lower", "?cs-lower", "?cs-lower", "!2"),
+    ("partial", "require"): ("!1", "!1", "!1", "!1", "!2"),
+    ("status", "require"): ("!1", "!1", "!1", "!1", "!2"),
+    ("absent", "require"): ("!1", "!1", "!1", "!1", "!2"),
+}
+_RESOLVE_CELLS = [
+    pytest.param(explicit, mode, keychain, token, id=f"{explicit}-{mode}-{keychain}")
+    for (explicit, mode), tokens in _RESOLVED.items()
+    for keychain, token in zip(_KEYCHAINS, tokens, strict=True)
+]
 
 
-def test_has_sign_identity_requires_a_name(tmp_path):
-    assert _run_has_identity(tmp_path, _ONE_UNTRUSTED).returncode == 2
+def test_resolve_sign_identity_table_covers_the_state_space():
+    assert {e for e, _ in _RESOLVED} == set(_EXPLICIT)
+    assert len(_RESOLVED) == 2 * len(_EXPLICIT)
+
+
+@pytest.mark.parametrize(("explicit", "mode", "keychain", "token"), _RESOLVE_CELLS)
+def test_resolve_sign_identity_state_space(security_bin, tmp_path, explicit, mode, keychain, token):
+    """Every (SIGN_IDENTITY, keychain, mode) cell: an explicit value wins; unset, app-open
+    gets ``Code Signing`` when present else ad hoc, app-install (``--require``) fails
+    before the build unless the keychain has the identity (by name or full hash); a failing
+    keychain query is an error, never a silent ad-hoc build."""
+    value = _EXPLICIT[explicit]
+    env = {} if value is None else {"SIGN_IDENTITY": value}
+    args = ("--require",) if mode == "require" else ()
+    result, asked = _run_identity_script(
+        security_bin, tmp_path, _RESOLVE_IDENTITY, _KEYCHAINS[keychain], *args, env_extra=env
+    )
+    kind, label = token[0], token[1:]
+    if kind == "!":
+        assert result.returncode == int(label), (result.returncode, result.stderr)
+        assert result.stdout == ""
+        assert asked
+        if label == "1":
+            assert "no code-signing identity matching" in result.stderr, result.stderr
+        return
+    printed = {"cs": "Code Signing", "-": "-"}.get(label, _EXPLICIT.get(label))
+    assert result.returncode == 0, (result.returncode, result.stderr)
+    assert result.stdout == f"{printed}\n", result.stdout
+    assert asked == (kind == "?")
+
+
+def test_resolve_sign_identity_requires_a_hash_to_be_a_listed_hash(security_bin, tmp_path):
+    """A full hash that only appears inside an identity's name is not that identity: codesign
+    reads 40 hex digits as a hash, so ``--require`` must not let the build start on it."""
+    for value in (_FOO_HASH, _FOO_HASH.lower()):
+        result, asked = _run_identity_script(
+            security_bin,
+            tmp_path,
+            _RESOLVE_IDENTITY,
+            _HEX_NAME,
+            "--require",
+            env_extra={"SIGN_IDENTITY": value},
+        )
+        assert (result.returncode, result.stdout, asked) == (1, "", True), result.stderr
+
+
+def test_resolve_sign_identity_rejects_unknown_arguments(security_bin, tmp_path):
+    for args in (("--bogus",), ("--require", "extra")):
+        result, _ = _run_identity_script(security_bin, tmp_path, _RESOLVE_IDENTITY, _TWO, *args)
+        assert result.returncode == 2, (args, result.stderr)
+        assert result.stdout == ""
 
 
 # --- Phase 6: docs + out-of-process smoke contract -------------------------
@@ -659,15 +1259,21 @@ def test_architecture_known_followups_lists_deferred_discovery() -> None:
     assert re.search(r"token storage", body)
 
 
-def _ui_smoke_functions(*names: str) -> str:
-    """The named shell functions, verbatim from ui_smoke.sh (to run them without the script)."""
-    text = _UI_SMOKE.read_text()
+def _shell_functions(script: Path, *names: str) -> str:
+    """The named shell functions, verbatim from ``script`` (to run them without the script).
+    A function ends at the first unindented ``}``, which may carry a redirection."""
+    text = script.read_text()
     out = []
     for name in names:
-        m = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.DOTALL | re.MULTILINE)
-        assert m is not None, f"{name}() not found in ui_smoke.sh"
+        m = re.search(rf"^{name}\(\) \{{\n.*?^\}}[^\n]*\n", text, re.DOTALL | re.MULTILINE)
+        assert m is not None, f"{name}() not found in {script.name}"
         out.append(m.group(0))
     return "\n".join(out)
+
+
+def _ui_smoke_functions(*names: str) -> str:
+    """The named shell functions, verbatim from ui_smoke.sh."""
+    return _shell_functions(_UI_SMOKE, *names)
 
 
 def test_ui_smoke_signals_its_children_only_by_job_spec() -> None:
@@ -804,3 +1410,53 @@ ps -p "$quick" >/dev/null 2>&1 && { echo "quick child still alive"; exit 9; }
 """,
     )
     assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)
+
+
+_QUIT_APP_HELPERS = ("live_job", "stop_child", "stop_quit", "cleanup")
+
+
+@pytest.mark.parametrize("bash", _bash_candidates())
+def test_quit_app_never_signals_a_pid_that_is_no_longer_its_child(bash: str) -> None:
+    """quit_app.sh's stop helpers against (a) its own pending osascript, even one that ignores
+    SIGTERM, which they stop and reap, and (b) a pending pid whose child has exited and been
+    reaped and which now names an unrelated process (pid reuse): they must not signal it."""
+    stranger = subprocess.Popen(["sleep", "30"])
+    try:
+        script = f"""set -euo pipefail
+{_shell_functions(_QUIT_APP, *_QUIT_APP_HELPERS)}
+tmp="$(mktemp -d)"; quit_err=""; probe_pid=""; quit_pid=""; live=""
+( trap '' TERM; exec sleep 30 ) &
+probe_pid=$!
+( trap '' TERM; exec sleep 30 ) &
+quit_pid=$!
+own="$probe_pid $quit_pid"
+sleep 0.2
+live_job "$probe_pid"
+[[ -n "$live" ]] || {{ echo "live_job found no job"; exit 2; }}
+cleanup
+set -e
+for p in $own; do ps -p "$p" >/dev/null 2>&1 && {{ echo "own child $p still alive"; exit 3; }}; done
+[[ "$quit_err" == "the quit request got no answer" ]] || {{ echo "quit_err: $quit_err"; exit 4; }}
+[[ ! -e "$tmp" ]] || {{ echo "cleanup left $tmp"; exit 6; }}
+tmp="$(mktemp -d)"  # cleanup removed it; the helpers list jobs through it
+sleep 0.1 &
+probe_pid=$!
+sleep 0.1 &
+quit_pid=$!
+sleep 0.5
+live_job "$probe_pid"
+[[ -z "$live" ]] || {{ echo "a reaped child counts as live"; exit 5; }}
+probe_pid={stranger.pid}
+quit_pid={stranger.pid}
+cleanup
+tmp="$(mktemp -d)"
+stop_child {stranger.pid}
+rm -rf "$tmp"
+echo done
+"""
+        r = subprocess.run([bash, "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0 and r.stdout.strip().endswith("done"), (r.stdout, r.stderr)
+        assert stranger.poll() is None, "a signal reached a process that was not the shell's child"
+    finally:
+        stranger.kill()
+        stranger.wait()
