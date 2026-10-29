@@ -40,6 +40,11 @@ final class AppModel {
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
+    /// Restore the services that were running at the last quit (default on when unset, see
+    /// `RestorePreference`). Stored, so the gear menu's checkmark follows a click.
+    var restoreOnLaunch: Bool {
+        didSet { RestorePreference.set(restoreOnLaunch, in: preferences) }
+    }
     /// The catalog's TTS / STT tab (remembered between launches).
     var catalogKind: ServiceKind = ServiceKind(rawValue: UserDefaults.standard.string(forKey: "catalogKind") ?? "") ?? .tts {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
@@ -54,6 +59,7 @@ final class AppModel {
         self.paths = paths
         self.prober = prober
         self.preferences = preferences
+        restoreOnLaunch = RestorePreference.isOn(preferences)
         let wantedStore = UserDefaultsWantedServiceStore(defaults: preferences)
         self.wantedStore = wantedStore
         services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober, wanted: wantedStore) }
@@ -321,12 +327,6 @@ final class AppModel {
                 Log.app.error("login item change failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-    }
-
-    /// Restore the services that were running at the last quit (default on when unset).
-    var restoreOnLaunch: Bool {
-        get { preferences.object(forKey: "restoreOnLaunch") == nil ? true : preferences.bool(forKey: "restoreOnLaunch") }
-        set { preferences.set(newValue, forKey: "restoreOnLaunch") }
     }
 
     var canManageLoginItem: Bool { tools?.source == .bundle }

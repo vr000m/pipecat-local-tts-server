@@ -230,9 +230,10 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
 
 **Wanted flag.** The app persists the set of services it should run (`restore.wanted`
 in `UserDefaults`, `WantedServiceStore`). Precedence per lifecycle phase change: a
-change into `failed` clears the flag, `stopRequested` clears it, `removeRequested`
-clears it, a service newly running (`ready` or `nativeBound`) sets it, anything else
-keeps it.
+change into `failed` (from a phase that was not already `failed`) clears the flag,
+`stopRequested` clears it, `removeRequested` clears it, a service newly running (`ready`
+or `nativeBound` while the phase was not already `running`) sets it, anything else keeps
+it.
 
 **Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
 standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`

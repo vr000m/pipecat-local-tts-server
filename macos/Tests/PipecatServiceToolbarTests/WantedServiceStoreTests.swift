@@ -133,4 +133,15 @@ import Testing
         #expect(PreferencesDomain.defaults(environment: [:]) === UserDefaults.standard)
         #expect(PreferencesDomain.defaults(environment: [PreferencesDomain.suiteVariable: ""]) === UserDefaults.standard)
     }
+
+    @Test func restoreOnLaunchIsOnUntilTheKeyIsWritten() {
+        let name = "restore-pref-tests-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: name)?.removePersistentDomain(forName: name) }
+        let suite = UserDefaults(suiteName: name)!
+        #expect(RestorePreference.isOn(suite))  // unset: the default is on
+        RestorePreference.set(false, in: suite)
+        #expect(!RestorePreference.isOn(suite))  // a stored false wins over the default
+        RestorePreference.set(true, in: suite)
+        #expect(RestorePreference.isOn(suite))
+    }
 }
