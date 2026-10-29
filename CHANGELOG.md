@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-29
+
+### Added
+
+- macOS app: running services are restored on the next launch (preference `restoreOnLaunch`, on by default).
+  A stale or busy port ends Failed and is not retried.
+- macOS app: Quit asks for confirmation when a client is connected to a server the app started (or the count
+  cannot be read). Connections are counted from one bounded `lsof` call, excluding the app's own sockets;
+  system-initiated quits are not asked. Half-open peers count until keepalive reaps them (about 140 s).
+- `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
+
 ## [0.8.3] - 2026-10-28
 
 ### Fixed

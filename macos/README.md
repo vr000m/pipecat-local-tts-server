@@ -90,6 +90,34 @@ for running both.
   is still adopted by its hello, but an app-started STT server needs 0.5.0.
 
 
+## Restore and Quit
+
+- **Restore on launch**: the app remembers which services you had running and starts
+  them again at the next launch, after the launch check finishes, once per process.
+  The **Restore services on launch** preference (`restoreOnLaunch`) is on by default.
+  A service whose port is stale or busy ends Failed and is not retried. A service you
+  stopped, deleted, or that failed is not restored.
+- **Quit confirmation**: Quit (and any app-initiated quit, including the one `just
+  app-open` / `app-install` send) asks first when a client is connected to a server
+  the app started: "Quit anyway" or "Cancel". A count that cannot be read also asks.
+  Logout, Restart and Shut Down are not asked.
+- **Counting**: server-side connections on the app's own port, minus connections whose
+  peer is one of the app's own sockets (its probes and Try it). One bounded `lsof`
+  call. Loopback tunnels (for example SSH) count as clients. A half-open connection
+  from a vanished peer keeps counting until the server's keepalive reaps it (about
+  140 s).
+- **Updating with no dropped clients**: the app's Quit stops its servers. For a
+  zero-drop update run the TTS server as a LaunchAgent (`just tts-install <backend>`);
+  the app then shows it as External and leaves it running. TTS servers only.
+
+### Known limits / unverified
+
+- The quit-reason codes that identify a system-initiated quit are provisional
+  (the standard four-character codes). A manual check on a real Log Out, Restart and
+  Shut Down has not been run yet.
+- What happens when a second terminate arrives while the confirmation is showing is
+  unverified; the code answers it with cancel.
+
 ## Menu bar
 
 - **Running**: the main menu lists the services the app started and the External

@@ -179,5 +179,5 @@ while ((SECONDS < deadline)); do
     sleep 0.1
 done
 stop_quit
-echo "error: $id did not quit within ${wait_secs}s; quit it and re-run${quit_err:+ ($quit_err)}" >&2
+echo "error: $id did not quit within ${wait_secs}s; a quit confirmation may be waiting in the app (a connected client asks first); answer it or quit the app, then re-run${quit_err:+ ($quit_err)}" >&2
 exit 1

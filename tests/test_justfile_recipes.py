@@ -577,6 +577,17 @@ def test_quit_app_fails_when_the_quit_is_refused(tmp_path):
     assert "did not quit within 3s" in run.result.stderr
 
 
+def test_quit_app_failure_mentions_a_pending_quit_confirmation(tmp_path):
+    """The app's Quit guard can hold the quit behind a confirmation dialog, so the timeout
+    message must point the operator at it. Exit status and the one-deadline wait are
+    unchanged (see the neighbouring tests)."""
+    run = _run_quit_app(tmp_path, quit_ends_it=False, wait="2")
+    assert run.result.returncode == 1, (run.result.returncode, run.result.stderr)
+    assert run.sent
+    assert "did not quit within 2s" in run.result.stderr
+    assert "a quit confirmation may be waiting in the app" in run.result.stderr
+
+
 def test_quit_app_waits_at_least_the_stated_time(tmp_path):
     """bash's SECONDS ticks on whole-second boundaries: a ``SECONDS + wait`` deadline gave
     up anywhere from 0 to ``wait`` seconds in, so ``QUIT_WAIT_SECS=1`` could fail in 0.1s.

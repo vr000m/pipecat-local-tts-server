@@ -226,6 +226,36 @@ phase, with no `default` (a new phase or event fails to compile), the Reset
 button against the reducer, the action gate, plus the concrete sequences (Try
 Again twice, Reset twice, quit during a Reset or a bootstrap).
 
+## Restore and quit guard
+
+**Wanted flag.** The app persists the set of services it should run (`restore.wanted`
+in `UserDefaults`, `WantedServiceStore`). Precedence per lifecycle phase change: a
+change into `failed` clears the flag, `stopRequested` clears it, `removeRequested`
+clears it, a service newly running (`ready` or `nativeBound`) sets it, anything else
+keeps it.
+
+**Restore timing.** `RestorePolicy` plans once per process, after `bootstrapDone` and
+the `ready` guard, from the stored set and each service's state. The
+`restoreOnLaunch` preference defaults on. A stale or busy port ends `failed` and is not
+retried.
+
+**Quit guard.** `applicationShouldTerminate` decides synchronously through
+`QuitGuardPolicy.decide`: a drain in progress terminates now; a prompt already showing
+answers cancel; a system-initiated quit (`QuitReason`) and the no-client case proceed
+after the shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks.
+
+**Counting.** `ConnectionCount` takes one bounded `lsof` call and counts, per owned
+port, server-side rows minus rows whose peer is one of the app's own sockets. Loopback
+tunnels count as clients. Half-open peers count until keepalive reaps them (about
+140 s). External servers are not counted or stopped.
+
+**Zero-drop updates.** Run the TTS server as a LaunchAgent (`just tts-install`); the
+app shows it as External and Quit leaves it running. TTS servers only.
+
+**Unverified.** The system-quit reason table is provisional (standard four-char codes;
+a manual Log Out/Restart/Shut Down spike is still to run), as is a second terminate
+during the alert.
+
 ## External servers
 
 - **Adopt first.** `ExternalDiscovery` probes every catalog port (loopback TCP;
