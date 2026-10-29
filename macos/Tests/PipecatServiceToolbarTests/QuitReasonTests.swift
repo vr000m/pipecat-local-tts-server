@@ -40,4 +40,13 @@ import Testing
             #expect(back == s)
         }
     }
+
+    @Test(arguments: [
+        (nil, false, false), (nil, true, true), ("shut", false, true), ("quit", true, true),
+        ("quit", false, false),
+    ] as [(String?, Bool, Bool)])
+    func isSystemQuitCombinesCodeAndPowerOff(_ code: String?, _ powerOff: Bool, _ expected: Bool) {
+        #expect(
+            QuitReason.isSystemQuit(code: code.map(QuitReason.fourCC), powerOffSeen: powerOff) == expected)
+    }
 }

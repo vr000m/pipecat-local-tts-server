@@ -135,4 +135,11 @@ import Testing
             #expect(probe.calls == (probed ? 1 : 0), "system=\(system) drain=\(drain) prompt=\(prompt)")
         }
     }
+
+    @Test func countsKeepReportedPortsAndMarkMissingOnesUnknown() throws {
+        let a = try #require(Service.allCases.first)
+        let b = try #require(Service.allCases.dropFirst().first)
+        let out = QuitGuardPolicy.counts(ports: [a: 1000, b: 2000], byPort: [1000: .known(2)])
+        #expect(out == [a: .known(2), b: .unknown])
+    }
 }

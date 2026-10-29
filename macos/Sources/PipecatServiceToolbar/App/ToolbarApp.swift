@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let reason = Self.currentQuitReason()
         let reasonText = Self.fourCCText(reason)
-        let systemQuit = (reason.map(QuitReason.isSystemInitiated(code:)) ?? false) || powerOffSeen
+        let systemQuit = QuitReason.isSystemQuit(code: reason, powerOffSeen: powerOffSeen)
         // `QuitGuardPolicy` owns the arm order (a second quit while the drain runs ends the app at
         // once, the way out of a stuck drain; a terminate while the prompt shows is refused; a
         // system quit is never blocked). It calls the `counts` closure (`clientCounts()`, the
@@ -161,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !ports.isEmpty else { return [:] }
         let byPort = PortProbe.clientCounts(
             ports: Array(Set(ports.values)), appPid: ProcessInfo.processInfo.processIdentifier)
-        return ports.mapValues { byPort[$0] ?? .unknown }
+        return QuitGuardPolicy.counts(ports: ports, byPort: byPort)
     }
 
     private func beginDrain() -> NSApplication.TerminateReply {

@@ -20,6 +20,11 @@ public enum QuitReason {
         systemCodes.contains(code)
     }
 
+    /// A quit is system-initiated when its reason code is a system one, or a power-off was seen.
+    public static func isSystemQuit(code: UInt32?, powerOffSeen: Bool) -> Bool {
+        (code.map(isSystemInitiated(code:)) ?? false) || powerOffSeen
+    }
+
     /// The big-endian value of a four-character code.
     public static func fourCC(_ s: String) -> UInt32 {
         s.utf8.prefix(4).reduce(0) { ($0 << 8) | UInt32($1) }
