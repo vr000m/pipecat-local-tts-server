@@ -19,6 +19,9 @@
 #    or the repo .venv cannot import tts_server. The script never starts or stops anything on 8965 or
 #    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
 #    read-only, at every launch.
+# 6. Restore: with that server still up, a launch whose persisted wanted set names tone
+#    (`-restore.wanted "(tone)"`, `-restoreOnLaunch YES`) shows tone External and starts no
+#    server of its own. Every other launch passes `-restoreOnLaunch NO`.
 #
 # Not covered (needs Accessibility, see macos/README.md "Manual UI checklist"):
 # opening the panel, clicking Install/Start, and the port a started service opens.
@@ -154,7 +157,8 @@ launch() {
         --predicate "subsystem == \"$BUNDLE_ID\" OR subsystem == \"ai.pipecat.ServiceToolbar\"" >"$WORK/app.log" 2>&1 &
     LOG_PID=$!
     sleep 1
-    "$EXE" >"$WORK/stdout.log" 2>&1 &
+    # Argument domain: no launch restores unless the step asks (RESTORE=YES); extra args follow.
+    "$EXE" -restoreOnLaunch "${RESTORE:-NO}" "$@" >"$WORK/stdout.log" 2>&1 &
     APP_PID=$!
     local deadline=$((SECONDS + LAUNCH_WAIT))
     SEEN=""
@@ -262,6 +266,22 @@ else
     [[ "$(lsof -nP -tiTCP:"$EXT_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)" == "$EXT_PID" ]] \
         || fail "the server we started no longer listens on $EXT_PORT after Quit"
     pass "external server (pid $EXT_PID) still running after Quit"
+
+    # --- 6. Restore skips a service that is already External ---
+    step "Restore: a wanted service that is External is not started again"
+    RESTORE=YES launch -restore.wanted "(tone)"
+    grep -qE "tone: external\($EXT_PORT" "$WORK/app.log" \
+        || { grep -E 'tone' "$WORK/app.log" | head -5; fail "restore launch did not report tone as external($EXT_PORT"; }
+    grep -q "restore: starting" "$WORK/app.log" && fail "restore started a service: $(grep 'restore: starting' "$WORK/app.log" | head -1)"
+    grep -qE "restore: skipping tone: external" "$WORK/app.log" \
+        || { grep -E 'restore' "$WORK/app.log" | head -5; fail "restore did not log tone as skipped (external)"; }
+    [[ -z "$(echo "$SEEN" | tr -d ' ')" ]] || fail "restore launch started processes:$SEEN"
+    osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
+    quitter=$!
+    assert_clean_exit "restore launch with an external server"
+    stop_job "$quitter"
+    ext_is_ours || fail "the restore launch's Quit stopped the external server (pid $EXT_PID)"
+    pass "restore skipped the External tone and started nothing"
 
     # Stop what this script started; cleanup() repeats it if we fail before here.
     stop_ext

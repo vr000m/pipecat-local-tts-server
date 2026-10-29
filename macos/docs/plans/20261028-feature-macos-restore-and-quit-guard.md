@@ -334,7 +334,7 @@ stateDiagram-v2
 ## Progress
 
 - [x] Phase 1: Core policy and connection counting
-- [ ] Phase 2: Persist the wanted set and restore on launch
+- [x] Phase 2: Persist the wanted set and restore on launch
 - [ ] Phase 3: Quit guard
 - [ ] Phase 4: Script messaging, verification and docs
 
@@ -346,6 +346,7 @@ stateDiagram-v2
 - Review round 1 (`/review-plan`, 2026-10-29): 36 findings (20 Important, 16 Minor, 0 Critical), all applied to the contract above. Decisions (operator): synchronous prompt in `applicationShouldTerminate`; unknown count asks anyway; Quit title unchanged; a stranger-held port clears the flag (no retry, no pre-filter).
 - Unverified, with the step that settles each: lsof lists the app's `URLSession`/`NWListener` sockets under the app pid (Phase 1 fixtures and live test); whether a second terminate during `runModal` re-enters or queues (Phase 3 manual check); the quit-reason codes for menu Quit, `osascript` quit and Log Out (Phase 3 spike); the alert reaches the front from an accessory app on an Apple Event quit with another app frontmost (Phase 3 manual check); a plist-array argument reaches `UserDefaults.standard.array(forKey:)` (start of Phase 2).
 - Phase 1 reviewer (advisory, conduct): 1 Important, 5 Minor, none applied yet. Important: `PortProbe.clientCounts` bounds only the pipe read; `waitUntilExit()` after it is unbounded and spins the main run loop (fix in Phase 3 or the gauntlet: `terminationHandler` + semaphore within the same deadline). Minor: `appLocalPorts` matches peers by port only (an app socket's local port could equal a real client's ephemeral port; restrict to app-owned rows whose peer port is an owned port); exit 1 + non-empty stderr should be `unknown`, not `known(0)`; `QuitReason` constant names in comments are wrong (`quit`=kAEQuitApplication, `rrst`/`rsdn`=kAEShowRestart/ShutdownDialog) and the table is provisional until the Phase 3 spike; `QuitGuardPolicy` checks `promptShowing` before `systemQuit`, so a Log Out during the prompt is cancelled (decide ordering in Phase 3); live in-process-client test should also assert the count is 1 with a different appPid, to prove the app's rows are visible to lsof.
+- Phase 2 reviewer (advisory, conduct): 1 Important, 3 Minor, none applied yet. Important: smoke isolation is incomplete (`ui_smoke.sh`): only `-restoreOnLaunch` is shadowed on every launch, steps 2-5 read the operator's real `restore.wanted` (same bundle id), and launch arguments never shadow WRITES, so a wanted transition during a smoke launch (step 6 if tone is not adopted) would overwrite the operator's set; fix: pass `-restore.wanted "()"` on every launch and route writes to a throwaway suite via a launch arg/env. Until fixed, back up `defaults read <bundle id> restore.wanted` before `just app-smoke`. Minor: step 6 asserts zero children (flaky; assert no `restore: starting` / no owned server instead); `restoreOnLaunch` computed property is not observed by `@Observable` (stale checkmark; back with a stored property); no driver sequence tests for `removeRequested`, `removalFailed`, `nativeFailed`, `readyTimedOut` then `exited`.
 
 ## Issues & Solutions
 

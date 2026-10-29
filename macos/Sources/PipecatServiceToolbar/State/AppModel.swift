@@ -49,8 +49,16 @@ final class AppModel {
         self.paths = paths
         self.prober = prober
         services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober) }
-        for model in services { model.app = self }
+        for model in services {
+            model.app = self
+            model.driver.dependencies.wanted = wantedStore
+        }
     }
+
+    /// The persisted "wanted running" set, shared by every service's driver.
+    @ObservationIgnored let wantedStore: any WantedServiceStore = UserDefaultsWantedServiceStore()
+    /// The one restore this process may run.
+    @ObservationIgnored private var restoredThisProcess = false
 
     func model(_ service: Service) -> ServiceModel {
         services.first { $0.service == service }!
@@ -132,6 +140,7 @@ final class AppModel {
         for effect in AppLifecycle.reduce(&phase, event) {
             switch effect {
             case .runBootstrap: job = Task { await runBootstrap() }
+            case .clearWantedServices: wantedStore.removeAll()
             case .runReset:
                 staleLayout = false
                 let old = manager
@@ -186,7 +195,27 @@ final class AppModel {
         send(.bootstrapDone)
         // Only a bootstrap that ended the job (not one quit overtook) looks up sizes.
         guard phase == .ready else { return }
+        restoreWantedServices()
         sizes = Task { await loadDownloadSizes() }
+    }
+
+    /// Starts the services the last session left running (`RestorePolicy`), once per process.
+    private func restoreWantedServices() {
+        guard !restoredThisProcess, phase == .ready else { return }
+        restoredThisProcess = true
+        let states = Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) })
+        let plan = RestorePolicy.plan(wanted: wantedStore.read(), states: states, preferenceOn: restoreOnLaunch)
+        for model in services {
+            switch plan[model.service] {
+            case .start:
+                Log.app.info("restore: starting \(model.service.rawValue, privacy: .public)")
+                model.start()
+            case .skip(let reason) where reason != .notWanted:
+                Log.app.info("restore: skipping \(model.service.rawValue, privacy: .public): \(String(describing: reason), privacy: .public)")
+            default:
+                break
+            }
+        }
     }
 
     /// Approximate sizes for providers that aren't installed, cached for a week.
@@ -280,6 +309,12 @@ final class AppModel {
                 Log.app.error("login item change failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// Restore the services that were running at the last quit (default on when unset).
+    var restoreOnLaunch: Bool {
+        get { UserDefaults.standard.object(forKey: "restoreOnLaunch") == nil ? true : UserDefaults.standard.bool(forKey: "restoreOnLaunch") }
+        set { UserDefaults.standard.set(newValue, forKey: "restoreOnLaunch") }
     }
 
     var canManageLoginItem: Bool { tools?.source == .bundle }

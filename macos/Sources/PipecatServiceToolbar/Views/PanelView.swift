@@ -711,6 +711,9 @@ struct FooterBar: View {
                     Divider()
                     Toggle("Open at Login", isOn: Binding(get: { app.opensAtLogin }, set: { app.opensAtLogin = $0 }))
                 }
+                Toggle(
+                    "Restore running services on launch",
+                    isOn: Binding(get: { app.restoreOnLaunch }, set: { app.restoreOnLaunch = $0 }))
                 Divider()
                 Button(quitTitle) { NSApp.terminate(nil) }
                     .keyboardShortcut("q")

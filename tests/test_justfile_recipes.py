@@ -1243,6 +1243,26 @@ def test_ui_smoke_skips_when_canonical_port_held() -> None:
     )
 
 
+def _ui_smoke_code() -> str:
+    return "\n".join(
+        ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")
+    )
+
+
+def test_ui_smoke_disables_restore_on_launch_by_default() -> None:
+    # Without it a developer's persisted wanted set would start real servers during the smoke.
+    code = _ui_smoke_code()
+    assert re.search(r'-restoreOnLaunch "\$\{RESTORE:-NO\}"|-restoreOnLaunch NO', code)
+
+
+def test_ui_smoke_external_step_seeds_the_wanted_set_and_restores() -> None:
+    code = _ui_smoke_code()
+    assert "-restore.wanted" in code, "the external step must seed the wanted set"
+    assert re.search(r"RESTORE=YES|-restoreOnLaunch YES", code), (
+        "the external step must turn restore on"
+    )
+
+
 def test_ui_smoke_never_names_real_agent_ports() -> None:
     code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
     hits = [ln for ln in code if any(re.search(rf"\b{p}\b", ln) for p in _REAL_AGENT_PORTS)]

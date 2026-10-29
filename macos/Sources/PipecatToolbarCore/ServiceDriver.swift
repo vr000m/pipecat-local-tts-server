@@ -81,6 +81,8 @@ public struct ServiceDependencies: Sendable {
     public var stopGrace: Duration = .seconds(10)
     /// How long an exit waits for stdout to drain.
     public var drainLimit: Duration = .seconds(2)
+    /// The persisted "wanted running" set (`WantedTransition`); the default keeps nothing.
+    public var wanted: any WantedServiceStore = NoopWantedServiceStore()
 
     public init() {}
 }
@@ -138,13 +140,30 @@ public final class ServiceDriver {
     /// effects (already running) for a caller that also inspects them.
     @discardableResult
     private func dispatch(_ event: LifecycleEvent) -> [LifecycleEffect] {
-        let effects = ServiceLifecycle.reduce(&state, event)
+        let effects = reduce(event)
         execute(effects)
         return effects
     }
 
     private func dispatchAwaiting(_ event: LifecycleEvent) async {
-        await run(ServiceLifecycle.reduce(&state, event))
+        await run(reduce(event))
+    }
+
+    /// The one place an event reaches the reducer: the service's persisted wanted flag follows
+    /// `WantedTransition` from the event and the phase before and after, and is written only
+    /// when it changes (other services' flags are re-read, never overwritten).
+    private func reduce(_ event: LifecycleEvent) -> [LifecycleEffect] {
+        let before = state.phase
+        let effects = ServiceLifecycle.reduce(&state, event)
+        let store = dependencies.wanted
+        var set = store.read()
+        let was = set.contains(service)
+        let now = WantedTransition.next(wanted: was, kind: event.kind, before: before, after: state.phase)
+        if now != was {
+            if now { set.insert(service) } else { set.remove(service) }
+            store.write(set)
+        }
+        return effects
     }
 
     /// Runs the leading effects that need no suspension now, the rest in a task.
