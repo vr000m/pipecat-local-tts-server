@@ -357,7 +357,12 @@ stateDiagram-v2
 
 ## Final Results
 
-(fill when complete)
+Review gauntlet (2026-10-29, branch `feature/menubar-restore-and-quit-guard`): 8 rounds, terminal `non-converge`. Finding counts 18, 10, 6, 2, 3, 0, 5, 3: every round after the fourth turned up small new items (round 8 had one Important: unrecognised `lsof` output read as zero clients, now fail-closed) instead of reaching a clean full pass. All findings from every round are fixed, rejected with a reason, or quarantined below; none is open. Final state: `swift test` 399 passed, `tests/test_justfile_recipes.py` 279 passed, `swift build` without warnings, `ruff format`/`check` clean.
+
+Quarantined by design (not changed): a showing prompt is checked before a system quit (`QuitGuardPolicy`, plan order; the spike settles whether AppKit delivers a terminate during `runModal`); no `abortModal` on power-off; an installed service with a nil model-cache answer is restored (mirrors the reducer's start rule); the smoke's read-only hash of the real `restore.wanted` is the isolation check (the plan's seams table says "never reads"; the code hashes and never prints it).
+
+Not done here, for the operator: the Phase 3 spike and manual checks (second terminate during `runModal`, menu Quit during the alert, alert focus from a frontmost Terminal, a real Log Out); `just app-smoke --build` and the Phase 4 verification list (the operator's Toolbar was running, so no `just app-*`, `osascript` or quit-by-bundle-id was run); the `QuitReason` code table is provisional until the spike pins the observed codes; a full `uv run pytest` exited 138 at interpreter teardown after 1092 passed during the conduct CI-parity run (the branch changes no Python runtime code; not checked against `main`).
+
 
 ### Follow-up Work
 
