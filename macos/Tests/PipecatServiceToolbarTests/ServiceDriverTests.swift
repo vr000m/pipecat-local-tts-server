@@ -1229,4 +1229,37 @@ import Testing
         await until { driver.state.phase == .installed }
         #expect(store.current == [.kokoro], "Stop on tone clobbered kokoro's flag")
     }
+
+    /// The driver changes its own flag only through the per-service operations: a store that
+    /// records whole-set `read`/`write` sees none (a whole-set read-modify-write per event).
+    @Test func theDriverNeverReadsOrWritesTheWholeSet() async {
+        final class SpyStore: WantedServiceStore, @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var wholeSetCalls = 0
+            private var set: Set<Service> = [.kokoro]
+            func read() -> Set<Service> { lock.withLock { wholeSetCalls += 1; return set } }
+            func write(_ wanted: Set<Service>) { lock.withLock { wholeSetCalls += 1; set = wanted } }
+            func removeAll() { lock.withLock { set = [] } }
+            func contains(_ service: Service) -> Bool { lock.withLock { set.contains(service) } }
+            func setWanted(_ wanted: Bool, for service: Service) {
+                lock.withLock { if wanted { set.insert(service) } else { set.remove(service) } }
+            }
+            var current: Set<Service> { lock.withLock { set } }
+        }
+        let spy = SpyStore()
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in true }
+        let process = FakeProcess()
+        deps.makeProcess = { _ in process }
+        deps.wanted = spy
+        let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
+        let host = FakeHost()  // the driver holds its host weakly
+        driver.host = host
+        await startToRunning(driver, process)
+        #expect(spy.current == [.kokoro, .tone])
+        driver.stop()
+        await until { driver.state.phase == .installed }
+        #expect(spy.current == [.kokoro])
+        #expect(spy.wholeSetCalls == 0, "the driver did a whole-set read or write")
+    }
 }

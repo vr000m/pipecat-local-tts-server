@@ -1274,6 +1274,33 @@ def test_ui_smoke_external_step_seeds_the_wanted_set_and_restores() -> None:
     )
 
 
+def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
+    # The bundle runs under the operator's bundle id: launch arguments only shadow READS, so the
+    # app's reads and writes of restore.wanted / restoreOnLaunch must go to a suite the smoke owns.
+    code = _ui_smoke_code()
+    swift = (_MACOS / "Sources" / "PipecatToolbarCore" / "WantedServiceStore.swift").read_text()
+    var = re.search(r'suiteVariable = "([A-Z_]+)"', swift)
+    assert var, "PreferencesDomain.suiteVariable not found"
+    launches = re.findall(r'^\s*(?:\S+=\S+ )*"\$EXE"', code, re.MULTILINE)
+    assert len(launches) == 1, "the app must be launched from exactly one place (launch())"
+    assert f'{var.group(1)}="$SUITE" "$EXE"' in code
+    assert 'defaults write "$SUITE" restore.wanted' in code
+    assert 'defaults write "$SUITE" restoreOnLaunch' in code
+    assert 'defaults delete "$SUITE"' in code
+    # Reads of the real domain stay shadowed too, on every launch.
+    assert '-restore.wanted "(${WANTED:-})"' in code
+    # And the real domain is checked, not assumed, to be untouched.
+    assert 'defaults read "$BUNDLE_ID" restore.wanted' in code
+
+
+def test_ui_smoke_restore_step_asserts_no_server_not_no_children() -> None:
+    # Bootstrap cache probes and discovery's lsof/launchctl are normal descendants of every launch.
+    code = _ui_smoke_code()
+    assert "restore launch started processes" not in code
+    assert "-m tts_server" in code and "-m stt_server" in code
+    assert 'grep -q "restore: starting"' in code
+
+
 def test_ui_smoke_never_names_real_agent_ports() -> None:
     code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
     hits = [ln for ln in code if any(re.search(rf"\b{p}\b", ln) for p in _REAL_AGENT_PORTS)]

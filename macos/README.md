@@ -94,7 +94,7 @@ for running both.
 
 - **Restore on launch**: the app remembers which services you had running and starts
   them again at the next launch, after the launch check finishes, once per process.
-  The **Restore services on launch** preference (`restoreOnLaunch`) is on by default.
+  The **Restore running services on launch** preference (`restoreOnLaunch`) is on by default.
   A service whose port is stale or busy ends Failed and is not retried. A service you
   stopped, deleted, or that failed is not restored.
 - **Quit confirmation**: Quit (and any app-initiated quit, including the one `just
@@ -105,7 +105,8 @@ for running both.
   peer is one of the app's own sockets (its probes and Try it). One bounded `lsof`
   call. Loopback tunnels (for example SSH) count as clients. A half-open connection
   from a vanished peer keeps counting until the server's keepalive reaps it (about
-  140 s).
+  140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`
+  120; the STT servers' keepalive is not verified here).
 - **Updating with no dropped clients**: the app's Quit stops its servers. For a
   zero-drop update run the TTS server as a LaunchAgent (`just tts-install <backend>`);
   the app then shows it as External and leaves it running. TTS servers only.
@@ -234,10 +235,19 @@ are reserved per client, so the bundled app's install does not count). Once:
 `just app-smoke` (`scripts/ui_smoke.sh`) needs no Accessibility or Screen Recording
 grant, so it cannot open the panel or click. It launches the app with your real
 support and log folders (installing nothing) and refuses while another copy runs.
-Its last step starts a tone server outside the app on 8665, checks the bootstrap
-log reports it as External, and checks it is still running after Quit; it skips
-that step when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
+Step 5 starts a tone server outside the app on 8665, checks the bootstrap
+log reports it as External, and checks it is still running after Quit. Step 6 relaunches
+with tone in the wanted set and restore on: it checks tone is still External, the log has
+no `restore: starting`, and no `tts_server`/`stt_server` process was started (the
+bootstrap's own probe children are normal, so it does not assert zero children). Steps 5
+and 6 are skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
 the repo `.venv` cannot import `tts_server`.
+The smoke runs under your real bundle id, so it must not read or write your wanted set:
+every launch gets `-restoreOnLaunch` and `-restore.wanted` as launch arguments (these
+shadow reads only) and `PIPECAT_TOOLBAR_DEFAULTS_SUITE=<throwaway suite>`, where the app
+reads and writes `restore.wanted` and `restoreOnLaunch` (`PreferencesDomain`). The script
+seeds and deletes the suite, and fails if `defaults read <bundle id> restore.wanted`
+differs before and after.
 Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
 
 1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.

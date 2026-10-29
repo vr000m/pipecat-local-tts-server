@@ -82,10 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
         ) { [weak self, model] _ in
-            Task { @MainActor in
-                self?.powerOffSeen = true
-                await model.shutdownAll()
-            }
+            // The observer runs on the main queue: set the flag in this turn, so a terminate
+            // handled before a deferred task starts can't miss it. Only the shutdown is async.
+            MainActor.assumeIsolated { self?.powerOffSeen = true }
+            Task { @MainActor in await model.shutdownAll() }
         }
         model.bootstrap()
     }
@@ -116,28 +116,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let reason = Self.currentQuitReason()
         let reasonText = Self.fourCCText(reason)
-        // A second quit request while the drain runs ends the app at once: the way out of a
-        // stuck drain. Servers still exit with it (stdin EOF).
-        if terminateReplyPending {
-            Log.app.info("terminate: drain in progress, terminateNow (reason \(reasonText, privacy: .public))")
-            return .terminateNow
-        }
-        if promptShowing {
-            Log.app.info("terminate: prompt showing, terminateCancel (reason \(reasonText, privacy: .public))")
-            return .terminateCancel
-        }
         let systemQuit = (reason.map(QuitReason.isSystemInitiated(code:)) ?? false) || powerOffSeen
-        let ports = model.ownedPorts
-        var counts: [Service: ClientCount] = [:]
-        if !systemQuit, !ports.isEmpty {
-            let byPort = PortProbe.clientCounts(ports: Array(ports.values), appPid: ProcessInfo.processInfo.processIdentifier)
-            for (service, port) in ports { counts[service] = byPort[port] ?? .unknown }
-        } else if systemQuit {
-            Log.app.info("terminate: system quit (reason \(reasonText, privacy: .public)), client guard skipped")
-        }
+        // `QuitGuardPolicy` owns the arm order (a second quit while the drain runs ends the app at
+        // once, the way out of a stuck drain; a terminate while the prompt shows is refused; a
+        // system quit is never blocked). It evaluates `clientCounts()`, the blocking lsof, only
+        // when none of those has decided.
         let decision = QuitGuardPolicy.decide(
-            counts: counts, systemQuit: systemQuit, drainInProgress: false, promptShowing: false)
-        Log.app.info("terminate: \(String(describing: decision), privacy: .public) (reason \(reasonText, privacy: .public))")
+            counts: clientCounts(), systemQuit: systemQuit, drainInProgress: terminateReplyPending,
+            promptShowing: promptShowing)
+        Log.app.info(
+            "terminate: \(String(describing: decision), privacy: .public) (reason \(reasonText, privacy: .public), system \(systemQuit, privacy: .public))"
+        )
         switch decision {
         case .proceedNow:
             return .terminateNow
@@ -163,6 +152,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .proceedAfterShutdown:
             return beginDrain()
         }
+    }
+
+    /// Connected clients per owned service, one bounded lsof for every owned port; a port the
+    /// probe did not report is unknown.
+    private func clientCounts() -> [Service: ClientCount] {
+        let ports = model.ownedPorts
+        guard !ports.isEmpty else { return [:] }
+        let byPort = PortProbe.clientCounts(
+            ports: Array(Set(ports.values)), appPid: ProcessInfo.processInfo.processIdentifier)
+        return ports.mapValues { byPort[$0] ?? .unknown }
     }
 
     private func beginDrain() -> NSApplication.TerminateReply {

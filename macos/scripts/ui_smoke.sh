@@ -20,8 +20,16 @@
 #    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
 #    read-only, at every launch.
 # 6. Restore: with that server still up, a launch whose persisted wanted set names tone
-#    (`-restore.wanted "(tone)"`, `-restoreOnLaunch YES`) shows tone External and starts no
-#    server of its own. Every other launch passes `-restoreOnLaunch NO`.
+#    (`restore.wanted` = tone, `restoreOnLaunch` = YES) shows tone External, logs no
+#    `restore: starting` and has no `tts_server`/`stt_server` process of its own. Every other
+#    launch has restore off and an empty wanted set.
+#
+# Isolation: the bundle runs under the operator's real bundle id, so no launch may read or write
+# the operator's `restore.wanted` / `restoreOnLaunch`. Every launch (a) passes both as launch
+# arguments (they shadow READS of the standard domain) and (b) sets PIPECAT_TOOLBAR_DEFAULTS_SUITE
+# to a throwaway suite the script seeds and deletes, where the app reads and WRITES them
+# (`PreferencesDomain`; launch arguments never shadow writes). The script also compares the real
+# domain's `restore.wanted` before and after and fails if it changed.
 #
 # Not covered (needs Accessibility, see macos/README.md "Manual UI checklist"):
 # opening the panel, clicking Install/Start, and the port a started service opens.
@@ -38,6 +46,7 @@ QUIT_WAIT="${QUIT_WAIT:-20}"       # seconds for a quit to finish
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/toolbar-ui-smoke.XXXXXX")"
 LOG_PID=""
 APP_PID=""
+SUITE=""          # the throwaway UserDefaults suite every launch uses (set below, deleted by cleanup)
 EXT_PID=""        # the out-of-process server this script started (step 5), nothing else
 EXT_LISTEN_PID="" # whatever pid listens on its port once it is up
 EXT_PORT=8665     # tone's canonical port (ServiceCatalog / justfile _resolve); not a real agent's
@@ -110,6 +119,10 @@ cleanup() {
     # Only the job this script started, through signal_job (never the lsof listener, never a
     # pid, never a pattern kill).
     stop_ext
+    if [[ -n "$SUITE" ]]; then
+        defaults delete "$SUITE" >/dev/null 2>&1 || true
+        rm -f "$HOME/Library/Preferences/$SUITE.plist"  # `defaults delete` leaves an empty plist behind
+    fi
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -120,6 +133,10 @@ if [[ "${1:-}" == "--build" || ! -x "$APP/Contents/MacOS/$EXE_NAME" ]]; then
 fi
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
 EXE="$APP/Contents/MacOS/$EXE_NAME"
+# The app reads and writes its wanted set and restore preference in this suite, never in $BUNDLE_ID's
+# own domain (the operator's). Set before anything can launch the app.
+SUITE="$BUNDLE_ID.smoke.$$"
+REAL_WANTED_BEFORE="$(defaults read "$BUNDLE_ID" restore.wanted 2>&1 || true)"
 
 if pgrep -f "/Contents/MacOS/$EXE_NAME" >/dev/null; then
     fail "a copy of the app is already running (quit it first): $(pgrep -fl "/Contents/MacOS/$EXE_NAME" | head -1)"
@@ -157,8 +174,22 @@ launch() {
         --predicate "subsystem == \"$BUNDLE_ID\" OR subsystem == \"ai.pipecat.ServiceToolbar\"" >"$WORK/app.log" 2>&1 &
     LOG_PID=$!
     sleep 1
-    # Argument domain: no launch restores unless the step asks (RESTORE=YES); extra args follow.
-    "$EXE" -restoreOnLaunch "${RESTORE:-NO}" "$@" >"$WORK/stdout.log" 2>&1 &
+    # No launch restores unless the step asks (RESTORE=YES), and the wanted set is empty unless it
+    # names services (WANTED="tone"). Both are seeded in the throwaway suite (where the app reads
+    # and writes) and also passed as launch arguments (which shadow reads of the real domain).
+    local restore_bool=false wanted_values=()
+    [[ "${RESTORE:-NO}" != YES ]] || restore_bool=true
+    # shellcheck disable=SC2206
+    wanted_values=(${WANTED:-})
+    defaults delete "$SUITE" >/dev/null 2>&1 || true
+    defaults write "$SUITE" restoreOnLaunch -bool "$restore_bool"
+    if ((${#wanted_values[@]})); then
+        defaults write "$SUITE" restore.wanted -array "${wanted_values[@]}"
+    else
+        defaults write "$SUITE" restore.wanted -array
+    fi
+    PIPECAT_TOOLBAR_DEFAULTS_SUITE="$SUITE" "$EXE" \
+        -restoreOnLaunch "${RESTORE:-NO}" -restore.wanted "(${WANTED:-})" >"$WORK/stdout.log" 2>&1 &
     APP_PID=$!
     local deadline=$((SECONDS + LAUNCH_WAIT))
     SEEN=""
@@ -269,13 +300,19 @@ else
 
     # --- 6. Restore skips a service that is already External ---
     step "Restore: a wanted service that is External is not started again"
-    RESTORE=YES launch -restore.wanted "(tone)"
+    RESTORE=YES WANTED=tone launch
     grep -qE "tone: external\($EXT_PORT" "$WORK/app.log" \
         || { grep -E 'tone' "$WORK/app.log" | head -5; fail "restore launch did not report tone as external($EXT_PORT"; }
     grep -q "restore: starting" "$WORK/app.log" && fail "restore started a service: $(grep 'restore: starting' "$WORK/app.log" | head -1)"
     grep -qE "restore: skipping tone: external" "$WORK/app.log" \
         || { grep -E 'restore' "$WORK/app.log" | head -5; fail "restore did not log tone as skipped (external)"; }
-    [[ -z "$(echo "$SEEN" | tr -d ' ')" ]] || fail "restore launch started processes:$SEEN"
+    # No server of its own. Not "no children at all": the bootstrap's cache probes and discovery's
+    # lsof/launchctl lookups are normal descendants.
+    for p in $SEEN; do
+        cmd="$(ps -o command= -p "$p" 2>/dev/null || true)"
+        [[ "$cmd" != *"-m tts_server"* && "$cmd" != *"-m stt_server"* ]] \
+            || fail "restore launch started a server: pid $p: $cmd"
+    done
     osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
     quitter=$!
     assert_clean_exit "restore launch with an external server"
@@ -286,5 +323,11 @@ else
     # Stop what this script started; cleanup() repeats it if we fail before here.
     stop_ext
 fi
+
+step "Isolation: the operator's own wanted set is untouched"
+REAL_WANTED_AFTER="$(defaults read "$BUNDLE_ID" restore.wanted 2>&1 || true)"
+[[ "$REAL_WANTED_AFTER" == "$REAL_WANTED_BEFORE" ]] \
+    || fail "the smoke changed $BUNDLE_ID restore.wanted (was: $REAL_WANTED_BEFORE; now: $REAL_WANTED_AFTER)"
+pass "$BUNDLE_ID restore.wanted unchanged; every launch used the throwaway suite $SUITE"
 
 step "UI smoke passed"

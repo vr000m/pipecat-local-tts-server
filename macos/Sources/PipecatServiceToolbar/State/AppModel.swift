@@ -45,18 +45,24 @@ final class AppModel {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
     }
 
-    init(paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe()) {
+    /// `preferences` holds the restore preference and, unless `wantedStore` is given, the wanted set
+    /// (`PreferencesDomain`: the standard domain, or the suite a smoke run names).
+    init(
+        paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe(),
+        preferences: UserDefaults = PreferencesDomain.defaults(), wantedStore: (any WantedServiceStore)? = nil
+    ) {
         self.paths = paths
         self.prober = prober
-        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober) }
-        for model in services {
-            model.app = self
-            model.driver.dependencies.wanted = wantedStore
-        }
+        self.preferences = preferences
+        let wantedStore = wantedStore ?? UserDefaultsWantedServiceStore(defaults: preferences)
+        self.wantedStore = wantedStore
+        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober, wanted: wantedStore) }
+        for model in services { model.app = self }
     }
 
     /// The persisted "wanted running" set, shared by every service's driver.
-    @ObservationIgnored let wantedStore: any WantedServiceStore = UserDefaultsWantedServiceStore()
+    @ObservationIgnored let wantedStore: any WantedServiceStore
+    @ObservationIgnored private let preferences: UserDefaults
     /// The one restore this process may run.
     @ObservationIgnored private var restoredThisProcess = false
 
@@ -93,12 +99,7 @@ final class AppModel {
     /// Ports of the services the app started (server or native), keyed by service: what the
     /// quit guard counts clients on. External servers are not the app's to protect.
     var ownedPorts: [Service: Int] {
-        var ports: [Service: Int] = [:]
-        for model in services {
-            let state = model.driver.state
-            if state.server != nil || state.native != nil { ports[model.service] = model.info.port }
-        }
-        return ports
+        ServiceCounts.ownedPorts(Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) }))
     }
 
     var anyActive: Bool { counts.active > 0 }
@@ -324,8 +325,8 @@ final class AppModel {
 
     /// Restore the services that were running at the last quit (default on when unset).
     var restoreOnLaunch: Bool {
-        get { UserDefaults.standard.object(forKey: "restoreOnLaunch") == nil ? true : UserDefaults.standard.bool(forKey: "restoreOnLaunch") }
-        set { UserDefaults.standard.set(newValue, forKey: "restoreOnLaunch") }
+        get { preferences.object(forKey: "restoreOnLaunch") == nil ? true : preferences.bool(forKey: "restoreOnLaunch") }
+        set { preferences.set(newValue, forKey: "restoreOnLaunch") }
     }
 
     var canManageLoginItem: Bool { tools?.source == .bundle }

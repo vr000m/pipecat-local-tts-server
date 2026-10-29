@@ -13,10 +13,14 @@ public enum ClientCount: Equatable, Sendable {
 /// The rule (recorded lsof output, macOS 26): a loopback or LAN connection shows up as two
 /// rows, the server's (local port == service port) and the client's (local port ephemeral,
 /// peer == service port), each under its own process. A row counts when it is **server-side**
-/// (local port == service port), minus those whose peer port is the local port of a row owned
-/// by `appPid`: that is the app's own socket (its hello probe, its in-process client). Excluding
-/// the server's pid instead would drop a tunnelled remote client's row, and excluding the app's
-/// pid would drop the Apple Speech server's own rows (the app hosts it), so neither is used.
+/// (local port == service port), minus those that are the other end of one of the app's own
+/// client sockets (its hello probe, its in-process client). An app client socket is a row owned
+/// by `appPid` whose peer port is one of the requested service ports; a server row is its mirror
+/// when its peer endpoint is that row's local endpoint and its local endpoint is that row's peer
+/// endpoint (full `host:port` strings, not ports alone: a remote client whose ephemeral port
+/// equals some unrelated app socket's local port must still count). Excluding the server's pid
+/// instead would drop a tunnelled remote client's row, and excluding the app's pid would drop the
+/// Apple Speech server's own rows (the app hosts it), so neither is used.
 ///
 /// Line shapes (`-F`): `p<pid>` starts a process; `f<fd>` (when requested) starts a file;
 /// `n<local>-><peer>` names a connected socket. IPv4 is `127.0.0.1:50189`, IPv6 is bracketed
@@ -24,8 +28,15 @@ public enum ClientCount: Equatable, Sendable {
 public enum ConnectionCount {
     struct Row: Equatable {
         var pid: Int32
+        var local: String
+        var peer: String
         var localPort: Int
         var peerPort: Int
+    }
+
+    struct Endpoints: Hashable {
+        var local: String
+        var peer: String
     }
 
     /// The port after the last colon of an endpoint (`host:port`, `[v6]:port`).
@@ -45,10 +56,13 @@ public enum ConnectionCount {
                 pid = Int32(rest)
             case "n":
                 guard let pid, let arrow = rest.range(of: "->"),
-                    let local = port(of: rest[..<arrow.lowerBound]),
-                    let peer = port(of: rest[arrow.upperBound...])
+                    let localPort = port(of: rest[..<arrow.lowerBound]),
+                    let peerPort = port(of: rest[arrow.upperBound...])
                 else { continue }
-                rows.append(Row(pid: pid, localPort: local, peerPort: peer))
+                rows.append(
+                    Row(
+                        pid: pid, local: String(rest[..<arrow.lowerBound]), peer: String(rest[arrow.upperBound...]),
+                        localPort: localPort, peerPort: peerPort))
             default:
                 continue
             }
@@ -59,9 +73,13 @@ public enum ConnectionCount {
     /// Every port in `ports` gets an entry (0 when nothing is connected).
     public static func parse(output: String, ports: [Int], appPid: Int32) -> [Int: Int] {
         let all = rows(output)
-        let appLocalPorts = Set(all.filter { $0.pid == appPid }.map(\.localPort))
         var counts = Dictionary(uniqueKeysWithValues: ports.map { ($0, 0) })
-        for row in all where counts[row.localPort] != nil && !appLocalPorts.contains(row.peerPort) {
+        // The app's own client sockets to an owned server, keyed by (its local, its peer) endpoint.
+        let own = Set(
+            all.filter { $0.pid == appPid && counts[$0.peerPort] != nil }.map { Endpoints(local: $0.local, peer: $0.peer) })
+        for row in all where counts[row.localPort] != nil {
+            // The server-side row of an app client socket has the same two endpoints, swapped.
+            if own.contains(Endpoints(local: row.peer, peer: row.local)) { continue }
             counts[row.localPort, default: 0] += 1
         }
         return counts

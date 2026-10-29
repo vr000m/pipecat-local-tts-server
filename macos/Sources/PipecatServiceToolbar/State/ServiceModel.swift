@@ -42,10 +42,11 @@ final class ServiceModel: Identifiable {
     /// The app's one hello prober (`AppModel.prober`), for the Start-path probe.
     private let prober: any HelloProber
 
-    init(info: ServiceInfo, prober: any HelloProber) {
+    init(info: ServiceInfo, prober: any HelloProber, wanted: any WantedServiceStore = NoopWantedServiceStore()) {
         self.info = info
         self.prober = prober
         var dependencies = ServiceDependencies()
+        dependencies.wanted = wanted
         dependencies.appleSpeechPhase = {
             switch await AppleSpeech.status() {
             case .installed: .installed

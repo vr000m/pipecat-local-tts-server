@@ -234,6 +234,11 @@ change into `failed` clears the flag, `stopRequested` clears it, `removeRequeste
 clears it, a service newly running (`ready` or `nativeBound`) sets it, anything else
 keeps it.
 
+**Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
+standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`
+(`PreferencesDomain`, used by `ui_smoke.sh`). The store is injected into each `ServiceModel`
+at construction; the driver changes one service's flag at a time (`contains`, `setWanted`).
+
 **Restore timing.** `RestorePolicy` plans once per process, after `bootstrapDone` and
 the `ready` guard, from the stored set and each service's state. The
 `restoreOnLaunch` preference defaults on. A stale or busy port ends `failed` and is not
@@ -241,13 +246,19 @@ retried.
 
 **Quit guard.** `applicationShouldTerminate` decides synchronously through
 `QuitGuardPolicy.decide`: a drain in progress terminates now; a prompt already showing
-answers cancel; a system-initiated quit (`QuitReason`) and the no-client case proceed
-after the shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks.
+answers cancel; a system-initiated quit and the no-client case proceed after the
+shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks. A quit is
+system-initiated when `QuitReason` says so for the Apple Event's reason code, or when the
+`willPowerOffNotification` flag is set (the app sets it synchronously on the main queue, so
+a terminate in the same turn sees it). The delegate passes its real drain, prompt and
+system-quit state to `decide`, which evaluates the blocking `lsof` count only when none of
+those arms has already decided.
 
 **Counting.** `ConnectionCount` takes one bounded `lsof` call and counts, per owned
 port, server-side rows minus rows whose peer is one of the app's own sockets. Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
-140 s). External servers are not counted or stopped.
+140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
+here). External servers are not counted or stopped.
 
 **Zero-drop updates.** Run the TTS server as a LaunchAgent (`just tts-install`); the
 app shows it as External and Quit leaves it running. TTS servers only.

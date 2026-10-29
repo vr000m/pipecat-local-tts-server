@@ -207,4 +207,66 @@ import Testing
         // Row 2 is a client-side row (local port 49665), not a server row for 19012.
         #expect(Self.count(ConnectionCount.parse(output: output, ports: [19012], appPid: 1), 19012) == 1)
     }
+
+    // MARK: - Own-socket exclusion matches full endpoints, not ports
+
+    /// A remote client whose ephemeral port (51000) equals the local port of an unrelated app
+    /// socket (an HTTPS connection) is still counted. Port-only matching dropped it.
+    @Test func aRemoteClientWhosePortEqualsAnUnrelatedAppSocketPortIsCounted() {
+        let output = """
+            p162
+            f4
+            n127.0.0.1:19011->10.0.0.50:51000
+            p300
+            f9
+            n10.0.0.133:51000->142.250.1.1:443
+
+            """
+        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 300), 19011) == 1)
+    }
+
+    /// Even when the colliding app socket IS a client socket to an owned server, a server row
+    /// with different endpoints (a remote client on the same port number) is counted, and the
+    /// app's own mirrored row is still excluded.
+    @Test func anAppClientSocketExcludesOnlyItsOwnMirrorRow() {
+        let output = """
+            p162
+            f4
+            n127.0.0.1:19011->127.0.0.1:51000
+            f5
+            n127.0.0.1:19011->10.0.0.50:51000
+            p300
+            f9
+            n127.0.0.1:51000->127.0.0.1:19011
+
+            """
+        let result = ConnectionCount.parse(output: output, ports: [19011], appPid: 300)
+        #expect(Self.count(result, 19011) == 1, "the remote client; the app's own probe is excluded")
+    }
+
+    /// The whole state space of one server row against the app's sockets: owner x side x endpoint
+    /// relation. `counted` is what the guard must report for the server row alone.
+    @Test func serverRowAgainstAppSocketsTable() {
+        struct Case {
+            var name: String
+            var app: String  // the app's row, lsof n-line, or "" for none
+            var server: String
+            var counted: Int
+        }
+        let server = "n127.0.0.1:19011->127.0.0.1:51000"
+        let cases = [
+            Case(name: "no app socket", app: "", server: server, counted: 1),
+            Case(name: "app client mirror (loopback)", app: "n127.0.0.1:51000->127.0.0.1:19011", server: server, counted: 0),
+            Case(name: "app client, other address, same ports", app: "n10.0.0.133:51000->10.0.0.133:19011", server: server, counted: 1),
+            Case(name: "app socket same local port, other peer", app: "n127.0.0.1:51000->1.2.3.4:443", server: server, counted: 1),
+            Case(name: "app socket same local port, peer port unrelated", app: "n[::1]:51000->[::1]:7", server: server, counted: 1),
+            Case(name: "app client mirror (IPv6)", app: "n[::1]:51000->[::1]:19011", server: "n[::1]:19011->[::1]:51000", counted: 0),
+        ]
+        for c in cases {
+            let appBlock = c.app.isEmpty ? "" : "p300\nf9\n\(c.app)\n"
+            let output = "p162\nf4\n\(c.server)\n\(appBlock)"
+            let got = Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 300), 19011)
+            #expect(got == c.counted, "\(c.name)")
+        }
+    }
 }

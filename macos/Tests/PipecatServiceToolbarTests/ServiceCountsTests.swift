@@ -143,4 +143,38 @@ import Testing
         #expect(ServiceCounts([Self.running]).summary(bootstrapping: true) == "Checking services…")
         #expect(ServiceCounts([]).summary(bootstrapping: true) == "Checking services…")
     }
+
+    /// The quit guard's ownership rule, per case: owned iff a subprocess (`server`) or an
+    /// in-process (`native`) server is set; an External server and an idle service are not.
+    @Test func ownershipAndOwnedPortsTable() {
+        func state(_ info: ServiceInfo, server: Bool = false, native: Bool = false, external: Bool = false)
+            -> LifecycleState
+        {
+            var s = ServiceLifecycleTests.state(external ? ServiceLifecycleTests.external : .running, info: info, server: nil)
+            if server { s.server = ServiceLifecycleTests.current }
+            if native { s.native = ServiceLifecycleTests.current }
+            return s
+        }
+        let tone = Service.tone.info
+        let apple = Service.appleSpeech
+        let cases: [(String, LifecycleState, Bool)] = [
+            ("subprocess server", state(tone, server: true), true),
+            ("native server", state(apple.info, native: true), true),
+            ("both set", state(tone, server: true, native: true), true),
+            ("neither (idle)", state(tone), false),
+            ("External", state(tone, external: true), false),
+        ]
+        for (name, s, owned) in cases {
+            #expect(ServiceCounts.isOwned(s) == owned, "\(name)")
+            #expect(ServiceCounts([s]).owned == (owned ? 1 : 0), "\(name): isOwned and owned agree")
+        }
+        let states: [Service: LifecycleState] = [
+            .tone: state(tone, server: true), apple: state(apple.info, native: true),
+            .whisper: state(Service.whisper.info, external: true), .kokoro: state(Service.kokoro.info),
+        ]
+        let ports = ServiceCounts.ownedPorts(states)
+        #expect(Set(ports.keys) == [.tone, apple])
+        #expect(ports[.tone] == Service.tone.info.port && ports[apple] == apple.info.port)
+        #expect(ServiceCounts.ownedPorts([:]).isEmpty)
+    }
 }

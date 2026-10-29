@@ -14,9 +14,12 @@ public enum QuitGuardDecision: Equatable, Sendable {
 
 public enum QuitGuardPolicy {
     /// Arms, first match wins: drain in progress, prompt showing, system quit, any client or
-    /// unknown count, otherwise no clients. `counts` is keyed by service, owned servers only.
+    /// unknown count, otherwise no clients. `counts` is keyed by service, owned servers only. It
+    /// is an autoclosure evaluated only when no earlier arm has decided, so the caller's (blocking)
+    /// lsof probe never runs for a drain, a showing prompt or a system quit: this function is the
+    /// single owner of the arm order.
     public static func decide(
-        counts: [Service: ClientCount],
+        counts: @autoclosure () -> [Service: ClientCount],
         systemQuit: Bool,
         drainInProgress: Bool,
         promptShowing: Bool
@@ -24,7 +27,7 @@ public enum QuitGuardPolicy {
         if drainInProgress { return .proceedNow }
         if promptShowing { return .cancel }
         if systemQuit { return .proceedAfterShutdown }
-        let busy = counts.filter { $0.value != .known(0) }
+        let busy = counts().filter { $0.value != .known(0) }
         if busy.isEmpty { return .proceedAfterShutdown }
         return .confirm(message: message(busy))
     }
