@@ -696,7 +696,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...v0.8.1

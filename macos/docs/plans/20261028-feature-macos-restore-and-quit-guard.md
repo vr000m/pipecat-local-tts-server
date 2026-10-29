@@ -338,6 +338,8 @@ stateDiagram-v2
 - [x] Phase 3: Quit guard (code + unit tests; spike, manual checks and `just app-smoke --build` deferred to the operator)
 - [x] Phase 4: Script messaging, verification and docs (code, tests, docs and the 0.9.0 bump; manual verification and `just app-smoke --build` deferred to the operator)
 
+- Status note (2026-10-29): code, tests and docs are done; the unchecked Testing and Acceptance boxes above are operator-owned (Phase 3 spike, manual checks, `just app-smoke --build`). See Final Results.
+
 ## Findings
 
 - Explore facts (2026-10-28, `main` @ `89ca2b5`): quit handling at `ToolbarApp.swift:91-100` (no confirmation today; second terminate while draining → `.terminateNow`); `shutdownAll()` at `AppModel.swift:218-245`; `ServiceCounts.owned` = states with `server != nil || native != nil`; `PortProbe` has no ESTABLISHED counting; Apple Speech's server reports the app's own pid (`ServiceDriver.swift:488`).
