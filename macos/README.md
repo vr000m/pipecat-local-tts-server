@@ -100,10 +100,12 @@ for running both.
 - **Quit confirmation**: Quit (and any app-initiated quit, including the one `just
   app-open` / `app-install` send) asks first when a client is connected to a server
   the app started: "Quit anyway" or "Cancel". A count that cannot be read also asks.
-  Logout, Restart and Shut Down are not asked.
-- **Counting**: server-side connections on the app's own port, minus connections whose
-  peer is one of the app's own sockets (its probes and Try it). One bounded `lsof`
-  call. Loopback tunnels (for example SSH) count as clients. A half-open connection
+  Logout, Restart and Shut Down are not asked (provisional codes; see Known limits).
+- **Counting**: server-side connections on the app's own port, minus the server-side
+  mirror of the app's own client sockets (its probes and Try it). A row is excluded only
+  when its local and peer endpoints are the swapped endpoints of a row the app owns whose
+  peer port is a requested service port; a bare port match is not used, because a remote
+  client's ephemeral port could equal an app socket's port. One bounded `lsof` call. Loopback tunnels (for example SSH) count as clients. A half-open connection
   from a vanished peer keeps counting until the server's keepalive reaps it (about
   140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`
   120; the STT servers' keepalive is not verified here).
@@ -243,11 +245,14 @@ bootstrap's own probe children are normal, so it does not assert zero children).
 and 6 are skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
 the repo `.venv` cannot import `tts_server`.
 The smoke runs under your real bundle id, so it must not read or write your wanted set:
-every launch gets `-restoreOnLaunch` and `-restore.wanted` as launch arguments (these
-shadow reads only) and `PIPECAT_TOOLBAR_DEFAULTS_SUITE=<throwaway suite>`, where the app
-reads and writes `restore.wanted` and `restoreOnLaunch` (`PreferencesDomain`). The script
-seeds and deletes the suite, and fails if `defaults read <bundle id> restore.wanted`
-differs before and after.
+every launch gets `-restoreOnLaunch` and `-restore.wanted` as launch arguments and
+`PIPECAT_TOOLBAR_DEFAULTS_SUITE=<throwaway suite>` (`PreferencesDomain`, which scopes only
+`restore.wanted` and `restoreOnLaunch`). Launch arguments live in the argument domain, which
+heads every `UserDefaults` search list including the suite's: the app's reads of those two
+keys return the arguments (that is how step 6 seeds its wanted set) while its writes go to the
+suite, so a smoke run's own wanted-set writes are not read back. The script seeds and deletes
+the suite, and fails if a hash of `defaults read <bundle id> restore.wanted` differs before and
+after (a read-only isolation check; the value is never printed).
 Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
 
 1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.

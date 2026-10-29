@@ -119,10 +119,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let systemQuit = (reason.map(QuitReason.isSystemInitiated(code:)) ?? false) || powerOffSeen
         // `QuitGuardPolicy` owns the arm order (a second quit while the drain runs ends the app at
         // once, the way out of a stuck drain; a terminate while the prompt shows is refused; a
-        // system quit is never blocked). It evaluates `clientCounts()`, the blocking lsof, only
-        // when none of those has decided.
+        // system quit is never blocked). It calls the `counts` closure (`clientCounts()`, the
+        // blocking lsof) only when none of those has decided.
         let decision = QuitGuardPolicy.decide(
-            counts: clientCounts(), systemQuit: systemQuit, drainInProgress: terminateReplyPending,
+            counts: { clientCounts() }, systemQuit: systemQuit, drainInProgress: terminateReplyPending,
             promptShowing: promptShowing)
         Log.app.info(
             "terminate: \(String(describing: decision), privacy: .public) (reason \(reasonText, privacy: .public), system \(systemQuit, privacy: .public))"

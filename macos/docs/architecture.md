@@ -236,8 +236,11 @@ keeps it.
 
 **Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
 standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`
-(`PreferencesDomain`, used by `ui_smoke.sh`). The store is injected into each `ServiceModel`
-at construction; the driver changes one service's flag at a time (`contains`, `setWanted`).
+(`PreferencesDomain`, used by `ui_smoke.sh`); the other preferences (catalog tab, hub-size
+cache, Try-it text) are harmless UI state and stay in the standard domain. `AppModel` builds the
+`UserDefaultsWantedServiceStore` from its `preferences` and passes it to each `ServiceModel`
+(no default); the protocol has only per-service `contains` / `setWanted` plus `read` (restore)
+and `removeAll` (Reset), so no store can inherit a whole-set rewrite.
 
 **Restore timing.** `RestorePolicy` plans once per process, after `bootstrapDone` and
 the `ready` guard, from the stored set and each service's state. The
@@ -255,7 +258,10 @@ system-quit state to `decide`, which evaluates the blocking `lsof` count only wh
 those arms has already decided.
 
 **Counting.** `ConnectionCount` takes one bounded `lsof` call and counts, per owned
-port, server-side rows minus rows whose peer is one of the app's own sockets. Loopback
+port, server-side rows minus the server-side mirror of the app's own client sockets. A
+row is excluded only when its local and peer endpoints are the swapped endpoints of a row
+the app owns whose peer port is a requested service port; a bare port match is not used,
+because a remote client's ephemeral port could equal an app socket's port. Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
 140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
 here). External servers are not counted or stopped.

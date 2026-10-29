@@ -136,7 +136,11 @@ EXE="$APP/Contents/MacOS/$EXE_NAME"
 # The app reads and writes its wanted set and restore preference in this suite, never in $BUNDLE_ID's
 # own domain (the operator's). Set before anything can launch the app.
 SUITE="$BUNDLE_ID.smoke.$$"
-REAL_WANTED_BEFORE="$(defaults read "$BUNDLE_ID" restore.wanted 2>&1 || true)"
+# This read-only comparison is the isolation check, and the only touch of the real domain. Only a
+# hash is kept, so the operator's value is never printed.
+# (A missing key is a normal read failure, hashed like any other output, hence `|| true`.)
+real_wanted_hash() { { defaults read "$BUNDLE_ID" restore.wanted 2>&1 || true; } | shasum -a 256 | cut -d' ' -f1; }
+REAL_WANTED_BEFORE="$(real_wanted_hash)"
 
 if pgrep -f "/Contents/MacOS/$EXE_NAME" >/dev/null; then
     fail "a copy of the app is already running (quit it first): $(pgrep -fl "/Contents/MacOS/$EXE_NAME" | head -1)"
@@ -175,8 +179,11 @@ launch() {
     LOG_PID=$!
     sleep 1
     # No launch restores unless the step asks (RESTORE=YES), and the wanted set is empty unless it
-    # names services (WANTED="tone"). Both are seeded in the throwaway suite (where the app reads
-    # and writes) and also passed as launch arguments (which shadow reads of the real domain).
+    # names services (WANTED="tone"). Both are seeded in the throwaway suite and also passed as
+    # launch arguments. Arguments live in the argument domain, which heads every UserDefaults
+    # search list including the suite's: the app's reads of these two keys return the arguments
+    # (that is how step 6 seeds its wanted set), while its writes go to the suite. So in-run
+    # wanted-set writes are not read back by the app, and the real domain is never touched.
     local restore_bool=false wanted_values=()
     [[ "${RESTORE:-NO}" != YES ]] || restore_bool=true
     # shellcheck disable=SC2206
@@ -309,8 +316,9 @@ else
     # No server of its own. Not "no children at all": the bootstrap's cache probes and discovery's
     # lsof/launchctl lookups are normal descendants.
     for p in $SEEN; do
-        cmd="$(ps -o command= -p "$p" 2>/dev/null || true)"
-        [[ "$cmd" != *"-m tts_server"* && "$cmd" != *"-m stt_server"* ]] \
+        cmd="$(ps -ww -o command= -p "$p" 2>/dev/null || true)"
+        # `serve` only: the bootstrap's `-m tts_server prefetch --check` probes are normal.
+        [[ "$cmd" != *"-m tts_server serve"* && "$cmd" != *"-m stt_server serve"* ]] \
             || fail "restore launch started a server: pid $p: $cmd"
     done
     osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
@@ -325,9 +333,8 @@ else
 fi
 
 step "Isolation: the operator's own wanted set is untouched"
-REAL_WANTED_AFTER="$(defaults read "$BUNDLE_ID" restore.wanted 2>&1 || true)"
-[[ "$REAL_WANTED_AFTER" == "$REAL_WANTED_BEFORE" ]] \
-    || fail "the smoke changed $BUNDLE_ID restore.wanted (was: $REAL_WANTED_BEFORE; now: $REAL_WANTED_AFTER)"
+[[ "$(real_wanted_hash)" == "$REAL_WANTED_BEFORE" ]] \
+    || fail "the smoke changed $BUNDLE_ID restore.wanted (changed; values not printed)"
 pass "$BUNDLE_ID restore.wanted unchanged; every launch used the throwaway suite $SUITE"
 
 step "UI smoke passed"

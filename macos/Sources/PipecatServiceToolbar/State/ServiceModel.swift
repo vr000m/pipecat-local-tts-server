@@ -42,7 +42,7 @@ final class ServiceModel: Identifiable {
     /// The app's one hello prober (`AppModel.prober`), for the Start-path probe.
     private let prober: any HelloProber
 
-    init(info: ServiceInfo, prober: any HelloProber, wanted: any WantedServiceStore = NoopWantedServiceStore()) {
+    init(info: ServiceInfo, prober: any HelloProber, wanted: any WantedServiceStore) {
         self.info = info
         self.prober = prober
         var dependencies = ServiceDependencies()

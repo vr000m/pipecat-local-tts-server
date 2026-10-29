@@ -10,7 +10,7 @@ import Testing
         promptShowing: Bool = false
     ) -> QuitGuardDecision {
         QuitGuardPolicy.decide(
-            counts: counts, systemQuit: systemQuit, drainInProgress: drainInProgress, promptShowing: promptShowing)
+            counts: { counts }, systemQuit: systemQuit, drainInProgress: drainInProgress, promptShowing: promptShowing)
     }
 
     static func isConfirm(_ d: QuitGuardDecision) -> Bool {
@@ -113,7 +113,7 @@ import Testing
         #expect(Self.isConfirm(Self.decide([.tone: .known(0), .whisper: .unknown])))
     }
 
-    /// The policy owns the arm order, so the caller's lsof probe (the `counts` autoclosure) runs
+    /// The policy owns the arm order, so the caller's lsof probe (the `counts` closure) runs
     /// only when no earlier arm decided: never for a drain, a showing prompt or a system quit.
     @Test func countsAreProbedOnlyWhenNoEarlierArmDecides() {
         final class Probe: @unchecked Sendable { var calls = 0 }
@@ -130,7 +130,7 @@ import Testing
         for (system, drain, prompt, probed) in table {
             let probe = Probe()
             _ = QuitGuardPolicy.decide(
-                counts: { probe.calls += 1; return [.tone: .known(1)] }(), systemQuit: system,
+                counts: { probe.calls += 1; return [.tone: .known(1)] }, systemQuit: system,
                 drainInProgress: drain, promptShowing: prompt)
             #expect(probe.calls == (probed ? 1 : 0), "system=\(system) drain=\(drain) prompt=\(prompt)")
         }

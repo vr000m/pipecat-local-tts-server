@@ -54,8 +54,9 @@ import Testing
 
     @Test func theNoopStoreRemembersNothing() {
         let store = NoopWantedServiceStore()
-        store.write([.tone])
+        store.setWanted(true, for: .tone)
         #expect(store.read().isEmpty)
+        #expect(!store.contains(.tone))
         store.removeAll()
         #expect(store.read().isEmpty)
     }
@@ -91,29 +92,32 @@ import Testing
         #expect(store.read() == [.tone])
     }
 
-    /// A store that implements only the whole-set operations gets the same per-service behaviour
-    /// from the protocol extension (existing fakes keep compiling).
-    @Test func theDefaultPerServiceOperationsAgreeWithTheUserDefaultsOnes() {
-        final class Whole: WantedServiceStore, @unchecked Sendable {
-            var set: Set<Service> = []
-            func read() -> Set<Service> { set }
-            func write(_ wanted: Set<Service>) { set = wanted }
-            func removeAll() { set = [] }
-        }
+    /// The in-memory fake the driver tests use and the `UserDefaults` store agree on `contains` and
+    /// `setWanted` for every (service already present or absent) x (set true or false) cell, and
+    /// the call touches no other service. Guards the protocol contract both conformers implement.
+    @Test func theInMemoryFakeAndTheUserDefaultsStoreAgreeOnContainsAndSetWanted() {
         let (defaults, name) = Self.isolated()
         defer { defaults.removePersistentDomain(forName: name) }
-        let stores: [any WantedServiceStore] = [Whole(), UserDefaultsWantedServiceStore(defaults: defaults)]
-        let steps: [(Bool, Service)] = [
-            (true, .tone), (true, .kokoro), (true, .tone), (false, .whisper), (false, .tone), (true, .whisper),
-            (false, .kokoro), (false, .kokoro),
-        ]
-        var model: Set<Service> = []
-        for (wanted, service) in steps {
-            if wanted { model.insert(service) } else { model.remove(service) }
-            for store in stores {
-                store.setWanted(wanted, for: service)
-                #expect(store.read() == model, "\(type(of: store)) after \(wanted) \(service)")
-                #expect(Service.allCases.allSatisfy { store.contains($0) == model.contains($0) })
+        let other: Service = .kokoro  // seeded in every cell: must never change
+        for present in [false, true] {
+            for wanted in [false, true] {
+                var seed: Set<Service> = [other]
+                if present { seed.insert(.tone) }
+                defaults.removePersistentDomain(forName: name)
+                let userDefaults = UserDefaultsWantedServiceStore(defaults: defaults)
+                userDefaults.write(seed)
+                let memory = ServiceDriverTests.MemoryWantedStore(seed)
+                let stores: [any WantedServiceStore] = [memory, userDefaults]
+                for store in stores {
+                    let cell = "\(type(of: store)) present=\(present) set=\(wanted)"
+                    #expect(store.contains(.tone) == present, "before: \(cell)")
+                    store.setWanted(wanted, for: .tone)
+                    #expect(store.contains(.tone) == wanted, "after: \(cell)")
+                    #expect(store.contains(other), "touched another service: \(cell)")
+                    #expect(store.read() == (wanted ? [.tone, other] : [other]), "read: \(cell)")
+                    store.setWanted(wanted, for: .tone)  // idempotent
+                    #expect(store.read() == (wanted ? [.tone, other] : [other]), "twice: \(cell)")
+                }
             }
         }
     }

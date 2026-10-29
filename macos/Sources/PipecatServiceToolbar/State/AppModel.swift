@@ -45,16 +45,16 @@ final class AppModel {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
     }
 
-    /// `preferences` holds the restore preference and, unless `wantedStore` is given, the wanted set
+    /// `preferences` holds the restore preference and the wanted set
     /// (`PreferencesDomain`: the standard domain, or the suite a smoke run names).
     init(
         paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe(),
-        preferences: UserDefaults = PreferencesDomain.defaults(), wantedStore: (any WantedServiceStore)? = nil
+        preferences: UserDefaults = PreferencesDomain.defaults()
     ) {
         self.paths = paths
         self.prober = prober
         self.preferences = preferences
-        let wantedStore = wantedStore ?? UserDefaultsWantedServiceStore(defaults: preferences)
+        let wantedStore = UserDefaultsWantedServiceStore(defaults: preferences)
         self.wantedStore = wantedStore
         services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober, wanted: wantedStore) }
         for model in services { model.app = self }
