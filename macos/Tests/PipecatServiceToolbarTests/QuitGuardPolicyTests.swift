@@ -84,14 +84,32 @@ import Testing
         #expect(second == first, "the same question is asked again")
     }
 
-    // MARK: - QuitReason (the code table itself is pinned in Phase 3)
+    /// Recorded decision, to revisit in review: the prompt-showing arm is checked before the
+    /// system-quit arm, so a system quit that arrives while the prompt is up is cancelled
+    /// (the later terminate is answered .cancel, not .proceedAfterShutdown).
+    @Test func promptShowingWinsOverSystemQuitCurrently() {
+        #expect(Self.decide([.tone: .known(2)], systemQuit: true, promptShowing: true) == .cancel)
+        #expect(Self.decide([:], systemQuit: true, promptShowing: true) == .cancel)
+    }
 
-    @Test func aPlainQuitIsUserInitiatedAndLogOutRestartShutDownAreSystem() {
-        #expect(!QuitReason.isSystemInitiated(code: QuitReason.quitAll))
-        #expect(!QuitReason.isSystemInitiated(code: 0))
-        for code in QuitReason.systemCodes {
-            #expect(QuitReason.isSystemInitiated(code: code))
-        }
-        #expect(!QuitReason.systemCodes.isEmpty)
+    @Test func aMultiServiceMessageListsBusyServicesOnly() throws {
+        let counts: [Service: ClientCount] = [
+            .tone: .known(1), .whisper: .known(3), .kokoro: .known(0), .parakeet: .unknown,
+        ]
+        let message = try #require(Self.message(Self.decide(counts)))
+        let lines = message.split(separator: "\n").map(String.init)
+        #expect(lines.count == 3, "\(message)")
+        #expect(!message.contains(Service.kokoro.info.displayName), "a known(0) service is omitted: \(message)")
+        let tone = try #require(lines.first { $0.hasPrefix(Service.tone.info.displayName) })
+        #expect(tone.contains("1 connected client") && !tone.contains("clients"), "\(tone)")
+        let whisper = try #require(lines.first { $0.hasPrefix(Service.whisper.info.displayName) })
+        #expect(whisper.contains("3 connected clients"), "\(whisper)")
+        let parakeet = try #require(lines.first { $0.hasPrefix(Service.parakeet.info.displayName) })
+        #expect(parakeet.contains("could not check"), "\(parakeet)")
+    }
+
+    @Test func mixedKnownAndUnknownCountsConfirm() {
+        #expect(Self.isConfirm(Self.decide([.tone: .known(0), .whisper: .unknown, .kokoro: .known(2)])))
+        #expect(Self.isConfirm(Self.decide([.tone: .known(0), .whisper: .unknown])))
     }
 }

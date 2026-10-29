@@ -90,6 +90,17 @@ final class AppModel {
     func active(_ kind: ServiceKind) -> [ServiceModel] { services.filter { $0.kind == kind && $0.isActive } }
     /// The menu's counting (`ServiceCounts`, Core): External services count as running.
     var counts: ServiceCounts { ServiceCounts(services.map { $0.driver.state }) }
+    /// Ports of the services the app started (server or native), keyed by service: what the
+    /// quit guard counts clients on. External servers are not the app's to protect.
+    var ownedPorts: [Service: Int] {
+        var ports: [Service: Int] = [:]
+        for model in services {
+            let state = model.driver.state
+            if state.server != nil || state.native != nil { ports[model.service] = model.info.port }
+        }
+        return ports
+    }
+
     var anyActive: Bool { counts.active > 0 }
 
     /// Installed (or downloading) services that aren't running: what the main

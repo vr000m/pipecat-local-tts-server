@@ -89,6 +89,21 @@ struct ConnectionCountLiveTests {
         #expect(PortProbe.clientCounts(ports: [port], appPid: Self.appPid, timeout: 2)[port] == .known(0))
     }
 
+    /// Control for the test above: with an app pid that owns nothing, the in-process client's socket
+    /// is counted, so lsof does list it under the app pid and the exclusion is what yields 0.
+    @Test func anInProcessClientCountsOneWhenTheAppPidOwnsNothing() async throws {
+        let server = STTWebSocketServer(identity: .init(name: "fake", model: nil)) { _, _ in "" }
+        let port = try await server.start(port: 0)
+        defer { server.stop() }
+        let client = STTClient(port: port)
+        _ = try await client.connect()
+        defer { Task { await client.close() } }
+        await Self.settle()
+        for foreignPid: Int32 in [0, 1] {
+            #expect(PortProbe.clientCounts(ports: [port], appPid: foreignPid, timeout: 2)[port] == .known(1))
+        }
+    }
+
     @Test func bothKindsOfClientTogetherCountOnlyTheOutsideOne() async throws {
         let server = STTWebSocketServer(identity: .init(name: "fake", model: nil)) { _, _ in "" }
         let port = try await server.start(port: 0)

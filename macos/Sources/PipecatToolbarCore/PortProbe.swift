@@ -74,7 +74,7 @@ public enum PortProbe {
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (terminated at expiry). A failure, a non-zero exit with output, or the deadline gives
+    /// (terminated at expiry). A failure, a non-zero exit with output or stderr, or the deadline gives
     /// `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
@@ -86,24 +86,38 @@ public enum PortProbe {
         process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpn"]
         process.environment = ProcessEnvironment.base()
         let pipe = Pipe()
+        let errPipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errPipe
         process.standardInput = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        let deadline = DispatchTime.now() + timeout
         do { try process.run() } catch { return unknown }
         let box = OutputBox()
-        let finished = DispatchSemaphore(value: 0)
-        // Drain the pipe on its own thread so a large listing can't fill it and stall lsof.
+        let errBox = OutputBox()
+        let drained = DispatchSemaphore(value: 0)
+        // Drain both pipes on their own threads so a large listing can't fill one and stall lsof.
         Thread.detachNewThread {
             box.data = pipe.fileHandleForReading.readDataToEndOfFile()
-            finished.signal()
+            drained.signal()
         }
-        guard finished.wait(timeout: .now() + timeout) == .success else {
+        Thread.detachNewThread {
+            errBox.data = errPipe.fileHandleForReading.readDataToEndOfFile()
+            drained.signal()
+        }
+        // One overall deadline for exit and both reads; the run loop is never spun.
+        guard exited.wait(timeout: deadline) == .success,
+            drained.wait(timeout: deadline) == .success, drained.wait(timeout: deadline) == .success
+        else {
             process.terminate()
             return unknown
         }
-        process.waitUntilExit()
         let output = String(decoding: box.data, as: UTF8.self)
-        guard process.terminationStatus == 0 || (process.terminationStatus == 1 && output.isEmpty) else {
+        let errors = String(decoding: errBox.data, as: UTF8.self)
+        let status = process.terminationStatus
+        // Exit 1 with both streams empty is lsof's "nothing matched": zero. Exit 1 with stderr is a failure.
+        guard status == 0 || (status == 1 && output.isEmpty && errors.isEmpty) else {
             return unknown
         }
         return ConnectionCount.parse(output: output, ports: ports, appPid: appPid).mapValues { .known($0) }

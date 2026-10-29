@@ -8,10 +8,10 @@ import Foundation
 /// verify it against a menu Quit, an `osascript` quit and a real Log Out, then pin it in
 /// `QuitReasonTests`.
 public enum QuitReason {
-    /// `kAEQuitAll`: the plain quit-all event (also what `osascript` sends); user-initiated.
+    /// `kAEQuitApplication` ('quit'): the plain quit event (also what `osascript` sends); user-initiated.
     public static let quitAll = fourCC("quit")
-    /// `kAEReallyLogOut`, `kAELogOut`, `kAERestart`, `kAEShutDown`, `kAEReallyRestart`,
-    /// `kAEReallyShutDown`.
+    /// `kAEReallyLogOut` ('rlgo'), `kAELogOut` ('logo'), `kAERestart` ('rest'), `kAEShutDown` ('shut'),
+    /// `kAEShowRestartDialog` ('rrst'), `kAEShowShutdownDialog` ('rsdn').
     public static let systemCodes: Set<UInt32> = [
         fourCC("rlgo"), fourCC("logo"), fourCC("rest"), fourCC("shut"), fourCC("rrst"), fourCC("rsdn"),
     ]
