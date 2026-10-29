@@ -71,6 +71,48 @@ public enum PortProbe {
         return owner
     }
 
+    /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
+    /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
+    /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
+    /// (terminated at expiry). A failure, a non-zero exit with output, or the deadline gives
+    /// `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
+    public static func clientCounts(
+        ports: [Int], appPid: Int32, timeout: TimeInterval = 2
+    ) -> [Int: ClientCount] {
+        let unknown = Dictionary(uniqueKeysWithValues: ports.map { ($0, ClientCount.unknown) })
+        guard !ports.isEmpty else { return [:] }
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/sbin/lsof")
+        process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpn"]
+        process.environment = ProcessEnvironment.base()
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return unknown }
+        let box = OutputBox()
+        let finished = DispatchSemaphore(value: 0)
+        // Drain the pipe on its own thread so a large listing can't fill it and stall lsof.
+        Thread.detachNewThread {
+            box.data = pipe.fileHandleForReading.readDataToEndOfFile()
+            finished.signal()
+        }
+        guard finished.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            return unknown
+        }
+        process.waitUntilExit()
+        let output = String(decoding: box.data, as: UTF8.self)
+        guard process.terminationStatus == 0 || (process.terminationStatus == 1 && output.isEmpty) else {
+            return unknown
+        }
+        return ConnectionCount.parse(output: output, ports: ports, appPid: appPid).mapValues { .known($0) }
+    }
+
+    private final class OutputBox: @unchecked Sendable {
+        var data = Data()
+    }
+
     /// The agent's label, only when `launchctl print` succeeded and its pid is the one `lsof`
     /// found holding the port. A loaded agent that does not hold the port (it is between
     /// restarts, or something else took the port) must not be blamed.

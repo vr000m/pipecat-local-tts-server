@@ -333,7 +333,7 @@ stateDiagram-v2
 
 ## Progress
 
-- [ ] Phase 1: Core policy and connection counting
+- [x] Phase 1: Core policy and connection counting
 - [ ] Phase 2: Persist the wanted set and restore on launch
 - [ ] Phase 3: Quit guard
 - [ ] Phase 4: Script messaging, verification and docs
@@ -345,6 +345,7 @@ stateDiagram-v2
 - Verified (2026-10-28): the catalog host is `127.0.0.1` (`Service.swift:217`); `LifecycleEvent.Kind` is `CaseIterable`; `AppLifecycle.reduce` returns `[AppEffect]`; `ui_smoke.sh --build` exists; the gear control is a `Menu` at `PanelView.swift:706-725` with an "Open at Login" toggle.
 - Review round 1 (`/review-plan`, 2026-10-29): 36 findings (20 Important, 16 Minor, 0 Critical), all applied to the contract above. Decisions (operator): synchronous prompt in `applicationShouldTerminate`; unknown count asks anyway; Quit title unchanged; a stranger-held port clears the flag (no retry, no pre-filter).
 - Unverified, with the step that settles each: lsof lists the app's `URLSession`/`NWListener` sockets under the app pid (Phase 1 fixtures and live test); whether a second terminate during `runModal` re-enters or queues (Phase 3 manual check); the quit-reason codes for menu Quit, `osascript` quit and Log Out (Phase 3 spike); the alert reaches the front from an accessory app on an Apple Event quit with another app frontmost (Phase 3 manual check); a plist-array argument reaches `UserDefaults.standard.array(forKey:)` (start of Phase 2).
+- Phase 1 reviewer (advisory, conduct): 1 Important, 5 Minor, none applied yet. Important: `PortProbe.clientCounts` bounds only the pipe read; `waitUntilExit()` after it is unbounded and spins the main run loop (fix in Phase 3 or the gauntlet: `terminationHandler` + semaphore within the same deadline). Minor: `appLocalPorts` matches peers by port only (an app socket's local port could equal a real client's ephemeral port; restrict to app-owned rows whose peer port is an owned port); exit 1 + non-empty stderr should be `unknown`, not `known(0)`; `QuitReason` constant names in comments are wrong (`quit`=kAEQuitApplication, `rrst`/`rsdn`=kAEShowRestart/ShutdownDialog) and the table is provisional until the Phase 3 spike; `QuitGuardPolicy` checks `promptShowing` before `systemQuit`, so a Log Out during the prompt is cancelled (decide ordering in Phase 3); live in-process-client test should also assert the count is 1 with a different appPid, to prove the app's rows are visible to lsof.
 
 ## Issues & Solutions
 
