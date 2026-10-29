@@ -126,6 +126,8 @@ public enum PortProbe {
         guard status == 0 || (status == 1 && output.isEmpty && errors.isEmpty) else {
             return unknown
         }
+        // Output with no process record at all is a format we cannot read: unknown, not zero.
+        if ConnectionCount.isUnrecognised(output) { return unknown }
         return ConnectionCount.parse(output: output, ports: ports, appPid: appPid).mapValues { .known($0) }
     }
 

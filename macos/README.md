@@ -105,7 +105,8 @@ for running both.
   mirror of the app's own client sockets (its probes and Try it). A row is excluded only
   when its local and peer endpoints are the swapped endpoints of a row the app owns whose
   peer port is a requested service port; a bare port match is not used, because a remote
-  client's ephemeral port could equal an app socket's port. One bounded `lsof` call. Loopback
+  client's ephemeral port could equal an app socket's port. One bounded `lsof` call; a socket held on several fds of one process counts once,
+  and `lsof` output the parser does not recognise counts as unreadable (asks). Loopback
   tunnels (for example SSH) count as clients. A half-open connection
   from a vanished peer keeps counting until the server's keepalive reaps it (about
   140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`

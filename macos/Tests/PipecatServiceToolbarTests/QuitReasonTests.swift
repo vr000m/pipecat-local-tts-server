@@ -36,9 +36,9 @@ import Testing
         #expect(QuitReason.fourCC("rlgo") == 0x726C_676F)
         for s in ["quit", "rlgo", "logo", "rest", "shut", "rrst", "rsdn"] {
             let v = QuitReason.fourCC(s)
-            let back = String(decoding: [24, 16, 8, 0].map { UInt8((v >> UInt32($0)) & 0xFF) }, as: UTF8.self)
-            #expect(back == s)
+            #expect(QuitReason.text(v) == s)
         }
+        #expect(QuitReason.text(nil) == "none")
     }
 
     @Test(arguments: [

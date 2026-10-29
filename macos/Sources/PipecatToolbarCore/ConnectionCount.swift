@@ -13,7 +13,7 @@ public enum ClientCount: Equatable, Sendable {
 /// The rule (recorded lsof output, macOS 26): a loopback or LAN connection shows up as two
 /// rows, the server's (local port == service port) and the client's (local port ephemeral,
 /// peer == service port), each under its own process. A row counts when it is **server-side**
-/// (local port == service port), minus those that are the other end of one of the app's own
+/// (local port == service port), counted once per (pid, local, peer) however many fds hold it, minus those that are the other end of one of the app's own
 /// client sockets (its hello probe, its in-process client). An app client socket is a row owned
 /// by `appPid` whose peer port is one of the requested service ports; a server row is its mirror
 /// when its peer endpoint is that row's local endpoint and its local endpoint is that row's peer
@@ -45,8 +45,18 @@ public enum ConnectionCount {
         return Int(endpoint[endpoint.index(after: colon)...])
     }
 
+    /// True when non-empty output has no `p<pid>` process record at all: a format this parser
+    /// cannot read (zero would be a false "no clients"), so the caller treats the count as unknown.
+    public static func isUnrecognised(_ output: String) -> Bool {
+        let lines = output.split(whereSeparator: \.isNewline)
+        guard !lines.isEmpty else { return false }
+        return !lines.contains { $0.first == "p" && Int32($0.dropFirst()) != nil }
+    }
+
     static func rows(_ output: String) -> [Row] {
         var rows: [Row] = []
+        // lsof prints one row per fd: a socket dup'd within a process is one connection.
+        var seen = Set<[String]>()
         var pid: Int32?
         for raw in output.split(whereSeparator: \.isNewline) {
             guard let tag = raw.first else { continue }
@@ -58,6 +68,8 @@ public enum ConnectionCount {
                 guard let pid, let arrow = rest.range(of: "->"),
                     let localPort = port(of: rest[..<arrow.lowerBound]),
                     let peerPort = port(of: rest[arrow.upperBound...])
+                else { continue }
+                guard seen.insert([String(pid), String(rest[..<arrow.lowerBound]), String(rest[arrow.upperBound...])]).inserted
                 else { continue }
                 rows.append(
                     Row(

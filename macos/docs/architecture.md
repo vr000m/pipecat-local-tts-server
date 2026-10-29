@@ -262,7 +262,9 @@ those arms has already decided.
 port, server-side rows minus the server-side mirror of the app's own client sockets. A
 row is excluded only when its local and peer endpoints are the swapped endpoints of a row
 the app owns whose peer port is a requested service port; a bare port match is not used,
-because a remote client's ephemeral port could equal an app socket's port. Loopback
+because a remote client's ephemeral port could equal an app socket's port. A socket held
+on several fds of one process counts once; non-empty output with no process record is an
+unknown count (asks). Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
 140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
 here). External servers are not counted or stopped.

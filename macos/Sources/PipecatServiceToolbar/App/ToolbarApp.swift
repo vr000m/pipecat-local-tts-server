@@ -104,18 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return attr.enumCodeValue
     }
 
-    private static func fourCCText(_ code: UInt32?) -> String {
-        guard let code else { return "none" }
-        let bytes = [24, 16, 8, 0].map { UInt8((code >> UInt32($0)) & 0xFF) }
-        return String(decoding: bytes, as: UTF8.self)
-    }
-
     /// A user quit with clients connected asks first; a system log out, restart or shut down
     /// never does. Quit otherwise runs the shutdown: even with nothing running, a cache probe
     /// or the bootstrap's build may be (`AppLifecycle`).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let reason = Self.currentQuitReason()
-        let reasonText = Self.fourCCText(reason)
+        let reasonText = QuitReason.text(reason)
         let systemQuit = QuitReason.isSystemQuit(code: reason, powerOffSeen: powerOffSeen)
         // `QuitGuardPolicy` owns the arm order (a second quit while the drain runs ends the app at
         // once, the way out of a stuck drain; a terminate while the prompt shows is refused; a

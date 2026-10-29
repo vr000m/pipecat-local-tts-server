@@ -41,6 +41,42 @@ import Testing
         #expect(Self.count(result, 19012) == 1, "the bracketed IPv6 loopback row")
     }
 
+    @Test func aSocketDuppedWithinOneProcessCountsOnce() {
+        let output = """
+            p205
+            f3
+            n127.0.0.1:50301->127.0.0.1:19011
+            f4
+            n127.0.0.1:50301->127.0.0.1:19011
+            p162
+            f4
+            n127.0.0.1:19011->127.0.0.1:50301
+            f5
+            n127.0.0.1:19011->127.0.0.1:50301
+
+            """
+        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 1)
+    }
+
+    @Test func theSameEndpointsUnderTwoProcessesAreTwoHolders() {
+        let output = """
+            p162
+            n127.0.0.1:19011->127.0.0.1:50301
+            p163
+            n127.0.0.1:19011->127.0.0.1:50301
+
+            """
+        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 2)
+    }
+
+    @Test func unrecognisedOutputIsFlaggedButEmptyAndNormalAreNot() {
+        #expect(ConnectionCount.isUnrecognised("COMMAND PID USER\nfoo 1 bar\n"))
+        #expect(ConnectionCount.isUnrecognised("n127.0.0.1:1->127.0.0.1:2\n"))
+        #expect(!ConnectionCount.isUnrecognised(""))
+        #expect(!ConnectionCount.isUnrecognised("\n"))
+        #expect(!ConnectionCount.isUnrecognised(Self.loopback))
+    }
+
     @Test func aPortWithNoClientsCountsZeroAndOtherPortsAreIgnored() {
         let result = ConnectionCount.parse(output: Self.loopback, ports: [19011, 19999], appPid: 1)
         #expect(Self.count(result, 19999) == 0)

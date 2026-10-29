@@ -29,4 +29,11 @@ public enum QuitReason {
     public static func fourCC(_ s: String) -> UInt32 {
         s.utf8.prefix(4).reduce(0) { ($0 << 8) | UInt32($1) }
     }
+
+    /// The text of a four-character code ("none" when absent); the inverse of `fourCC`.
+    public static func text(_ code: UInt32?) -> String {
+        guard let code else { return "none" }
+        let bytes = [24, 16, 8, 0].map { UInt8((code >> UInt32($0)) & 0xFF) }
+        return String(decoding: bytes, as: UTF8.self)
+    }
 }
