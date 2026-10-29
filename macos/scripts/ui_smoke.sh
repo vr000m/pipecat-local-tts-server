@@ -26,9 +26,10 @@
 #
 # Isolation: the bundle runs under the operator's real bundle id, so no launch may read or write
 # the operator's `restore.wanted` / `restoreOnLaunch`. Every launch (a) passes both as launch
-# arguments (they shadow READS of the standard domain) and (b) sets PIPECAT_TOOLBAR_DEFAULTS_SUITE
-# to a throwaway suite the script seeds and deletes, where the app reads and WRITES them
-# (`PreferencesDomain`; launch arguments never shadow writes). The script also compares the real
+# arguments (the argument domain heads every search list, the suite's included, so the app READS
+# these values from the arguments) and (b) sets PIPECAT_TOOLBAR_DEFAULTS_SUITE to a throwaway suite
+# the script seeds and deletes, where the app WRITES them (`PreferencesDomain`; launch arguments
+# never shadow writes, so a write is not read back during the run). The script also compares the real
 # domain's `restore.wanted` before and after and fails if it changed.
 #
 # Not covered (needs Accessibility, see macos/README.md "Manual UI checklist"):
@@ -138,8 +139,9 @@ EXE="$APP/Contents/MacOS/$EXE_NAME"
 SUITE="$BUNDLE_ID.smoke.$$"
 # This read-only comparison is the isolation check, and the only touch of the real domain. Only a
 # hash is kept, so the operator's value is never printed.
-# (A missing key is a normal read failure, hashed like any other output, hence `|| true`.)
-real_wanted_hash() { { defaults read "$BUNDLE_ID" restore.wanted 2>&1 || true; } | shasum -a 256 | cut -d' ' -f1; }
+# (A missing key is a normal state: stderr carries a timestamped NSLog line that differs on every
+# call, so it is discarded and absence is recorded from the exit status instead.)
+real_wanted_hash() { { defaults read "$BUNDLE_ID" restore.wanted 2>/dev/null || echo '<absent>'; } | shasum -a 256 | cut -d' ' -f1; }
 REAL_WANTED_BEFORE="$(real_wanted_hash)"
 
 if pgrep -f "/Contents/MacOS/$EXE_NAME" >/dev/null; then

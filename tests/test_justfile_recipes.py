@@ -1295,6 +1295,9 @@ def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
     # ... without ever printing the operator's value: only a hash is kept and compared.
     assert "real_wanted_hash" in code and "shasum" in code
     assert "REAL_WANTED_AFTER" not in code
+    # stderr must never be hashed: a missing key logs a timestamped line, so the two hashes differ.
+    helper = next(line for line in code.splitlines() if line.startswith("real_wanted_hash()"))
+    assert "2>&1" not in helper and "2>/dev/null" in helper and "<absent>" in helper
 
 
 def test_ui_smoke_restore_step_asserts_no_server_not_no_children() -> None:

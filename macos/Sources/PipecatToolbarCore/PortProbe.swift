@@ -74,7 +74,7 @@ public enum PortProbe {
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (terminated at expiry). A failure, a non-zero exit with output or stderr, or the deadline gives
+    /// (SIGTERM at expiry, SIGKILL a second later if it still runs). A failure, a non-zero exit with output or stderr, or the deadline gives
     /// `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
@@ -111,6 +111,12 @@ public enum PortProbe {
             drained.wait(timeout: deadline) == .success, drained.wait(timeout: deadline) == .success
         else {
             process.terminate()
+            // SIGTERM can be ignored by a wedged lsof, which would also pin the two reader threads:
+            // escalate off the caller's thread, which must answer the terminate request now.
+            let pid = process.processIdentifier
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                if process.isRunning { kill(pid, SIGKILL) }
+            }
             return unknown
         }
         let output = String(decoding: box.data, as: UTF8.self)
