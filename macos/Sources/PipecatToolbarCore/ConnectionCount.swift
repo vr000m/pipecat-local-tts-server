@@ -1,8 +1,7 @@
-import Foundation
-
 /// How many clients are connected to an owned server: a count, or "could not tell"
 /// (lsof failed, died by a signal, wrote anything to stderr (whatever the exit status), exited non-zero with output,
-/// missed its deadline, or printed output that does not fit its grammar). The quit guard asks the user for `unknown`.
+/// missed its deadline, held a pipe open past it, or printed output that does not fit its grammar).
+/// The quit guard asks the user for `unknown`.
 public enum ClientCount: Equatable, Sendable {
     case known(Int)
     case unknown
@@ -27,7 +26,9 @@ public enum ClientCount: Equatable, Sendable {
 /// each `p<pid>` followed by one or more file records; a file record is `f<fd>` (lsof always adds
 /// it) followed by exactly one `n<local>-><peer>` with one `->`. Each endpoint is a whole IPv4
 /// `127.0.0.1:50189` or bracketed IPv6 `[::1]:50191` with a port of 1-65535 (a scoped address
-/// carries its scope inside the brackets; `port(of:)` is the exact form). `rows` is the one walk
+/// carries its scope inside the brackets; `port(of:)` is the exact form). The endpoint check uses
+/// no C parser. It allows ASCII only, no leading zero in an octet or port, and 1-4 hex digits a group.
+/// `rows` is the one walk
 /// of that grammar: it returns every row, or nil when any line does not fit it, and a count is
 /// `.known` only from a non-nil walk (`clientCounts`).
 public enum ConnectionCount {
@@ -46,60 +47,124 @@ public enum ConnectionCount {
         var peer: String
     }
 
+    // The endpoint grammar is checked here byte by byte, with no C parser: `inet_pton` stopped at
+    // an embedded NUL and allowed leading zeros. Every check works on UTF-8 bytes.
+    private typealias Bytes = ArraySlice<UInt8>
+
+    private static func isDigit(_ b: UInt8) -> Bool { b >= 0x30 && b <= 0x39 }
+    private static func isHex(_ b: UInt8) -> Bool { isDigit(b) || ((b | 0x20) >= 0x61 && (b | 0x20) <= 0x66) }
+    private static func isAlnum(_ b: UInt8) -> Bool { isDigit(b) || ((b | 0x20) >= 0x61 && (b | 0x20) <= 0x7A) }
+
+    /// The only bytes an endpoint may hold: ASCII letters and digits, `.`, `:`, `[`, `]` and `%`.
+    /// Any NUL, control, space or non-ASCII byte fails here, before any parsing.
+    private static func isEndpointByte(_ b: UInt8) -> Bool {
+        isAlnum(b) || b == UInt8(ascii: ".") || b == UInt8(ascii: ":") || b == UInt8(ascii: "[")
+            || b == UInt8(ascii: "]") || b == UInt8(ascii: "%")
+    }
+
+    /// `bytes` cut at every `separator`, keeping empty pieces.
+    private static func pieces(_ bytes: Bytes, _ separator: Unicode.Scalar) -> [Bytes] {
+        bytes.split(separator: UInt8(ascii: separator), omittingEmptySubsequences: false)
+    }
+
     /// The port of a whole endpoint as `lsof -nP` prints it, or nil when it is anything else.
-    /// The endpoint is `<IPv4>:<port>` or `[<IPv6>]:<port>`. IPv4 is a dotted quad. IPv6 may
-    /// carry a `%<scope>` of letters and digits. `inet_pton` checks each address. The port is
-    /// 1-65535 in decimal, with no sign or leading zero. Nothing may precede or follow it.
+    /// The endpoint is `<IPv4>:<port>` or `[<IPv6>]:<port>`, in the bytes `isEndpointByte` allows.
+    /// The port is 1-65535 in decimal, with no sign or leading zero. Nothing may follow it.
     static func port(of endpoint: Substring) -> Int? {
-        let host: Substring
-        let portText: Substring
-        if endpoint.first == "[" {
-            guard let close = endpoint.firstIndex(of: "]") else { return nil }
-            let after = endpoint[endpoint.index(after: close)...]
-            guard after.first == ":" else { return nil }
-            host = endpoint[endpoint.index(after: endpoint.startIndex)..<close]
+        let bytes = Bytes(endpoint.utf8)
+        guard bytes.allSatisfy(isEndpointByte) else { return nil }
+        let portText: Bytes
+        if bytes.first == UInt8(ascii: "[") {
+            guard let close = bytes.firstIndex(of: UInt8(ascii: "]")) else { return nil }
+            let after = bytes[(close + 1)...]
+            guard after.first == UInt8(ascii: ":"), isIPv6(bytes[(bytes.startIndex + 1)..<close]) else { return nil }
             portText = after.dropFirst()
-            guard isIPv6(host) else { return nil }
         } else {
-            let parts = endpoint.split(separator: ":", omittingEmptySubsequences: false)
-            guard parts.count == 2 else { return nil }
-            host = parts[0]
+            let parts = pieces(bytes, ":")
+            guard parts.count == 2, isIPv4(parts[0]) else { return nil }
             portText = parts[1]
-            guard isIPv4(host) else { return nil }
         }
-        guard (1...5).contains(portText.count), portText.first != "0",
-            portText.allSatisfy({ $0.isASCII && $0.isNumber }), let port = Int(portText), port <= 65535
-        else { return nil }
+        guard let port = decimal(portText, maxDigits: 5), port >= 1, port <= 65535 else { return nil }
         return port
     }
 
-    /// A dotted-quad IPv4 address (`inet_pton` is the judge; it rejects an empty host).
-    static func isIPv4(_ host: Substring) -> Bool {
-        var address = in_addr()
-        return inet_pton(AF_INET, String(host), &address) == 1
+    /// The value of 1 to `maxDigits` ASCII digits with no leading zero (a lone `0` is allowed).
+    private static func decimal(_ text: Bytes, maxDigits: Int) -> Int? {
+        guard (1...maxDigits).contains(text.count), text.allSatisfy(isDigit) else { return nil }
+        guard text.count == 1 || text.first != UInt8(ascii: "0") else { return nil }
+        return text.reduce(0) { $0 * 10 + Int($1 - 0x30) }
     }
 
-    /// An IPv6 address, optionally scoped (`fe80::1%en0`): the address is judged by `inet_pton`,
-    /// and a scope must be one or more ASCII letters or digits.
-    static func isIPv6(_ host: Substring) -> Bool {
+    /// Exactly four dot-separated decimal octets, each 0-255 with no leading zero.
+    static func isIPv4(_ host: Substring) -> Bool { isIPv4(Bytes(host.utf8)) }
+
+    private static func isIPv4(_ host: Bytes) -> Bool {
+        let octets = pieces(host, ".")
+        return octets.count == 4 && octets.allSatisfy { decimal($0, maxDigits: 3).map { $0 <= 255 } ?? false }
+    }
+
+    /// An IPv6 address, optionally scoped (`fe80::1%en0`, scope of ASCII letters and digits).
+    /// Groups are 1-4 hex digits split by single colons, with at most one `::`. That is 8
+    /// groups, or 7 at most with `::`. A dotted IPv4 tail (`::ffff:127.0.0.1`) counts as two.
+    static func isIPv6(_ host: Substring) -> Bool { isIPv6(Bytes(host.utf8)) }
+
+    private static func isIPv6(_ host: Bytes) -> Bool {
         var address = host
-        if let percent = host.firstIndex(of: "%") {
-            let scope = host[host.index(after: percent)...]
-            guard !scope.isEmpty, scope.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return false }
+        if let percent = host.firstIndex(of: UInt8(ascii: "%")) {
+            let scope = host[(percent + 1)...]
+            guard !scope.isEmpty, scope.allSatisfy(isAlnum) else { return false }
             address = host[..<percent]
         }
-        var parsed = in6_addr()
-        return inet_pton(AF_INET6, String(address), &parsed) == 1
+        // Split at the first `::`; neither side may hold another `::` (its groups would be empty).
+        var head = address
+        var tail: Bytes? = nil
+        var i = address.startIndex
+        while i + 1 < address.endIndex {
+            if address[i] == UInt8(ascii: ":") && address[i + 1] == UInt8(ascii: ":") {
+                head = address[..<i]
+                tail = address[(i + 2)...]
+                break
+            }
+            i += 1
+        }
+        // Hex groups only on the left of `::`; the last group of the address may be a dotted quad.
+        guard let headGroups = groups(head, dottedTail: tail == nil) else { return false }
+        guard let tail else { return headGroups == 8 }
+        guard let tailGroups = groups(tail, dottedTail: true) else { return false }
+        return headGroups + tailGroups <= 7
+    }
+
+    /// How many 16-bit groups `text` holds (an empty side of `::` holds none), or nil when a
+    /// piece is not 1-4 hex digits. With `dottedTail`, the last piece may be a dotted quad (two).
+    private static func groups(_ text: Bytes, dottedTail: Bool) -> Int? {
+        if text.isEmpty { return 0 }
+        let parts = pieces(text, ":")
+        var count = 0
+        for (index, part) in parts.enumerated() {
+            if dottedTail && index == parts.count - 1 && part.contains(UInt8(ascii: ".")) {
+                guard isIPv4(part) else { return nil }
+                count += 2
+            } else {
+                guard (1...4).contains(part.count), part.allSatisfy(isHex) else { return nil }
+                count += 1
+            }
+        }
+        return count
     }
 
     /// The socket an `n` record names, or nil when it is not exactly `<local>-><peer>`: one `->`,
     /// and each side a whole endpoint that `port(of:)` accepts. A listening socket has no `->`.
+    /// The split is on UTF-8 bytes, so no Unicode rule can merge `->` with a following scalar.
     static func row(pid: Int32, name rest: Substring) -> Row? {
-        guard let arrow = rest.range(of: "->") else { return nil }
-        let local = rest[..<arrow.lowerBound]
-        let peer = rest[arrow.upperBound...]
-        guard peer.range(of: "->") == nil, let localPort = port(of: local), let peerPort = port(of: peer)
-        else { return nil }
+        let bytes = Bytes(rest.utf8)
+        let arrows = bytes.indices.dropLast().filter {
+            bytes[$0] == UInt8(ascii: "-") && bytes[$0 + 1] == UInt8(ascii: ">")
+        }
+        guard arrows.count == 1, let arrow = arrows.first else { return nil }
+        // Both sides are endpoint bytes only (no `-` or `>`), so they are valid UTF-8.
+        let local = Substring(String(decoding: bytes[..<arrow], as: UTF8.self))
+        let peer = Substring(String(decoding: bytes[(arrow + 2)...], as: UTF8.self))
+        guard let localPort = port(of: local), let peerPort = port(of: peer) else { return nil }
         return Row(pid: pid, local: String(local), peer: String(peer), localPort: localPort, peerPort: peerPort)
     }
 

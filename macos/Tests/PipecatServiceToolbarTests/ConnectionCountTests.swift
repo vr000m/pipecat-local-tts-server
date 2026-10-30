@@ -324,6 +324,93 @@ import Testing
         #expect(ConnectionCount.rows("p1\nf1\nn:50000->:19011->:123\n") == nil)
     }
 
+    /// Codex round 8: `inet_pton` stopped at an embedded NUL, so this unowned-port row parsed and
+    /// the count read `.known(0)`. It must be unknown.
+    @Test func anEmbeddedNulInAHostIsUnknown() {
+        for name in ["127.0.0.1\u{0}junk:50000->127.0.0.1:443", "127.0.0.1:50000->[::1\u{0}zz]:443"] {
+            let output = "p1\nf1\nn\(name)\n"
+            #expect(ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1) == [19011: .unknown])
+            #expect(ConnectionCount.rows(output) == nil)
+        }
+        // The round 8 swiftc repros: each was accepted with a port.
+        for endpoint in ["127.0.0.1\u{0}x:19011", "010.0.0.1:19011", "[::1\u{0}zz]:19011", "[00000::1]:5"] {
+            #expect(ConnectionCount.port(of: Substring(endpoint)) == nil, "\(endpoint.debugDescription)")
+        }
+    }
+
+    /// The host state space, checked by the validator alone with no C parser. Each host is tried
+    /// in its endpoint form on both sides of the arrow, beside a clean server row, so a wrong
+    /// accept shows as `.known` and a wrong reject as `.unknown`.
+    @Test func theHostGrammarIsStrictOverItsStateSpace() {
+        let nul = "\u{0}"
+        // (host, IPv6 (bracketed), accepted)
+        let hosts: [(String, Bool, Bool)] = [
+            // Valid IPv4.
+            ("127.0.0.1", false, true), ("0.0.0.0", false, true), ("255.255.255.255", false, true),
+            ("10.0.0.133", false, true), ("1.20.199.250", false, true),
+            // Valid IPv6.
+            ("::", true, true), ("::1", true, true), ("fe80:19::1", true, true), ("1::", true, true),
+            ("1:2:3:4:5:6:7:8", true, true), ("FFFF:abcd:0:0:0:0:0:1", true, true), ("1:2:3:4:5:6:7::", true, true),
+            ("::2:3:4:5:6:7:8", true, true), ("2600:1901:0:47fc::", true, true),
+            ("fe80:19::4f41:8157:767a:6ea9", true, true), ("fe80::1%en0", true, true), ("fe80::1%19", true, true),
+            ("::ffff:127.0.0.1", true, true), ("1:2:3:4:5:6:1.2.3.4", true, true), ("0001::1", true, true),
+            // NUL at the start, middle and end, IPv4 and IPv6 (and inside a scope).
+            ("\(nul)127.0.0.1", false, false), ("127.0\(nul).0.1", false, false), ("127.0.0.1\(nul)", false, false),
+            ("127.0.0.1\(nul)x", false, false), ("\(nul)::1", true, false), ("::\(nul)1", true, false),
+            ("::1\(nul)", true, false), ("::1\(nul)zz", true, false), ("fe80::1%en\(nul)0", true, false),
+            ("fe80::1%en0\(nul)", true, false),
+            // Other control, whitespace and non-ASCII bytes.
+            ("127.0.0.1\u{7F}", false, false), ("127.0.0.1\u{1B}", false, false), ("127.0.0.1\t", false, false),
+            ("127.0.0. 1", false, false), (" 127.0.0.1", false, false), (":: 1", true, false), ("::1\u{0B}", true, false),
+            ("\u{0661}27.0.0.1", false, false), ("127.0.0.\u{FF11}", false, false), ("::\u{0661}", true, false),
+            ("127.0.0.1\u{301}", false, false), ("fe80::1%\u{00E9}n0", true, false),
+            // IPv4 defects.
+            ("010.0.0.1", false, false), ("127.0.0.01", false, false), ("00.0.0.0", false, false),
+            ("256.0.0.1", false, false), ("1.2.3.999", false, false), ("1234.0.0.1", false, false),
+            ("127.0.1", false, false), ("127.0.0.1.5", false, false), ("127..0.1", false, false),
+            (".127.0.0.1", false, false), ("127.0.0.1.", false, false), ("", false, false), ("a.b.c.d", false, false),
+            ("+1.0.0.1", false, false),
+            // IPv6 defects.
+            ("00000::1", true, false), ("12345::1", true, false), ("1::2::3", true, false), ("::1::", true, false),
+            ("1:2:3:4:5:6:7:8:9", true, false), ("1:2:3:4:5:6:7", true, false), ("1:2:3:4:5:6:7:8::", true, false),
+            ("::1:2:3:4:5:6:7:8", true, false), ("1:2:3:4::5:6:7:8", true, false), ("zz::1", true, false),
+            ("fe8g::1", true, false), (":::", true, false), (":::1", true, false), ("1:::2", true, false),
+            (":1::2", true, false), ("1::2:", true, false), (":1:2:3:4:5:6:7:8", true, false),
+            ("1:2:3:4:5:6:7:8:", true, false), ("", true, false), ("127.0.0.1", true, false),
+            ("::ffff:010.0.0.1", true, false), ("::ffff:256.0.0.1", true, false), ("::127.0.0.1:1", true, false),
+            ("1.2.3.4::", true, false), ("1:2:3:4:5:6:7:1.2.3.4", true, false), ("[::1", true, false),
+            // Scope defects.
+            ("fe80::1%", true, false), ("fe80::1%en 0", true, false), ("fe80::1%%en0", true, false),
+            ("fe80::1%en0%1", true, false), ("fe80::1%en-0", true, false), ("%en0", true, false),
+        ]
+        let good = "127.0.0.1:50217"
+        let server = "n127.0.0.1:19011->10.0.0.50:61000"
+        for (host, v6, ok) in hosts {
+            let endpoint = v6 ? "[\(host)]:50217" : "\(host):50217"
+            #expect((ConnectionCount.port(of: Substring(endpoint)) == 50217) == ok, "\(endpoint.debugDescription)")
+            #expect((v6 ? ConnectionCount.isIPv6(Substring(host)) : ConnectionCount.isIPv4(Substring(host))) == ok)
+            for name in ["\(endpoint)->\(good)", "\(good)->\(endpoint)"] {
+                let output = "p162\nf4\n\(server)\nf5\nn\(name)\n"
+                let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]
+                #expect(got == (ok ? .known(1) : .unknown), "\(name.debugDescription)")
+                #expect((ConnectionCount.rows(output) == nil) == !ok, "\(name.debugDescription): rows")
+            }
+        }
+    }
+
+    /// An accepted endpoint is pure ASCII, so the own-socket mirror match compares bytes: the
+    /// app's probe on a scoped or v4-mapped address still excludes its server row, and only it.
+    @Test func theMirrorExclusionHoldsOnEveryAcceptedEndpointForm() {
+        for (server, client) in [
+            ("127.0.0.1:19011", "127.0.0.1:51000"), ("[::1]:19011", "[::1]:51000"),
+            ("[fe80:19::1]:19011", "[fe80:19::2]:51000"), ("[fe80::1%en0]:19011", "[fe80::2%en0]:51000"),
+            ("[::ffff:127.0.0.1]:19011", "[::ffff:127.0.0.1]:51000"),
+        ] {
+            let output = "p162\nf4\nn\(server)->\(client)\nf5\nn\(server)->10.0.0.50:51000\np300\nf9\nn\(client)->\(server)\n"
+            #expect(Self.count(Self.known(output: output, ports: [19011], appPid: 300), 19011) == 1, "\(server)")
+        }
+    }
+
     /// The whole `n` name grammar, one side at a time: every endpoint shape against a valid other
     /// side, in both positions, plus the arrow and the whole line. A name is a row only when it is
     /// exactly `<endpoint>-><endpoint>`; anything else makes the whole output unknown, never a

@@ -117,7 +117,8 @@ for running both.
   fds of one process counts once. `lsof` output the parser cannot fully account for counts as
   unreadable (asks): any malformed or unknown line, or a process with no readable socket. A
   socket name must be one `->` between two endpoints. Each is exactly `<IPv4>:<port>` or
-  `[<IPv6>]:<port>`, with a port of 1-65535. Loopback
+  `[<IPv6>]:<port>`, with a port of 1-65535. The check uses no C parser. It allows ASCII
+  only, no leading zero in an octet or port, and 1-4 hex digits a group. Loopback
   tunnels (for example SSH) count as clients. A half-open connection
   from a vanished peer keeps counting until the server's keepalive reaps it (about
   140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`

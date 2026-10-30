@@ -289,9 +289,11 @@ stderr is `lsof`'s "nothing matched" and counts zero. One walk of lsof's `-Fpn` 
 (`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
 one or more file records, each an `f<fd>` followed by exactly one `n` socket record. That
 record is one `->` between two whole endpoints, each `<IPv4>:<port>` or `[<IPv6>]:<port>`
-(port 1-65535, `ConnectionCount.port(of:)`). Any other line, an `f` without its `n`, an `n` without its `f`, or a process with
-no file record gives no rows, and `ConnectionCount.clientCounts(lsofOutput:ports:appPid:)` turns that into
-an unknown count for every port (asks); empty output is zero. Loopback
+(port 1-65535, `ConnectionCount.port(of:)`). That check uses no C parser. It allows ASCII only,
+no leading zero in an octet or port, and 1-4 hex digits a group. Any other line gives no rows.
+So does an `f` without its `n`, or an `n` without its `f`. So does a process with no file
+record. `ConnectionCount.clientCounts(lsofOutput:ports:appPid:)` turns no rows into an unknown
+count for every port (asks). Empty output is zero. Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
 140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
 here). External servers are not counted or stopped.

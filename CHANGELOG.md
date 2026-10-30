@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The killed `lsof` is reaped within 0.2 s, else by a background reaper.
   A launch failure, signal death or any stderr also asks. So does an exit other than 0 (or 1 with no output).
   So does a pipe held open past the deadline.
+  So does any malformed or unknown `lsof` line, or a process with no readable socket.
   So does a socket name that is not two whole IPv4 or bracketed IPv6 endpoints joined by one `->`.
+  Endpoints are checked without a C parser: ASCII only, no leading zero in an octet or port.
   Exit 1 with no output is zero.
   System-initiated quits are not asked, but that exemption rests on a provisional quit-reason code table (the
   documented Apple Event codes, not yet observed): a manual Log Out / Restart / Shut Down check has not run.
