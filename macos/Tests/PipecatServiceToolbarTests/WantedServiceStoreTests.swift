@@ -111,7 +111,7 @@ import Testing
                 defaults.removePersistentDomain(forName: name)
                 let userDefaults = UserDefaultsWantedServiceStore(defaults: defaults)
                 Self.seed(defaults, seed)
-                let memory = ServiceDriverTests.MemoryWantedStore(seed)
+                let memory = MemoryWantedStore(seed)
                 let stores: [any WantedServiceStore] = [memory, userDefaults]
                 for store in stores {
                     let cell = "\(type(of: store)) present=\(present) set=\(wanted)"

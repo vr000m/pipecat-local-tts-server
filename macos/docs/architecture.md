@@ -504,9 +504,11 @@ State is rebuilt from disk on every launch, never persisted:
 - **Weights:** an offline `prefetch --check`.
 - **Apple Speech:** `AssetInventory.status`.
 
-Running state is never restored, because every server the app starts dies with
-it. A server the app did not start is not restored either: discovery finds it again
-at launch and shows it as External (Quit leaves it running).
+Live process state is never persisted: every server the app starts dies with it. What
+is persisted is the wanted set (`restore.wanted`), and the next launch restarts those
+services (see [Restore and quit guard](#restore-and-quit-guard)). A server the app did not
+start is never restored: discovery finds it again at launch and shows it as External (Quit
+leaves it running).
 
 ### Delete
 

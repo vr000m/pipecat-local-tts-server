@@ -12,7 +12,8 @@ import Testing
     static let ports = [19011, 19012]
 
     /// Runs `script` under `/bin/sh -c` in place of lsof, with `$1` a file the script may write its pid to.
-    static func run(_ script: String, timeout: TimeInterval = 2) throws -> (
+    static func run(_ script: String, timeout: TimeInterval = 2, ports: [Int] = PortProbeClientCountsTests.ports)
+        throws -> (
         counts: [Int: ClientCount], seconds: Double, pid: Int32?
     ) {
         let dir = FileManager.default.temporaryDirectory.appending(path: "clientcounts-\(UUID().uuidString)")
@@ -74,6 +75,16 @@ import Testing
         #expect(result.counts == [19011: .known(1), 19012: .known(0)])
         #expect(result.seconds < 1.5)
         if let pid = result.pid { #expect(Self.gone(pid, within: 0.3)) }
+    }
+
+    /// A repeated port in the argument is one entry in the answer, not a trap
+    /// (`Dictionary(uniqueKeysWithValues:)` crashes the process on a duplicate key).
+    @Test func aRepeatedPortIsOneEntryNotATrap() throws {
+        let valid = "printf 'p500\\nf4\\nn127.0.0.1:19011->10.0.0.50:61000\\n'"
+        let counted = try Self.run(valid, ports: [19011, 19012, 19011])
+        #expect(counted.counts == [19011: .known(1), 19012: .known(0)])
+        let hung = try Self.run("exec /bin/sleep 30", timeout: 0.3, ports: [19011, 19011])
+        #expect(hung.counts == [19011: .unknown])
     }
 
     /// Exit 1 with nothing on either stream is lsof's "nothing matched": zero, not unknown.

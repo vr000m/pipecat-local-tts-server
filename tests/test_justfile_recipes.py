@@ -1291,7 +1291,11 @@ def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
         _MACOS / "Sources" / "PipecatToolbarCore" / "WantedServiceStore.swift"
     ).read_text()
     wanted_m = re.search(r'static let key = "([\w.]+)"', wanted_swift)
-    restore_m = re.search(r'static let key = "([\w.]+)"', swift)
+    # Anchored on the declaring type, so the key found is RestorePreference's whatever else the
+    # file gains or however it is ordered.
+    restore_m = re.search(
+        r'enum RestorePreference\b[^{]*\{[^}]*?static let key = "([\w.]+)"', swift
+    )
     assert wanted_m and restore_m, "WantedServiceStore.key / RestorePreference.key not found"
     wanted_key, restore_key = wanted_m.group(1), restore_m.group(1)
 

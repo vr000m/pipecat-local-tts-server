@@ -145,6 +145,17 @@ import Testing
         }
     }
 
+    /// A repeated port in `ports` is one entry in the answer, for a counted run and for an
+    /// unreadable one: `Dictionary(uniqueKeysWithValues:)` would trap the process on a duplicate.
+    @Test func aRepeatedPortIsOneEntryNotATrap() {
+        let row = "p162\nf4\nn127.0.0.1:19011->10.0.0.50:61000\n"
+        let ports = [19011, 19999, 19011]
+        #expect(
+            ConnectionCount.clientCounts(lsofOutput: row, ports: ports, appPid: 1) == [19011: .known(1), 19999: .known(0)])
+        #expect(
+            ConnectionCount.clientCounts(lsofOutput: "garbage\n", ports: ports, appPid: 1) == [19011: .unknown, 19999: .unknown])
+    }
+
     /// Every short line sequence over the grammar's tokens, judged by a regular expression over
     /// the token letters (`^(p(fn)+)*$`, written apart from the parser's state machine): a count
     /// is known exactly when the sequence matches, and then it is the number of distinct

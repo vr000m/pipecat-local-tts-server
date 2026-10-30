@@ -88,7 +88,8 @@ public enum PortProbe {
     static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval, executable: URL, arguments: [String]
     ) -> [Int: ClientCount] {
-        let unknown = Dictionary(uniqueKeysWithValues: ports.map { ($0, ClientCount.unknown) })
+        // A repeated port collapses to one entry: `uniqueKeysWithValues` would trap on it.
+        let unknown = Dictionary(ports.map { ($0, ClientCount.unknown) }, uniquingKeysWith: { first, _ in first })
         guard !ports.isEmpty else { return [:] }
         let process = Process()
         process.executableURL = executable

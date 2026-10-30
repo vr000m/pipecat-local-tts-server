@@ -1042,20 +1042,6 @@ import Testing
 
     // MARK: - The persisted wanted set
 
-    /// An in-memory `WantedServiceStore`.
-    final class MemoryWantedStore: WantedServiceStore, @unchecked Sendable {
-        private let lock = NSLock()
-        private var set: Set<Service>
-        init(_ initial: Set<Service> = []) { set = initial }
-        var current: Set<Service> { lock.withLock { set } }
-        func read() -> Set<Service> { lock.withLock { set } }
-        func removeAll() { lock.withLock { set = [] } }
-        func contains(_ service: Service) -> Bool { lock.withLock { set.contains(service) } }
-        func setWanted(_ wanted: Bool, for service: Service) {
-            lock.withLock { if wanted { set.insert(service) } else { set.remove(service) } }
-        }
-    }
-
     /// An environment whose install fails.
     struct FailingInstallEnvironment: ServiceEnvironment {
         struct Boom: Error {}
@@ -1335,19 +1321,7 @@ import Testing
     /// The driver changes its own flag only through the per-service operations: a store that
     /// records whole-set `read` calls sees none (the protocol has no whole-set write to call).
     @Test func theDriverNeverReadsOrWritesTheWholeSet() async {
-        final class SpyStore: WantedServiceStore, @unchecked Sendable {
-            private let lock = NSLock()
-            private(set) var wholeSetCalls = 0
-            private var set: Set<Service> = [.kokoro]
-            func read() -> Set<Service> { lock.withLock { wholeSetCalls += 1; return set } }
-            func removeAll() { lock.withLock { set = [] } }
-            func contains(_ service: Service) -> Bool { lock.withLock { set.contains(service) } }
-            func setWanted(_ wanted: Bool, for service: Service) {
-                lock.withLock { if wanted { set.insert(service) } else { set.remove(service) } }
-            }
-            var current: Set<Service> { lock.withLock { set } }
-        }
-        let spy = SpyStore()
+        let spy = MemoryWantedStore([.kokoro])
         var deps = ServiceDependencies()
         deps.isPortFree = { _ in true }
         let process = FakeProcess()
@@ -1361,6 +1335,6 @@ import Testing
         driver.stop()
         await until { driver.state.phase == .installed }
         #expect(spy.current == [.kokoro])
-        #expect(spy.wholeSetCalls == 0, "the driver did a whole-set read")
+        #expect(spy.wholeSetReads == 0, "the driver did a whole-set read")
     }
 }
