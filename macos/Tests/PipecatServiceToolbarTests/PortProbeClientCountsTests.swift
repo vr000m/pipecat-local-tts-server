@@ -31,8 +31,8 @@ import Testing
         return (counts, seconds, pid)
     }
 
-    /// Whether `pid` is gone (ESRCH), polled for at most `within` seconds: a SIGKILLed child is
-    /// reaped by Foundation's exit source a moment after the signal, not on the same instruction.
+    /// Whether `pid` is gone (ESRCH), polled for at most `within` seconds. An unreaped zombie still
+    /// holds its pid (`kill(pid, 0)` succeeds), so this is false until the child is reaped too.
     static func gone(_ pid: Int32, within: Double) -> Bool {
         let until = Date().addingTimeInterval(within)
         repeat {
@@ -116,6 +116,128 @@ import Testing
     func aSignalKilledRunIsUnknown(signal: String, output: String) throws {
         let result = try Self.run("\(output)kill -\(signal) $$")
         #expect(result.counts == Self.allUnknown, "SIG\(signal), output '\(output)'")
+    }
+
+    /// Polls `waitid(WNOHANG | WNOWAIT)`, which never reaps, until `pid` has exited: true when it is
+    /// then still an unreaped child of this process (a zombie holding its pid), false when it is
+    /// not (already reaped, its pid free for reuse), nil when it was still running at `within`.
+    static func exitedUnreaped(_ pid: pid_t, within: Double) -> Bool? {
+        let until = Date().addingTimeInterval(within)
+        repeat {
+            var info = siginfo_t()
+            if waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == -1 {
+                if errno == EINTR { continue }
+                return false
+            }
+            if info.si_pid == pid { return true }
+            usleep(5_000)
+        } while Date() < until
+        return nil
+    }
+
+    /// The pid-reuse race: a child that exits at the deadline, between the wait timing out and the
+    /// SIGKILL, must still hold its pid when the signal is sent, so the signal cannot reach a new
+    /// process given that pid. The hook runs at the deadline, before the kill, and waits there
+    /// for the child to exit: the child must then be a zombie only this call reaps (a `Process`
+    /// reaps it on its own queue at once, freeing the pid before the kill). The call then reaps it.
+    @Test func aChildThatExitsAtTheDeadlineStillHoldsItsPidWhenSignalled() {
+        var atKill: Bool?
+        var childPid: pid_t = 0
+        let start = Date()
+        let counts = PortProbe.clientCounts(
+            ports: Self.ports, appPid: 1, timeout: 0.3, executable: URL(filePath: "/bin/sh"),
+            arguments: ["-c", "/bin/sleep 0.6"]
+        ) { pid in
+            childPid = pid
+            atKill = Self.exitedUnreaped(pid, within: 3)
+        }
+        #expect(atKill == true, "the child was reaped before the SIGKILL (nil: it never exited)")
+        #expect(counts == Self.allUnknown)
+        #expect(childPid > 0 && Self.gone(childPid, within: 0.05), "clientCounts left the child unreaped")
+        #expect(Date().timeIntervalSince(start) < 2)
+    }
+
+    /// The whole state space of one run, each cell through the real spawn, wait and reap: how it
+    /// ends (exit 0, 1, 2, a signal, the deadline) x stdout (none, a valid row) x stderr (none,
+    /// a warning). Known only for exit 0 with no stderr, and exit 1 with nothing on either
+    /// stream; everything else is unknown. In every cell the child is reaped by the time the call
+    /// returns (a killed one within `reapGrace`), never left a zombie.
+    @Test func everyCellOfTheRunStateSpace() throws {
+        let row = "printf 'p500\\nf4\\nn127.0.0.1:19011->10.0.0.50:61000\\n'; "
+        let zero: [Int: ClientCount] = [19011: .known(0), 19012: .known(0)]
+        let one: [Int: ClientCount] = [19011: .known(1), 19012: .known(0)]
+        let endings = ["exit 0", "exit 1", "exit 2", "kill -HUP $$", "exec /bin/sleep 5"]
+        for ending in endings {
+            for stdout in ["", row] {
+                for stderr in ["", "echo 'lsof: WARNING' >&2; "] {
+                    let deadline = ending.hasPrefix("exec")
+                    let expected: [Int: ClientCount] =
+                        switch (ending, stdout.isEmpty, stderr.isEmpty) {
+                        case ("exit 0", true, true): zero
+                        case ("exit 0", false, true): one
+                        case ("exit 1", true, true): zero
+                        default: Self.allUnknown
+                        }
+                    let script = "echo $$ > \"$1\"; \(stdout)\(stderr)\(ending)"
+                    let result = try Self.run(script, timeout: deadline ? 0.3 : 2)
+                    let cell = "\(ending) / stdout '\(stdout)' / stderr '\(stderr)'"
+                    #expect(result.counts == expected, "\(cell)")
+                    let pid = try #require(result.pid, "\(cell): the script never wrote its pid")
+                    #expect(Self.gone(pid, within: 0.05), "\(cell): the child was not reaped")
+                }
+            }
+        }
+    }
+
+    /// Every unknown answer is the one map, from either entry point, for a repeated port too.
+    @Test func everyUnknownAnswerIsOneMapForARepeatedPort() throws {
+        let ports = [19011, 19012, 19011]
+        let expected: [Int: ClientCount] = [19011: .unknown, 19012: .unknown]
+        #expect(ConnectionCount.unknown(ports: ports) == expected)
+        #expect(ConnectionCount.clientCounts(lsofOutput: "garbage\n", ports: ports, appPid: 1) == expected)
+        #expect(try Self.run("printf 'garbage\\n'", ports: ports).counts == expected)
+        #expect(try Self.run("exit 2", ports: ports).counts == expected)
+        #expect(try Self.run("exec /bin/sleep 5", timeout: 0.3, ports: ports).counts == expected)
+        let unlaunched = PortProbe.clientCounts(
+            ports: ports, appPid: 1, timeout: 2, executable: URL(filePath: "/nonexistent/lsof"), arguments: [])
+        #expect(unlaunched == expected)
+    }
+
+    /// `exitCode(waitStatus:)` against real statuses: an exit code, or nil for a signal death.
+    @Test func exitCodeDecodesWaitStatuses() {
+        #expect(PortProbe.exitCode(waitStatus: 0) == 0)
+        #expect(PortProbe.exitCode(waitStatus: 1 << 8) == 1)
+        #expect(PortProbe.exitCode(waitStatus: 255 << 8) == 255)
+        #expect(PortProbe.exitCode(waitStatus: SIGHUP) == nil)
+        #expect(PortProbe.exitCode(waitStatus: SIGKILL | 0x80) == nil)  // core dumped
+    }
+
+    /// The child sees exactly the scrubbed base environment (plus what sh itself sets), stdin at
+    /// EOF, and none of the parent's other descriptors (fds 3 to 9 are closed; macOS's /bin/sh
+    /// opens fd 10 for itself, even run from a terminal with nothing else open).
+    @Test func theChildGetsTheBaseEnvironmentNullStdinAndNoOtherDescriptors() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "clientcounts-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = """
+            /usr/bin/env > "$1/env"; /bin/cat > "$1/stdin"; : > "$1/fds"
+            for fd in 3 4 5 6 7 8 9; do if (: <&$fd) 2>/dev/null; then echo $fd >> "$1/fds"; fi; done
+            exit 1
+            """
+        let counts = PortProbe.clientCounts(
+            ports: Self.ports, appPid: 1, timeout: 2, executable: URL(filePath: "/bin/sh"),
+            arguments: ["-c", script, "sh", dir.path])
+        #expect(counts == [19011: .known(0), 19012: .known(0)])
+        let shell: Set = ["PWD", "SHLVL", "_", "OLDPWD"]
+        let lines = try String(contentsOf: dir.appending(path: "env"), encoding: .utf8).split(separator: "\n")
+        var env: [String: String] = [:]
+        for line in lines {
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            env[String(line[..<eq])] = String(line[line.index(after: eq)...])
+        }
+        #expect(env.filter { !shell.contains($0.key) } == ProcessEnvironment.base().filter { !shell.contains($0.key) })
+        #expect(try Data(contentsOf: dir.appending(path: "stdin")).isEmpty)
+        #expect(try String(contentsOf: dir.appending(path: "fds"), encoding: .utf8) == "")
     }
 
     /// A command that cannot be launched is unknown, at once.

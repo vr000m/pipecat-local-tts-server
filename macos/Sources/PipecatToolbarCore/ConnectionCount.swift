@@ -102,10 +102,8 @@ public enum ConnectionCount {
     /// The quit guard's count per port in `ports` from one lsof output: `.known` only when `rows`
     /// accounts for every line, else `.unknown` for every port. Every port gets an entry.
     public static func clientCounts(lsofOutput output: String, ports: [Int], appPid: Int32) -> [Int: ClientCount] {
+        guard let all = rows(output) else { return unknown(ports: ports) }
         // A repeated port collapses to one entry: `uniqueKeysWithValues` would trap on it.
-        guard let all = rows(output) else {
-            return Dictionary(ports.map { ($0, ClientCount.unknown) }, uniquingKeysWith: { first, _ in first })
-        }
         var counts = Dictionary(ports.map { ($0, 0) }, uniquingKeysWith: { first, _ in first })
         // The app's own client sockets to an owned server, keyed by (its local, its peer) endpoint.
         let own = Set(
@@ -116,5 +114,12 @@ public enum ConnectionCount {
             counts[row.localPort, default: 0] += 1
         }
         return counts.mapValues { .known($0) }
+    }
+
+    /// `.unknown` for every port in `ports`: the answer whenever no count can be trusted, from
+    /// the parse here and from every failed `PortProbe.clientCounts` run. A repeated port
+    /// collapses to one entry (`uniqueKeysWithValues` would trap on it).
+    static func unknown(ports: [Int]) -> [Int: ClientCount] {
+        Dictionary(ports.map { ($0, ClientCount.unknown) }, uniquingKeysWith: { first, _ in first })
     }
 }
