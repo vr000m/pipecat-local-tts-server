@@ -151,7 +151,8 @@ public final class ServiceDriver {
 
     /// The one place an event reaches the reducer: the service's persisted wanted flag follows
     /// `WantedTransition` from the event, the phase before and after and `quitting` (after quit
-    /// began only a Stop or Delete moves it), and is written only when it changes, through the
+    /// began only a Stop moves it: `remove()` and the other intents are refused here, and
+    /// `WantedTransition.rule` keeps every other kind), and is written only when it changes, through the
     /// store's per-service operations (other services' flags are never touched).
     private func reduce(_ event: LifecycleEvent) -> [LifecycleEffect] {
         let before = state.phase

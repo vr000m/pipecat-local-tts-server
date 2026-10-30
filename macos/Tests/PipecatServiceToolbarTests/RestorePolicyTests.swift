@@ -113,20 +113,21 @@ import Testing
 
     // MARK: - WantedTransition: one row per Kind
 
-    /// What the flag does for each event kind, written independently of `WantedTransition`.
-    /// The switch is exhaustive: a new `LifecycleEvent.Kind` fails to compile until it is decided here.
+    /// What the flag does for each event kind before quit and after, written independently of
+    /// `WantedTransition`. The switch is exhaustive: a new `LifecycleEvent.Kind` fails to compile
+    /// until both of its effects are decided here.
     enum Effect { case keep, clear, setOnNewlyRunning }
 
-    static func expected(_ kind: LifecycleEvent.Kind) -> Effect {
+    static func expected(_ kind: LifecycleEvent.Kind) -> (normal: Effect, quitting: Effect) {
         switch kind {
-        case .stopRequested, .removeRequested: .clear
-        case .ready, .nativeBound: .setOnNewlyRunning
+        case .stopRequested, .removeRequested: (.clear, .clear)
+        case .ready, .nativeBound: (.setOnNewlyRunning, .keep)
         case .refreshRequested, .environmentRead, .refreshed, .environmentChanged, .installRequested,
             .cancelInstallRequested, .installStage, .installEnded, .appleSpeechInstallEnded, .startRequested,
             .portOwnerFound, .launched, .launchFailed, .nativeLaunched, .nativeFailed, .supervisedError,
             .readyTimedOut, .exited, .shutdownRequested, .shutdownServers, .removalResumed, .removalFailed,
             .removalFinished, .dismissFailure, .externalFound, .externalLost, .startProbeResult, .tryItRequested:
-            .keep
+            (.keep, .keep)
         }
     }
 
@@ -145,15 +146,14 @@ import Testing
                             let entersFailed = !Self.isFailed(before) && Self.isFailed(after)
                             let entersRunning = before != .running && after == .running
                             let want: Bool
-                            if quitting, Self.expected(kind) != .clear {
-                                want = wanted  // (0) after quit began only a Stop or Delete moves it
-                            } else if entersFailed {
-                                want = false  // (1) any route into .failed clears
+                            if !quitting, entersFailed {
+                                want = false  // before quit, any route into .failed clears
                             } else {
-                                switch Self.expected(kind) {
-                                case .clear: want = false  // (2), (3)
-                                case .setOnNewlyRunning: want = entersRunning ? true : wanted  // (4)
-                                case .keep: want = wanted  // (5)
+                                // After quit began the failure rule is off and only Stop or Delete clears.
+                                switch quitting ? Self.expected(kind).quitting : Self.expected(kind).normal {
+                                case .clear: want = false
+                                case .setOnNewlyRunning: want = entersRunning ? true : wanted
+                                case .keep: want = wanted
                                 }
                             }
                             #expect(got == want, "\(label)")
@@ -164,6 +164,21 @@ import Testing
         }
     }
 
+    /// Each kind's two effects, as `WantedTransition.rule` states them.
+    @Test func everyKindChoosesItsEffectBeforeAndAfterQuit() {
+        func core(_ effect: Effect) -> WantedTransition.Effect {
+            switch effect {
+            case .keep: .keep
+            case .clear: .clear
+            case .setOnNewlyRunning: .setWhenNewlyRunning
+            }
+        }
+        for kind in LifecycleEvent.Kind.allCases {
+            let want = Self.expected(kind)
+            #expect(WantedTransition.rule(kind) == .init(normal: core(want.normal), quitting: core(want.quitting)), "\(kind)")
+        }
+    }
+
     static func isFailed(_ phase: ServicePhase) -> Bool {
         if case .failed = phase { return true }
         return false
@@ -171,15 +186,16 @@ import Testing
 
     @Test func aPhaseThatWasAlreadyFailedDoesNotClearByItself() {
         // Precedence (1) is the change into .failed; a failed-to-failed event falls to the kind rules.
-        #expect(WantedTransition.next(wanted: true, kind: .dismissFailure, before: Self.failed, after: Self.failed))
-        #expect(!WantedTransition.next(wanted: true, kind: .stopRequested, before: Self.failed, after: Self.failed))
+        #expect(WantedTransition.next(wanted: true, kind: .dismissFailure, before: Self.failed, after: Self.failed, quitting: false))
+        #expect(!WantedTransition.next(wanted: true, kind: .stopRequested, before: Self.failed, after: Self.failed, quitting: false))
     }
 
     @Test func readyOrNativeBoundSetsOnlyOnANewRunningPhase() {
         for kind in [LifecycleEvent.Kind.ready, .nativeBound] {
-            #expect(WantedTransition.next(wanted: false, kind: kind, before: .starting, after: .running), "\(kind)")
-            #expect(!WantedTransition.next(wanted: false, kind: kind, before: .running, after: .running), "\(kind) stale")
-            #expect(!WantedTransition.next(wanted: false, kind: kind, before: .stopping, after: .stopping), "\(kind) stale")
+            #expect(WantedTransition.next(wanted: false, kind: kind, before: .starting, after: .running, quitting: false), "\(kind)")
+            #expect(!WantedTransition.next(wanted: false, kind: kind, before: .running, after: .running, quitting: false), "\(kind) stale")
+            #expect(!WantedTransition.next(wanted: false, kind: kind, before: .stopping, after: .stopping, quitting: false), "\(kind) stale")
+            #expect(!WantedTransition.next(wanted: false, kind: kind, before: .starting, after: .running, quitting: true), "\(kind) during quit")
         }
     }
 
@@ -187,10 +203,12 @@ import Testing
 
     /// Reduces `event` and folds the flag, as the driver's one reduce wrapper does.
     @discardableResult
-    static func step(_ s: inout LifecycleState, _ wanted: inout Bool, _ event: LifecycleEvent) -> [LifecycleEffect] {
+    static func step(
+        _ s: inout LifecycleState, _ wanted: inout Bool, _ event: LifecycleEvent, quitting: Bool
+    ) -> [LifecycleEffect] {
         let before = s.phase
         let effects = ServiceLifecycle.reduce(&s, event)
-        wanted = WantedTransition.next(wanted: wanted, kind: event.kind, before: before, after: s.phase)
+        wanted = WantedTransition.next(wanted: wanted, kind: event.kind, before: before, after: s.phase, quitting: quitting)
         return effects
     }
 
@@ -203,46 +221,47 @@ import Testing
     @Test func startThenQuitKeepsTheFlag() {
         var s = Self.starting()
         var wanted = false
-        Self.step(&s, &wanted, Self.ready)
+        Self.step(&s, &wanted, Self.ready, quitting: false)
         #expect(s.phase == .running && wanted)
-        Self.step(&s, &wanted, .shutdownRequested)
-        Self.step(&s, &wanted, .shutdownServers)
+        // `ServiceDriver.quit()` sets `quitting` before it dispatches the shutdown events.
+        Self.step(&s, &wanted, .shutdownRequested, quitting: true)
+        Self.step(&s, &wanted, .shutdownServers, quitting: true)
         #expect(wanted, "Quit does not forget what was running")
-        Self.step(&s, &wanted, .exited(ServiceLifecycleTests.current, status: 0, logTail: []))
+        Self.step(&s, &wanted, .exited(ServiceLifecycleTests.current, status: 0, logTail: []), quitting: true)
         #expect(wanted, "the exit after a requested stop keeps the flag")
     }
 
     @Test func startThenAStopClickClears() {
         var s = Self.starting()
         var wanted = false
-        Self.step(&s, &wanted, Self.ready)
+        Self.step(&s, &wanted, Self.ready, quitting: false)
         #expect(wanted)
-        Self.step(&s, &wanted, .stopRequested)
+        Self.step(&s, &wanted, .stopRequested, quitting: false)
         #expect(!wanted)
-        Self.step(&s, &wanted, .exited(ServiceLifecycleTests.current, status: 0, logTail: []))
+        Self.step(&s, &wanted, .exited(ServiceLifecycleTests.current, status: 0, logTail: []), quitting: false)
         #expect(!wanted, "the exit after the click does not set it again")
     }
 
     @Test func aStopClickWhileStartingClears() {
         var s = Self.starting()
         var wanted = true  // restored from the persisted set
-        Self.step(&s, &wanted, .stopRequested)
+        Self.step(&s, &wanted, .stopRequested, quitting: false)
         #expect(!wanted)
     }
 
     @Test func aStaleReadyAfterStopLeavesTheFlagUnchanged() {
         var s = ServiceLifecycleTests.state(.running)
         var wanted = true
-        Self.step(&s, &wanted, .stopRequested)
+        Self.step(&s, &wanted, .stopRequested, quitting: false)
         #expect(!wanted)
         let phase = s.phase
-        Self.step(&s, &wanted, Self.ready)
+        Self.step(&s, &wanted, Self.ready, quitting: false)
         #expect(s.phase == phase, "the reducer drops a ready outside .starting")
         #expect(!wanted, "a stale ready never sets")
         // And a stale ready on a still-running service keeps a set flag set.
         var running = ServiceLifecycleTests.state(.running)
         var kept = true
-        Self.step(&running, &kept, Self.ready)
+        Self.step(&running, &kept, Self.ready, quitting: false)
         #expect(kept)
     }
 
@@ -250,7 +269,7 @@ import Testing
         var s = ServiceLifecycleTests.state(.starting, server: nil)
         s.probe = ServiceLifecycleTests.probeTag
         var wanted = true
-        Self.step(&s, &wanted, .portOwnerFound(PortProbe.Owner(pid: 42, command: "stranger"), probe: ServiceLifecycleTests.probeTag))
+        Self.step(&s, &wanted, .portOwnerFound(PortProbe.Owner(pid: 42, command: "stranger"), probe: ServiceLifecycleTests.probeTag), quitting: false)
         #expect(Self.isFailed(s.phase))
         #expect(!wanted, "a stranger on the port clears the restored flag")
     }
@@ -262,7 +281,7 @@ import Testing
             &s, &wanted,
             .installEnded(
                 .failed(stage: .packages, message: "no network", logTail: []), then: .refreshThenStart,
-                install: ServiceLifecycleTests.installTag))
+                install: ServiceLifecycleTests.installTag), quitting: false)
         #expect(Self.isFailed(s.phase))
         #expect(!wanted)
     }
@@ -270,7 +289,7 @@ import Testing
     @Test func aCrashWhileRunningClears() {
         var s = ServiceLifecycleTests.state(.running)
         var wanted = true
-        Self.step(&s, &wanted, .exited(ServiceLifecycleTests.current, status: 1, logTail: []))
+        Self.step(&s, &wanted, .exited(ServiceLifecycleTests.current, status: 1, logTail: []), quitting: false)
         #expect(Self.isFailed(s.phase))
         #expect(!wanted, "a crashed server is not restarted on every launch")
     }
@@ -278,7 +297,7 @@ import Testing
     @Test func removingAServiceClears() {
         var s = ServiceLifecycleTests.state(.installed)
         var wanted = true
-        Self.step(&s, &wanted, .removeRequested(deleteModel: true, managerAvailable: true))
+        Self.step(&s, &wanted, .removeRequested(deleteModel: true, managerAvailable: true), quitting: false)
         #expect(!wanted)
     }
 
@@ -286,12 +305,12 @@ import Testing
         var s = ServiceLifecycleTests.state(.installed, server: nil)
         var wanted = true
         s.externalEpoch = 9
-        Self.step(&s, &wanted, .externalFound(epoch: 9, info: ServiceLifecycleTests.externalInfo))
+        Self.step(&s, &wanted, .externalFound(epoch: 9, info: ServiceLifecycleTests.externalInfo), quitting: false)
         #expect(s.phase.isExternal && wanted, "an adopted server keeps a restored flag")
         var notWanted = false
         var other = ServiceLifecycleTests.state(.installed, server: nil)
         other.externalEpoch = 9
-        Self.step(&other, &notWanted, .externalFound(epoch: 9, info: ServiceLifecycleTests.externalInfo))
+        Self.step(&other, &notWanted, .externalFound(epoch: 9, info: ServiceLifecycleTests.externalInfo), quitting: false)
         #expect(other.phase.isExternal && !notWanted, "an adopted server is not ours: not set")
     }
 }

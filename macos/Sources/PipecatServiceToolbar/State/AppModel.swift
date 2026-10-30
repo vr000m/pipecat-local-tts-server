@@ -104,8 +104,10 @@ final class AppModel {
     var counts: ServiceCounts { ServiceCounts(services.map { $0.driver.state }) }
     /// Ports of the services the app started (server or native), keyed by service: what the
     /// quit guard counts clients on. External servers are not the app's to protect.
-    var ownedPorts: [Service: Int] {
-        ServiceCounts.ownedPorts(Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) }))
+    var ownedPorts: [Service: Int] { ServiceCounts.ownedPorts(states) }
+    /// Each service's lifecycle state, keyed by service (the quit guard's and the restore's input).
+    private var states: [Service: LifecycleState] {
+        Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) })
     }
 
     var anyActive: Bool { counts.active > 0 }
@@ -221,7 +223,6 @@ final class AppModel {
     private func restoreWantedServices() {
         guard RestorePolicy.shouldRun(alreadyRan: restoredThisProcess, phase: phase) else { return }
         restoredThisProcess = true
-        let states = Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) })
         let plan = RestorePolicy.plan(wanted: wantedStore.read(), states: states, preferenceOn: restoreOnLaunch)
         for model in services {
             switch plan[model.service] {

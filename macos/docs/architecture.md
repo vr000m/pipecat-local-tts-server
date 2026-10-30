@@ -229,13 +229,18 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
 ## Restore and quit guard
 
 **Wanted flag.** The app persists the set of services it should run (`restore.wanted`
-in `UserDefaults`, `WantedServiceStore`). Precedence per lifecycle phase change: a
-change into `failed` (from a phase that was not already `failed`) clears the flag,
-`stopRequested` clears it, `removeRequested` clears it, a service newly running (`ready`
-or `nativeBound` while the phase was not already `running`) sets it, anything else keeps
-it. Ahead of all of these, once quit began (`ServiceDriver.quitting`) every event but a Stop
-or Delete keeps it: a `ready` the shutdown drain still reads, or a failure the shutdown
-causes, never changes what the next launch restores. Reset clears the whole set.
+in `UserDefaults`, `WantedServiceStore`). `WantedTransition.rule` gives every event kind two
+effects in one exhaustive switch, one before quit began and one after, and `next` takes
+`quitting` with no default, so a new kind or caller must choose. Before quit: a change into
+`failed` (from a phase that was not already `failed`) clears the flag; otherwise
+`stopRequested` and `removeRequested` clear it, a service newly running (`ready` or
+`nativeBound` while the phase was not already `running`) sets it, anything else keeps it.
+Once quit began (`ServiceDriver.quitting`) the failure rule is off and only `stopRequested`
+and `removeRequested` clear; every other kind keeps, so a `ready` the shutdown drain still
+reads, or a failure the shutdown causes, never changes what the next launch restores. The
+driver refuses `remove()` and every other new intent but Stop once quitting, so in practice
+only a Stop moves the flag after Quit; which events can arrive is the driver's gate, what each
+does to the flag is only `WantedTransition`. Reset clears the whole set.
 
 **Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
 standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`
@@ -266,10 +271,12 @@ port, server-side rows minus the server-side mirror of the app's own client sock
 row is excluded only when its local and peer endpoints are the swapped endpoints of a row
 the app owns whose peer port is a requested service port; a bare port match is not used,
 because a remote client's ephemeral port could equal an app socket's port. A socket held
-on several fds of one process counts once. The count is known only when every line is
-accounted for (`ConnectionCount.isUnrecognised`): a `p<pid>`, an `f<fd>` after one, or an `n`
-socket record after one with a port on both ends, every process naming at least one socket;
-anything else is an unknown count for every port (asks). Loopback
+on several fds of one process counts once. One walk of lsof's `-Fpn` grammar
+(`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
+one or more file records, each an `f<fd>` followed by exactly one `n` socket record with a port
+on both ends. Any other line, an `f` without its `n`, an `n` without its `f`, or a process with
+no file record gives no rows, and `ConnectionCount.clientCounts(lsofOutput:)` turns that into
+an unknown count for every port (asks); empty output is zero. Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
 140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
 here). External servers are not counted or stopped.

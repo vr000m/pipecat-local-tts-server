@@ -250,7 +250,9 @@ with tone in the wanted set and restore on: it checks tone is still External, th
 no `restore: starting`, and no `tts_server`/`stt_server` process was started (the
 bootstrap's own probe children are normal, so it does not assert zero children). Steps 5
 and 6 are skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
-the repo `.venv` cannot import `tts_server`.
+the repo `.venv` cannot import `tts_server`. `LAUNCH_WAIT` (seconds, default 30) bounds the
+wait for the bootstrap to log its end and `QUIT_WAIT` (seconds, default 20) the wait for each
+quit to finish.
 The smoke runs under your real bundle id, so it must not read or write your wanted set:
 every launch gets `-restoreOnLaunch` and `-restore.wanted` as launch arguments and
 `PIPECAT_TOOLBAR_DEFAULTS_SUITE=<throwaway suite>` (`PreferencesDomain`, which scopes only
@@ -271,8 +273,8 @@ Manual UI checklist, for what needs a person (or a terminal granted Accessibilit
    Transcription shows the same match.
 4. Stop each: the port closes. Quit from the panel with Tone running and a client
    connected (a Pipecat bot, say): Quit asks first, and Cancel keeps everything running.
-   Quit again and choose Quit anyway (with no client connected it does not ask): within
-   ~10 s `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
+   Quit again and choose Quit anyway: within ~10 s `pgrep -fl "Pipecat Service Toolbar"`
+   and `lsof -nP -iTCP:8665` print nothing. (With no client connected, Quit does not ask.)
 5. Tone > Delete: the row returns to Install.
 
 To check the server side of the app's contract without the app, `just smoke-supervised

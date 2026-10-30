@@ -2,13 +2,24 @@ import Testing
 
 @testable import PipecatToolbarCore
 
-/// `ConnectionCount.parse`: the client count per owned port from one
-/// `lsof -nP -iTCP -sTCP:ESTABLISHED -Fpfn` output (`p<pid>`, then `f<fd>` and `n<local>-><peer>`
+/// `ConnectionCount.clientCounts(lsofOutput:)`: the client count per owned port from one
+/// `lsof -nP -iTCP -sTCP:ESTABLISHED -Fpn` output (`p<pid>`, then `f<fd>` and `n<local>-><peer>`
 /// per socket). The line shapes below were recorded from the real binary on loopback IPv4 and IPv6
 /// listeners with `nc` / python clients, and a client reaching a listener through the machine's own
 /// LAN address; only pids and ports were chosen by hand where a fixture combines several runs.
 @Suite struct ConnectionCountTests {
     static func count(_ result: [Int: Int], _ port: Int) -> Int { result[port] ?? 0 }
+
+    /// The counts of a fixture that fits the grammar; a fixture that does not is a test bug.
+    static func known(output: String, ports: [Int], appPid: Int32) -> [Int: Int] {
+        ConnectionCount.clientCounts(lsofOutput: output, ports: ports, appPid: appPid).compactMapValues {
+            guard case .known(let n) = $0 else {
+                Issue.record("fixture does not fit the lsof grammar: \(output.debugDescription)")
+                return nil
+            }
+            return n
+        }
+    }
 
     /// A server (pid 162) with two loopback clients (pids 205, 207) and an IPv6 one (pid 209),
     /// as recorded. Both sides of every connection appear.
@@ -36,7 +47,7 @@ import Testing
         """
 
     @Test func countsEachClientOfALoopbackServer() {
-        let result = ConnectionCount.parse(output: Self.loopback, ports: [19011, 19012], appPid: 1)
+        let result = Self.known(output: Self.loopback, ports: [19011, 19012], appPid: 1)
         #expect(Self.count(result, 19011) == 2)
         #expect(Self.count(result, 19012) == 1, "the bracketed IPv6 loopback row")
     }
@@ -55,33 +66,34 @@ import Testing
             n127.0.0.1:19011->127.0.0.1:50301
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 1)
+        #expect(Self.count(Self.known(output: output, ports: [19011], appPid: 1), 19011) == 1)
     }
 
     @Test func theSameEndpointsUnderTwoProcessesAreTwoHolders() {
         let output = """
             p162
+            f4
             n127.0.0.1:19011->127.0.0.1:50301
             p163
+            f4
             n127.0.0.1:19011->127.0.0.1:50301
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 2)
+        #expect(Self.count(Self.known(output: output, ports: [19011], appPid: 1), 19011) == 2)
     }
 
-    @Test func unrecognisedOutputIsFlaggedButEmptyAndNormalAreNot() {
-        #expect(ConnectionCount.isUnrecognised("COMMAND PID USER\nfoo 1 bar\n"))
-        #expect(ConnectionCount.isUnrecognised("n127.0.0.1:1->127.0.0.1:2\n"))
-        #expect(!ConnectionCount.isUnrecognised(""))
-        #expect(!ConnectionCount.isUnrecognised("\n"))
-        #expect(!ConnectionCount.isUnrecognised(Self.loopback))
+    @Test func unrecognisedOutputHasNoRowsButEmptyAndNormalDo() {
+        #expect(ConnectionCount.rows("COMMAND PID USER\nfoo 1 bar\n") == nil)
+        #expect(ConnectionCount.rows("n127.0.0.1:1->127.0.0.1:2\n") == nil)
+        #expect(ConnectionCount.rows("") == [])
+        #expect(ConnectionCount.rows("\n") == [])
+        #expect(ConnectionCount.rows(Self.loopback)?.count == 7)
     }
 
-    /// The quit guard's count (`counts`) is `.known` only when every record of the output is
-    /// accounted for: each line a `p<pid>`, an `f<fd>` after one, or an `n` socket record after one
-    /// with a port on both ends, and each process naming at least one socket. Anything else is
-    /// `.unknown` for every port: a partial or changed record must never read as "no clients".
-    /// Recognised outputs count exactly what `parse` counts.
+    /// The quit guard's count (`clientCounts`) is `.known` only when every line fits the grammar:
+    /// `p<pid>`, then one or more file records, each an `f<fd>` and exactly one `n` socket record
+    /// with a port on both ends. Anything else is `.unknown` for every port: a partial or changed
+    /// record must never read as "no clients".
     @Test func everyRecordMustBeAccountedForBeforeACountIsKnown() {
         let server = "n127.0.0.1:19011->127.0.0.1:50217"
         let client = "n127.0.0.1:50217->127.0.0.1:19011"
@@ -91,7 +103,6 @@ import Testing
             ("a bare newline", "\n", .known(0)),
             ("the recorded loopback listing", Self.loopback, .known(2)),
             ("a server and its client", "p162\nf4\n\(server)\np205\nf3\n\(client)\n", .known(1)),
-            ("no fd lines", "p162\n\(server)\n", .known(1)),
             ("a bracketed IPv6 row", "p162\nf4\nn[::1]:19011->[::1]:50219\n", .known(1)),
             (
                 "a scoped link-local row (recorded)",
@@ -116,21 +127,65 @@ import Testing
             ("an unknown field", "p162\nf4\n\(server)\nt0\n", .unknown),
             ("the human-readable format", "COMMAND PID USER\nfoo 1 bar\n", .unknown),
             ("a stray control line", "p162\nf4\n\(server)\n\u{0}\u{1}\n", .unknown),
+            // A file record with no socket name, after an earlier named one (Codex, round 2).
+            ("a later fd with no name", "p162\nf4\n\(server)\nf5\np205\nf3\n\(client)\n", .unknown),
+            ("a last fd with no name", "p162\nf4\n\(server)\nf5\n", .unknown),
+            ("an fd followed by an fd", "p162\nf4\nf5\n\(server)\n", .unknown),
+            ("two names for one fd", "p162\nf4\n\(server)\n\(server)\n", .unknown),
+            ("a name with no fd after a process", "p162\n\(server)\n", .unknown),
         ]
         for (name, output, expected) in cases {
-            let got = ConnectionCount.counts(output: output, ports: [19011, 19999], appPid: 1)
+            let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011, 19999], appPid: 1)
             #expect(got[19011] == expected, "\(name)")
             let other: ClientCount = expected == .unknown ? .unknown : .known(0)
             #expect(got[19999] == other, "\(name): the other owned port")
-            #expect(ConnectionCount.isUnrecognised(output) == (expected == .unknown), "\(name)")
-            if expected != .unknown {
-                #expect(got == ConnectionCount.parse(output: output, ports: [19011, 19999], appPid: 1).mapValues { .known($0) })
-            }
+            #expect((ConnectionCount.rows(output) == nil) == (expected == .unknown), "\(name): rows")
         }
     }
 
+    /// Every short line sequence over the grammar's tokens, judged by a regular expression over
+    /// the token letters (`^(p(fn)+)*$`, written apart from the parser's state machine): a count
+    /// is known exactly when the sequence matches, and then it is the number of distinct
+    /// (pid, server row) pairs. `b` is an unparseable `n` record.
+    @Test func theWholeGrammarStateSpace() throws {
+        let tokens: [(letter: Character, line: String)] = [
+            ("p", "p162"), ("p", "p163"), ("f", "f4"),
+            ("n", "n127.0.0.1:19011->127.0.0.1:50217"), ("n", "n127.0.0.1:19011->127.0.0.1:50218"),
+            ("b", "nzzz"),
+        ]
+        let grammar = try Regex("^(p(fn)+)*$")
+        var sequences: [[Int]] = [[]]
+        var frontier: [[Int]] = [[]]
+        for _ in 1...6 {
+            frontier = frontier.flatMap { seq in tokens.indices.map { seq + [$0] } }
+            sequences += frontier
+        }
+        var known = 0
+        for seq in sequences {
+            let letters = String(seq.map { tokens[$0].letter })
+            let output = seq.map { tokens[$0].line + "\n" }.joined()
+            let want: ClientCount
+            if (try? grammar.wholeMatch(in: letters)) != nil {
+                var pairs = Set<String>()
+                var pid = ""
+                for i in seq {
+                    if tokens[i].letter == "p" { pid = tokens[i].line }
+                    if tokens[i].letter == "n" { pairs.insert(pid + tokens[i].line) }
+                }
+                want = .known(pairs.count)
+                known += 1
+            } else {
+                want = .unknown
+            }
+            let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]
+            #expect(got == want, "\(letters): \(output.debugDescription)")
+        }
+        // "", pfn (4), pfnfn (8), pfnpfn (16): the table reaches multi-process and multi-fd outputs.
+        #expect(known == 29)
+    }
+
     @Test func aPortWithNoClientsCountsZeroAndOtherPortsAreIgnored() {
-        let result = ConnectionCount.parse(output: Self.loopback, ports: [19011, 19999], appPid: 1)
+        let result = Self.known(output: Self.loopback, ports: [19011, 19999], appPid: 1)
         #expect(Self.count(result, 19999) == 0)
         #expect(result[19012] == nil, "a port we do not own is not reported")
         #expect(result[443] == nil)
@@ -151,7 +206,7 @@ import Testing
             n127.0.0.1:50302->127.0.0.1:19011
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 2)
+        #expect(Self.count(Self.known(output: output, ports: [19011], appPid: 1), 19011) == 2)
     }
 
     /// A client reaching the server by the machine's own LAN address: both ends show that address.
@@ -165,7 +220,7 @@ import Testing
             n10.0.0.133:50168->10.0.0.133:19003
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19003], appPid: 1), 19003) == 1)
+        #expect(Self.count(Self.known(output: output, ports: [19003], appPid: 1), 19003) == 1)
     }
 
     /// A tunnelled or remote client has a server row and no visible client row: still counted.
@@ -176,7 +231,7 @@ import Testing
             n10.0.0.133:19003->10.0.0.50:61000
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19003], appPid: 1), 19003) == 1)
+        #expect(Self.count(Self.known(output: output, ports: [19003], appPid: 1), 19003) == 1)
     }
 
     /// The app's own `server.hello` probe: a client row owned by the app pid, peer = the server row.
@@ -195,9 +250,9 @@ import Testing
             n127.0.0.1:50217->127.0.0.1:19011
 
             """
-        let result = ConnectionCount.parse(output: output, ports: [19011], appPid: 300)
+        let result = Self.known(output: output, ports: [19011], appPid: 300)
         #expect(Self.count(result, 19011) == 1, "only the real client")
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 2)
+        #expect(Self.count(Self.known(output: output, ports: [19011], appPid: 1), 19011) == 2)
     }
 
     /// Apple Speech: the server runs inside the app, so its rows are owned by the app pid and the
@@ -216,7 +271,7 @@ import Testing
             n127.0.0.1:50500->127.0.0.1:9565
 
             """
-        let result = ConnectionCount.parse(output: output, ports: [9565], appPid: 300)
+        let result = Self.known(output: output, ports: [9565], appPid: 300)
         #expect(Self.count(result, 9565) == 1, "pid 400's client; the app's own probe (50501) is excluded")
     }
 
@@ -229,57 +284,24 @@ import Testing
             n127.0.0.1:50501->127.0.0.1:9565
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [9565], appPid: 300), 9565) == 0)
+        #expect(Self.count(Self.known(output: output, ports: [9565], appPid: 300), 9565) == 0)
     }
 
     @Test func emptyOutputCountsNothing() {
-        let result = ConnectionCount.parse(output: "", ports: [8665, 9565], appPid: 1)
+        let result = Self.known(output: "", ports: [8665, 9565], appPid: 1)
         #expect(Self.count(result, 8665) == 0 && Self.count(result, 9565) == 0)
     }
 
-    /// Garbage lines are skipped without losing the valid rows around them.
-    @Test func malformedLinesAreSkipped() {
-        let output = """
-            garbage before any pid
-            n127.0.0.1:19011->127.0.0.1:50999
-            p162
-            f4
-            n127.0.0.1:19011->127.0.0.1:50217
-            n
-            nnot-an-address
-            n127.0.0.1:19011->
-            n->127.0.0.1:50218
-            n127.0.0.1:abc->127.0.0.1:50219
-            n127.0.0.1:19011->127.0.0.1:notaport
-            pnotanumber
-            f9
-            n127.0.0.1:19011->127.0.0.1:50220
-            p205
-            f3
-            n127.0.0.1:50217->127.0.0.1:19011
-            \u{0}\u{1}
-
-            """
-        let result = ConnectionCount.parse(output: output, ports: [19011], appPid: 1)
-        #expect(Self.count(result, 19011) >= 1, "the well-formed server row is still counted")
-        #expect(Self.count(result, 19011) <= 3, "malformed rows are not invented into connections")
-    }
-
-    @Test func aCleanRowAmongMalformedOnesIsExactlyOne() {
-        let output = """
-            p162
-            f4
-            n127.0.0.1:19011->127.0.0.1:50217
-            f5
-            n
-            f6
-            nzzz
-            p205
-            f3
-            n127.0.0.1:50217->127.0.0.1:19011
-
-            """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 1), 19011) == 1)
+    /// A malformed socket name beside a clean row makes the whole count unknown: the walk never
+    /// skips a line, so a clean row can't hide a client it failed to read.
+    @Test func aMalformedNameBesideACleanRowIsUnknown() {
+        for bad in [
+            "n", "nnot-an-address", "n127.0.0.1:19011->", "n->127.0.0.1:50218", "n127.0.0.1:abc->127.0.0.1:50219",
+            "n127.0.0.1:19011->127.0.0.1:notaport",
+        ] {
+            let output = "p162\nf4\nn127.0.0.1:19011->127.0.0.1:50217\nf5\n\(bad)\np205\nf3\nn127.0.0.1:50217->127.0.0.1:19011\n"
+            #expect(ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011] == .unknown, "\(bad)")
+        }
     }
 
     /// The colons inside an IPv6 address must not be read as the port separator.
@@ -293,7 +315,7 @@ import Testing
 
             """
         // Row 2 is a client-side row (local port 49665), not a server row for 19012.
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19012], appPid: 1), 19012) == 1)
+        #expect(Self.count(Self.known(output: output, ports: [19012], appPid: 1), 19012) == 1)
     }
 
     // MARK: - Own-socket exclusion matches full endpoints, not ports
@@ -310,7 +332,7 @@ import Testing
             n10.0.0.133:51000->142.250.1.1:443
 
             """
-        #expect(Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 300), 19011) == 1)
+        #expect(Self.count(Self.known(output: output, ports: [19011], appPid: 300), 19011) == 1)
     }
 
     /// Even when the colliding app socket IS a client socket to an owned server, a server row
@@ -328,7 +350,7 @@ import Testing
             n127.0.0.1:51000->127.0.0.1:19011
 
             """
-        let result = ConnectionCount.parse(output: output, ports: [19011], appPid: 300)
+        let result = Self.known(output: output, ports: [19011], appPid: 300)
         #expect(Self.count(result, 19011) == 1, "the remote client; the app's own probe is excluded")
     }
 
@@ -353,7 +375,7 @@ import Testing
         for c in cases {
             let appBlock = c.app.isEmpty ? "" : "p300\nf9\n\(c.app)\n"
             let output = "p162\nf4\n\(c.server)\n\(appBlock)"
-            let got = Self.count(ConnectionCount.parse(output: output, ports: [19011], appPid: 300), 19011)
+            let got = Self.count(Self.known(output: output, ports: [19011], appPid: 300), 19011)
             #expect(got == c.counted, "\(c.name)")
         }
     }
