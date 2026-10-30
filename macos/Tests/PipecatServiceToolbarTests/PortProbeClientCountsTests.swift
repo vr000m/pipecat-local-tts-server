@@ -213,20 +213,35 @@ import Testing
     }
 
     /// The child sees exactly the scrubbed base environment (plus what sh itself sets), stdin at
-    /// EOF, and none of the parent's other descriptors (fds 3 to 9 are closed; macOS's /bin/sh
-    /// opens fd 10 for itself, even run from a terminal with nothing else open).
+    /// EOF, and none of the parent's other descriptors. The last is checked on descriptors this
+    /// test opens itself without close-on-exec (both ends of a pipe, dup'd to numbers from 100 up,
+    /// clear of the few sh opens for itself): only `POSIX_SPAWN_CLOEXEC_DEFAULT` keeps them from
+    /// the child, so the check holds however many descriptors other tests have open.
     @Test func theChildGetsTheBaseEnvironmentNullStdinAndNoOtherDescriptors() throws {
         let dir = FileManager.default.temporaryDirectory.appending(path: "clientcounts-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
+        var ends: [Int32] = [0, 0]
+        #expect(pipe(&ends) == 0)
+        defer { ends.forEach { close($0) } }
+        // F_DUPFD returns a copy without close-on-exec; the originals are closed with the copies.
+        let readEnd = fcntl(ends[0], F_DUPFD, 100)
+        let writeEnd = fcntl(ends[1], F_DUPFD, 100)
+        defer {
+            close(readEnd)
+            close(writeEnd)
+        }
+        try #require(readEnd >= 100 && writeEnd >= 100)
+        #expect(fcntl(readEnd, F_GETFD) & FD_CLOEXEC == 0 && fcntl(writeEnd, F_GETFD) & FD_CLOEXEC == 0)
         let script = """
             /usr/bin/env > "$1/env"; /bin/cat > "$1/stdin"; : > "$1/fds"
-            for fd in 3 4 5 6 7 8 9; do if (: <&$fd) 2>/dev/null; then echo $fd >> "$1/fds"; fi; done
+            if (: <&$2) 2>/dev/null; then echo $2 >> "$1/fds"; fi
+            if (: >&$3) 2>/dev/null; then echo $3 >> "$1/fds"; fi
             exit 1
             """
         let counts = PortProbe.clientCounts(
             ports: Self.ports, appPid: 1, timeout: 2, executable: URL(filePath: "/bin/sh"),
-            arguments: ["-c", script, "sh", dir.path])
+            arguments: ["-c", script, "sh", dir.path, String(readEnd), String(writeEnd)])
         #expect(counts == [19011: .known(0), 19012: .known(0)])
         let shell: Set = ["PWD", "SHLVL", "_", "OLDPWD"]
         let lines = try String(contentsOf: dir.appending(path: "env"), encoding: .utf8).split(separator: "\n")

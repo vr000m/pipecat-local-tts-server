@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A stale or busy port ends Failed and is not retried.
 - macOS app: Quit asks for confirmation when a client is connected to a server the app started (or the count
   cannot be read). Connections are counted from one bounded `lsof` call (one still running at
-  its 2 s deadline is sent SIGKILL before the count returns), excluding the app's own sockets (any `lsof` failure, signal death, stderr or non-zero exit with output also asks; exit 1 with no output is zero);
+  its 2 s deadline is sent SIGKILL and reaped, up to 0.2 s more, before the count returns), excluding the app's own sockets (a launch failure, signal death, stderr, an exit other than 0 or 1 with no output, or a pipe held open past the deadline also asks; exit 1 with no output is zero);
   system-initiated quits are not asked, but that exemption rests on a provisional quit-reason code table (the
   documented Apple Event codes, not yet observed): a manual Log Out / Restart / Shut Down check has not run.
   Half-open peers count until keepalive reaps them (about 140 s at the TTS server's keepalive defaults; the

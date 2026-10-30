@@ -75,8 +75,11 @@ public enum PortProbe {
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
     /// (an lsof still running then is sent SIGKILL before this returns, and reaped: the call waits
-    /// at most `reapGrace` more for that). A failure, death by a signal, any stderr (whatever the exit status), a non-zero exit with output, the deadline,
-    /// or output that does not fit the `-Fpn` grammar (`ConnectionCount.rows`) gives `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
+    /// at most `reapGrace` more for that). A launch failure, death by a signal, any stderr (whatever
+    /// the exit status), an exit other than 0 (or 1 with no output), the deadline, a pipe still open
+    /// past the deadline after lsof exited, or output that does not fit the `-Fpn` grammar
+    /// (`ConnectionCount.rows`) gives `.unknown` for every port. lsof exits 1 with no output when
+    /// nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
     ) -> [Int: ClientCount] {
@@ -176,6 +179,11 @@ public enum PortProbe {
     /// /dev/null and stdout/stderr on the given descriptors, as `Process` does: every other
     /// descriptor is closed in the child and its signal mask and dispositions are reset. Nil when
     /// it could not be started. The caller must reap the pid.
+    ///
+    /// `spawn`, `reap` and `exitCode` are the blocking, synchronous spawn path for `clientCounts`;
+    /// `Subprocess` (Foundation `Process`, async, process-group stop) is the other. This one
+    /// differs because Quit needs the answer now, and because a single reaper (`reap`, with
+    /// `waitid` `WNOWAIT` watching) keeps the pid from being reused before the deadline SIGKILL.
     static func spawn(
         _ executable: URL, _ arguments: [String], environment: [String: String], stdout: Int32, stderr: Int32
     ) -> pid_t? {
