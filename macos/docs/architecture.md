@@ -257,7 +257,7 @@ and `removeAll` (Reset), so no store can inherit a whole-set rewrite.
 **Restore timing.** `RestorePolicy` plans once per process, after `bootstrapDone` and
 the `ready` guard (`RestorePolicy.shouldRun`, which `AppModel` asks), from the stored set
 and each service's state. The
-`restoreOnLaunch` preference defaults on. A stale or busy port ends `failed` and is not
+`restoreOnLaunch` preference defaults on (its toggle is in the panel's gear menu). A stale or busy port ends `failed` and is not
 retried.
 
 **Quit guard.** `applicationShouldTerminate` decides synchronously through
@@ -277,7 +277,7 @@ port, server-side rows minus the server-side mirror of the app's own client sock
 row is excluded only when its local and peer endpoints are the swapped endpoints of a row
 the app owns whose peer port is a requested service port; a bare port match is not used,
 because a remote client's ephemeral port could equal an app socket's port. A socket held
-on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s deadline; an `lsof` still running then is sent SIGKILL before the call returns, and the result is unknown (the guard asks). One walk of lsof's `-Fpn` grammar
+on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s deadline; an `lsof` still running then is sent SIGKILL before the call returns, and the result is unknown (the guard asks). A launch failure, a death by signal, any stderr output, or a non-zero exit with output is also unknown; exit 1 with no stdout and no stderr is `lsof`'s "nothing matched" and counts zero. One walk of lsof's `-Fpn` grammar
 (`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
 one or more file records, each an `f<fd>` followed by exactly one `n` socket record with a port
 on both ends. Any other line, an `f` without its `n`, an `n` without its `f`, or a process with

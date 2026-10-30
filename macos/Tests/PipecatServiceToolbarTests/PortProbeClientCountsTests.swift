@@ -108,6 +108,16 @@ import Testing
         #expect(try Self.run("\(valid); echo warn >&2; exit 1").counts == Self.allUnknown)
     }
 
+    /// A child killed by a signal is unknown, whatever it printed: `terminationStatus` then holds the
+    /// signal number, and SIGHUP's 1 would otherwise read as lsof's "nothing matched" exit 1 (zero
+    /// clients, so Quit would skip its confirmation). Empty output is the dangerous cell; output
+    /// from a killed run is partial and equally untrusted.
+    @Test(arguments: ["HUP", "TERM", "KILL", "USR1"], ["", "printf 'p500\\nf4\\nn127.0.0.1:19011->10.0.0.50:61000\\n'; "])
+    func aSignalKilledRunIsUnknown(signal: String, output: String) throws {
+        let result = try Self.run("\(output)kill -\(signal) $$")
+        #expect(result.counts == Self.allUnknown, "SIG\(signal), output '\(output)'")
+    }
+
     /// A command that cannot be launched is unknown, at once.
     @Test func aLaunchFailureIsUnknown() {
         let counts = PortProbe.clientCounts(

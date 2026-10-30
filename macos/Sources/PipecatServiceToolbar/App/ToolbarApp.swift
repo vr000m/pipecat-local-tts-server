@@ -153,13 +153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Connected clients per owned service, one bounded lsof for every owned port; a port the
-    /// probe did not report is unknown.
+    /// probe did not report is unknown (`QuitGuardPolicy.counts` owns the pipeline).
     private func clientCounts() -> [Service: ClientCount] {
-        let ports = model.ownedPorts
-        guard !ports.isEmpty else { return [:] }
-        let byPort = PortProbe.clientCounts(
-            ports: Array(Set(ports.values)), appPid: ProcessInfo.processInfo.processIdentifier)
-        return QuitGuardPolicy.counts(ports: ports, byPort: byPort)
+        let appPid = ProcessInfo.processInfo.processIdentifier
+        return QuitGuardPolicy.counts(
+            ports: model.ownedPorts, probe: { PortProbe.clientCounts(ports: $0, appPid: appPid) })
     }
 
     /// The quit is accepted: begin it in this turn (before `.terminateLater` returns and any

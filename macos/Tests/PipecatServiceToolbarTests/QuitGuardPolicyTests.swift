@@ -188,4 +188,30 @@ import Testing
         let out = QuitGuardPolicy.counts(ports: [a: 1000, b: 2000], byPort: [1000: .known(2)])
         #expect(out == [a: .known(2), b: .unknown])
     }
+
+    /// The pipeline's whole space: no ports never probes; services sharing a port probe it once;
+    /// a probe that omits a port (or answers nothing) leaves that service unknown; a known answer
+    /// is kept.
+    @Test func countsPipelineProbesOnceOverDistinctPortsAndSkipsAnEmptySet() throws {
+        let all = Array(Service.allCases)
+        try #require(all.count >= 3)
+        let (a, b, c) = (all[0], all[1], all[2])
+        final class Probe: @unchecked Sendable {
+            var calls: [[Int]] = []
+        }
+        // (ports, probe answer, expected calls, expected result)
+        let table: [([Service: Int], [Int: ClientCount], [[Int]], [Service: ClientCount])] = [
+            ([:], [1000: .known(1)], [], [:]),
+            ([a: 1000], [1000: .known(0)], [[1000]], [a: .known(0)]),
+            ([a: 1000, b: 1000], [1000: .known(2)], [[1000]], [a: .known(2), b: .known(2)]),
+            ([a: 1000, b: 2000, c: 1000], [1000: .known(1)], [[1000, 2000]], [a: .known(1), b: .unknown, c: .known(1)]),
+            ([a: 1000, b: 2000], [:], [[1000, 2000]], [a: .unknown, b: .unknown]),
+        ]
+        for (ports, answer, calls, expected) in table {
+            let probe = Probe()
+            let out = QuitGuardPolicy.counts(ports: ports, probe: { probe.calls.append($0); return answer })
+            #expect(probe.calls == calls, "ports \(ports)")
+            #expect(out == expected, "ports \(ports)")
+        }
+    }
 }

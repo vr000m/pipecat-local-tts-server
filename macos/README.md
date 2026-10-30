@@ -95,7 +95,7 @@ for running both.
 
 - **Restore on launch**: the app remembers which services you had running and starts
   them again at the next launch, after the launch check finishes, once per process.
-  The **Restore running services on launch** preference (`restoreOnLaunch`) is on by default.
+  The **Restore running services on launch** preference (`restoreOnLaunch`) is on by default; the toggle is in the panel's gear menu beside Open at Login.
   A service whose port is stale or busy ends Failed and is not retried. A service you
   stopped, deleted, or that failed is not restored. Quitting does not change the set (a
   server that becomes ready, or fails, during Quit's shutdown keeps its entry; a Stop during
@@ -108,7 +108,7 @@ for running both.
   mirror of the app's own client sockets (its probes and Try it). A row is excluded only
   when its local and peer endpoints are the swapped endpoints of a row the app owns whose
   peer port is a requested service port; a bare port match is not used, because a remote
-  client's ephemeral port could equal an app socket's port. One bounded `lsof` call (2 s deadline; one still running then is sent SIGKILL before the call returns, and the count is unknown, so it asks); a socket held on several fds of one process counts once,
+  client's ephemeral port could equal an app socket's port. One bounded `lsof` call (2 s deadline; one still running then is sent SIGKILL before the call returns, and the count is unknown, so it asks). Any `lsof` failure (it did not launch, or it died on a signal), any stderr output, or a non-zero exit with output is also unknown (asks); exit 1 with no output at all is zero; a socket held on several fds of one process counts once,
   and `lsof` output the parser cannot fully account for (any malformed or unknown line, or a
   process with no readable socket) counts as unreadable (asks). Loopback
   tunnels (for example SSH) count as clients. A half-open connection

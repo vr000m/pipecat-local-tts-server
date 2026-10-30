@@ -12,8 +12,9 @@ public enum QuitGuardDecision: Equatable, Sendable {
     case cancel
 }
 
-/// The whole quit confirmation's text, so the app target only renders it: `title` is the alert's
-/// message text, `body` (one line per busy service) and `footer` make its informative text.
+/// The whole quit confirmation's text: `title` is the alert's message text, `body` (one line per
+/// busy service) and `footer` make its informative text. The app target renders it and owns the
+/// alert's button titles and default button.
 public struct QuitPrompt: Equatable, Sendable {
     public let title: String
     public let body: String
@@ -24,6 +25,17 @@ public struct QuitPrompt: Equatable, Sendable {
 }
 
 public enum QuitGuardPolicy {
+    /// Client count per owned service: no owned port means no probe at all (the blocking lsof is not
+    /// run), otherwise one `probe` call over the distinct ports (services may share a port) and
+    /// `counts(ports:byPort:)` for the mapping. This is the one place the app's quit-guard count
+    /// pipeline is assembled; the app passes `PortProbe.clientCounts` as `probe`.
+    public static func counts(
+        ports: [Service: Int], probe: ([Int]) -> [Int: ClientCount]
+    ) -> [Service: ClientCount] {
+        guard !ports.isEmpty else { return [:] }
+        return counts(ports: ports, byPort: probe(Array(Set(ports.values)).sorted()))
+    }
+
     /// Client count per owned service from a per-port probe result; a port the probe did not
     /// report is `.unknown` (which the guard asks about).
     public static func counts(

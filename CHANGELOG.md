@@ -11,11 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- macOS app: running services are restored on the next launch (preference `restoreOnLaunch`, on by default).
+- macOS app: running services are restored on the next launch (preference `restoreOnLaunch`, on by default; the toggle is in the panel's gear menu).
   A stale or busy port ends Failed and is not retried.
 - macOS app: Quit asks for confirmation when a client is connected to a server the app started (or the count
   cannot be read). Connections are counted from one bounded `lsof` call (one still running at
-  its 2 s deadline is sent SIGKILL before the count returns), excluding the app's own sockets;
+  its 2 s deadline is sent SIGKILL before the count returns), excluding the app's own sockets (any `lsof` failure, signal death, stderr or non-zero exit with output also asks; exit 1 with no output is zero);
   system-initiated quits are not asked, but that exemption rests on a provisional quit-reason code table (the
   documented Apple Event codes, not yet observed): a manual Log Out / Restart / Shut Down check has not run.
   Half-open peers count until keepalive reaps them (about 140 s at the TTS server's keepalive defaults; the

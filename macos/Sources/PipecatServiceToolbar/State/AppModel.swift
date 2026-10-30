@@ -67,7 +67,7 @@ final class AppModel {
     }
 
     /// The persisted "wanted running" set, shared by every service's driver.
-    @ObservationIgnored let wantedStore: any WantedServiceStore
+    @ObservationIgnored private let wantedStore: any WantedServiceStore
     @ObservationIgnored private let preferences: UserDefaults
     /// The one restore this process may run.
     @ObservationIgnored private var restoredThisProcess = false
@@ -214,9 +214,10 @@ final class AppModel {
             Log.app.info("\(model.service.rawValue, privacy: .public): \(String(describing: model.phase), privacy: .public)")
         }
         send(.bootstrapDone)
-        // Only a bootstrap that ended the job (not one quit overtook) looks up sizes.
-        guard phase == .ready else { return }
+        // `RestorePolicy.shouldRun` owns the restore's phase gate (a bootstrap quit overtook
+        // restores nothing); only a bootstrap that ended the job looks up sizes.
         restoreWantedServices()
+        guard phase == .ready else { return }
         sizes = Task { await loadDownloadSizes() }
     }
 
