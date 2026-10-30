@@ -74,16 +74,25 @@ public enum PortProbe {
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (SIGTERM at expiry, SIGKILL a second later if it still runs). A failure, a non-zero exit with output or stderr, the deadline,
+    /// (an lsof still running then is sent SIGKILL before this returns). A failure, a non-zero exit with output or stderr, the deadline,
     /// or output that does not fit the `-Fpn` grammar (`ConnectionCount.rows`) gives `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
     ) -> [Int: ClientCount] {
+        clientCounts(
+            ports: ports, appPid: appPid, timeout: timeout, executable: URL(filePath: "/usr/sbin/lsof"),
+            arguments: ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpn"])
+    }
+
+    /// The same run with the command replaced: the seam that lets tests stand a script in for lsof.
+    static func clientCounts(
+        ports: [Int], appPid: Int32, timeout: TimeInterval, executable: URL, arguments: [String]
+    ) -> [Int: ClientCount] {
         let unknown = Dictionary(uniqueKeysWithValues: ports.map { ($0, ClientCount.unknown) })
         guard !ports.isEmpty else { return [:] }
         let process = Process()
-        process.executableURL = URL(filePath: "/usr/sbin/lsof")
-        process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpn"]
+        process.executableURL = executable
+        process.arguments = arguments
         process.environment = ProcessEnvironment.base()
         let pipe = Pipe()
         let errPipe = Pipe()
@@ -107,16 +116,19 @@ public enum PortProbe {
             drained.signal()
         }
         // One overall deadline for exit and both reads; the run loop is never spun.
-        guard exited.wait(timeout: deadline) == .success,
-            drained.wait(timeout: deadline) == .success, drained.wait(timeout: deadline) == .success
-        else {
-            process.terminate()
-            // SIGTERM can be ignored by a wedged lsof, which would also pin the two reader threads:
-            // escalate off the caller's thread, which must answer the terminate request now.
-            let pid = process.processIdentifier
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-                if process.isRunning { kill(pid, SIGKILL) }
-            }
+        guard exited.wait(timeout: deadline) == .success else {
+            // Still running at the deadline: SIGKILL it here, before returning. It cannot be
+            // ignored, so the child is dead (or dies as it leaves an uninterruptible kernel wait)
+            // even if the app exits right after this answer; a SIGTERM, or a kill deferred to
+            // later work, could leave a wedged lsof behind. lsof only reads, so there is nothing
+            // for a SIGTERM grace to let it clean up, and the caller blocks for no longer than
+            // `timeout`. The `isRunning` check keeps a child that has just exited and been reaped
+            // (its pid free for reuse) from being signalled.
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            return unknown
+        }
+        // lsof has exited but a pipe is still open (something it started holds it): nothing of ours to stop.
+        guard drained.wait(timeout: deadline) == .success, drained.wait(timeout: deadline) == .success else {
             return unknown
         }
         let output = String(decoding: box.data, as: UTF8.self)

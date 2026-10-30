@@ -14,15 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS app: running services are restored on the next launch (preference `restoreOnLaunch`, on by default).
   A stale or busy port ends Failed and is not retried.
 - macOS app: Quit asks for confirmation when a client is connected to a server the app started (or the count
-  cannot be read). Connections are counted from one bounded `lsof` call (SIGTERM at its
-  deadline, SIGKILL a second later if it still runs), excluding the app's own sockets;
+  cannot be read). Connections are counted from one bounded `lsof` call (one still running at
+  its 2 s deadline is sent SIGKILL before the count returns), excluding the app's own sockets;
   system-initiated quits are not asked, but that exemption rests on a provisional quit-reason code table (the
   documented Apple Event codes, not yet observed): a manual Log Out / Restart / Shut Down check has not run.
   Half-open peers count until keepalive reaps them (about 140 s at the TTS server's keepalive defaults; the
   STT servers' keepalive is not verified here).
 - `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
 - macOS app: Reset also clears the saved set of services to restore (`restore.wanted`), so the next
-  launch restores none. Quit never changes the set.
+  launch restores none. Quitting never changes the set; a Stop during shutdown still clears that service.
 - `just app-smoke` (`macos/scripts/ui_smoke.sh`) relaunches with tone wanted and restore on and checks
   an External tone server is adopted with no server of the app's own started. Every launch uses a
   throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` / `-restore.wanted` launch
