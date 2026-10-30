@@ -35,7 +35,7 @@ public enum ClientCount: Equatable, Sendable {
 /// - IPv6 may use `::`, a dotted IPv4 tail, or a `%scope` inside the brackets.
 /// - Endpoints are checked byte by byte, with no C parser and no leading zero in an octet or port.
 /// Any other byte, tag, value or order makes the whole output unknown, never a skipped line.
-public enum ConnectionCount {
+enum ConnectionCount {
     /// One socket row. Hashable on all fields; the ports are read from the endpoints, so two rows
     /// are equal exactly when their (pid, local, peer) are.
     struct Row: Hashable {
@@ -223,7 +223,7 @@ public enum ConnectionCount {
 
     /// The quit guard's count per port in `ports` from one lsof output: `.known` only when `rows`
     /// accounts for every line, else `.unknown` for every port. Every port gets an entry.
-    public static func clientCounts(lsofOutput output: String, ports: [Int], appPid: Int32) -> [Int: ClientCount] {
+    static func clientCounts(lsofOutput output: String, ports: [Int], appPid: Int32) -> [Int: ClientCount] {
         guard let all = rows(output) else { return unknown(ports: ports) }
         // A repeated port collapses to one entry: `uniqueKeysWithValues` would trap on it.
         var counts = Dictionary(ports.map { ($0, 0) }, uniquingKeysWith: { first, _ in first })

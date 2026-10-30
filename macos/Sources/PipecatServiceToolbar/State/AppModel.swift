@@ -40,8 +40,9 @@ final class AppModel {
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
-    /// Restore the services that were running at the last quit (default on when unset, see
-    /// `RestorePreference`). Stored, so the gear menu's checkmark follows a click.
+    /// Restore the services in the persisted wanted set after each launch's bootstrap
+    /// (`RestorePolicy`). Default on when unset, see `RestorePreference`.
+    /// Stored, so the gear menu's checkmark follows a click.
     var restoreOnLaunch: Bool {
         didSet { RestorePreference.set(restoreOnLaunch, in: preferences) }
     }

@@ -10,8 +10,10 @@
 #    It renders fixed states only: it cannot click, drive transitions or read text.
 # 2. Launch: the built bundle starts as a menu bar (UIElement) app, stays up,
 #    and logs a finished bootstrap (tools found in the bundle, every service's phase).
-# 3. Quit: `quit app id` (applicationShouldTerminate -> shutdownAll) exits within
-#    the grace period and leaves no process the app started (uv, python, lsof...).
+# 3. Quit: `quit app id` reaches applicationShouldTerminate, where QuitGuardPolicy.decide
+#    skips the prompt (no client is connected) and beginDrain runs the shutdown. The app
+#    exits within QUIT_WAIT (seconds, default 20) and leaves no process the app started
+#    (uv, python, lsof...). LAUNCH_WAIT (seconds, default 30) bounds each launch's bootstrap.
 # 4. SIGTERM: a second launch killed with SIGTERM also leaves no child behind.
 # 5. External: a tone server started OUT OF PROCESS on its canonical loopback port
 #    (8665) is adopted at launch (the bootstrap log line says `external(`) and is

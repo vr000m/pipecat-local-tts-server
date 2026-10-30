@@ -34,10 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
 - macOS app: Reset also clears the saved set of services to restore (`restore.wanted`), so the next
   launch restores none. Quitting never changes the set; a Stop during shutdown still clears that service.
-- `just app-smoke` (`macos/scripts/ui_smoke.sh`) relaunches with tone wanted and restore on and checks
-  an External tone server is adopted with no server of the app's own started. Every launch uses a
-  throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` / `-restore.wanted` launch
-  arguments, and the run fails if a read-only hash of the real `restore.wanted` changed.
+- `just app-smoke` (`macos/scripts/ui_smoke.sh`) relaunches with tone wanted and restore on.
+  It checks an External tone server is adopted and no server of the app's own is started.
+  Every launch uses a throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` and
+  `-restore.wanted` launch arguments.
+  The run fails if a read-only hash of the real `restore.wanted` changed.
 
 ## [0.8.3] - 2026-10-28
 

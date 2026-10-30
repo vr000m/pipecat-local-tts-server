@@ -100,9 +100,10 @@ for running both.
   stopped, deleted, or that failed is not restored. Quitting does not change the set (a
   server that becomes ready, or fails, during Quit's shutdown keeps its entry; a Stop during
   shutdown still clears that service), and Reset clears it.
-- **Quit confirmation**: Quit (and any quit that is not system-initiated, including the one `just
-  app-open` / `app-install` send via `quit_app.sh`) asks first when a client is connected to a server
-  the app started: "Quit anyway" or "Cancel". A count that cannot be read also asks.
+- **Quit confirmation**: Quit asks first when a client is connected to a server the app started.
+  The choices are "Quit anyway" or "Cancel". A count that cannot be read also asks.
+  So does any quit that is not system-initiated, including the one `just app-open` and
+  `app-install` send via `quit_app.sh`.
   Logout, Restart and Shut Down are not asked (provisional codes; see Known limits).
 - **Counting**: server-side connections on the app's own port count.
   The server-side mirrors of the app's own client sockets (its probes and Try it) do not.

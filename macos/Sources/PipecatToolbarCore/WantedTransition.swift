@@ -14,7 +14,7 @@ import Foundation
 /// every other new intent but Stop) once quitting, so in practice only a Stop reaches this with
 /// `quitting`; the `removeRequested` row records what a Delete would mean there, not a second
 /// gate. Which events can occur is the driver's; what each does to the flag is only this.
-public enum WantedTransition {
+enum WantedTransition {
     /// What one event kind does to the flag.
     enum Effect: Equatable, Sendable {
         case keep, clear, setWhenNewlyRunning
@@ -41,7 +41,7 @@ public enum WantedTransition {
         }
     }
 
-    public static func next(
+    static func next(
         wanted: Bool, kind: LifecycleEvent.Kind, before: ServicePhase, after: ServicePhase, quitting: Bool
     ) -> Bool {
         let rule = rule(kind)

@@ -33,7 +33,7 @@ public struct ServiceCounts: Equatable, Sendable {
 
     /// The app started this service's server (a subprocess or the in-process Apple Speech one),
     /// whatever its phase: Quit stops it. An External server is never owned.
-    public static func isOwned(_ s: LifecycleState) -> Bool {
+    static func isOwned(_ s: LifecycleState) -> Bool {
         s.server != nil || s.native != nil
     }
 
