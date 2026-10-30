@@ -108,7 +108,7 @@ for running both.
   mirror of the app's own client sockets (its probes and Try it). A row is excluded only
   when its local and peer endpoints are the swapped endpoints of a row the app owns whose
   peer port is a requested service port; a bare port match is not used, because a remote
-  client's ephemeral port could equal an app socket's port. One bounded `lsof` call; a socket held on several fds of one process counts once,
+  client's ephemeral port could equal an app socket's port. One bounded `lsof` call (2 s deadline; one still running then is sent SIGKILL before the call returns, and the count is unknown, so it asks); a socket held on several fds of one process counts once,
   and `lsof` output the parser cannot fully account for (any malformed or unknown line, or a
   process with no readable socket) counts as unreadable (asks). Loopback
   tunnels (for example SSH) count as clients. A half-open connection

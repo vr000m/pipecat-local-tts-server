@@ -275,7 +275,7 @@ port, server-side rows minus the server-side mirror of the app's own client sock
 row is excluded only when its local and peer endpoints are the swapped endpoints of a row
 the app owns whose peer port is a requested service port; a bare port match is not used,
 because a remote client's ephemeral port could equal an app socket's port. A socket held
-on several fds of one process counts once. One walk of lsof's `-Fpn` grammar
+on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s deadline; an `lsof` still running then is sent SIGKILL before the call returns, and the result is unknown (the guard asks). One walk of lsof's `-Fpn` grammar
 (`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
 one or more file records, each an `f<fd>` followed by exactly one `n` socket record with a port
 on both ends. Any other line, an `f` without its `n`, an `n` without its `f`, or a process with

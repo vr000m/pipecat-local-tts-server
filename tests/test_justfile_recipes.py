@@ -1294,14 +1294,20 @@ def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
     restore_m = re.search(r'static let key = "([\w.]+)"', swift)
     assert wanted_m and restore_m, "WantedServiceStore.key / RestorePreference.key not found"
     wanted_key, restore_key = wanted_m.group(1), restore_m.group(1)
-    assert f'defaults write "$SUITE" {wanted_key}' in code
-    assert f'defaults write "$SUITE" {restore_key}' in code
+
+    # Whole-token matches: a plain substring would let a renamed key that is a prefix of the
+    # old one (`restore` vs `restore.wanted`) still pass.
+    def has_token(prefix: str, key: str) -> bool:
+        return re.search(re.escape(prefix) + re.escape(key) + r"(?=\s)", code) is not None
+
+    assert has_token('defaults write "$SUITE" ', wanted_key)
+    assert has_token('defaults write "$SUITE" ', restore_key)
     assert 'defaults delete "$SUITE"' in code
     # The arguments seed the wanted set on every launch, as a plist array (`plist_array`).
     assert f'-{wanted_key} "$wanted_arg"' in code
     assert f'-{wanted_key} "(${{WANTED:-}})"' not in code, "space-separated values do not parse"
     # And the real domain is checked, not assumed, to be untouched.
-    assert f'defaults read "$BUNDLE_ID" {wanted_key}' in code
+    assert has_token('defaults read "$BUNDLE_ID" ', wanted_key)
     # ... without ever printing the operator's value: only a hash is kept and compared.
     assert "real_wanted_hash" in code and "shasum" in code
     assert "REAL_WANTED_AFTER" not in code
