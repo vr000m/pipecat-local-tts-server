@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Half-open peers count until keepalive reaps them (about 140 s at the TTS server's keepalive defaults; the
   STT servers' keepalive is not verified here).
 - `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
+- macOS app: Reset also clears the saved set of services to restore (`restore.wanted`), so the next
+  launch restores none. Quit never changes the set.
+- `just app-smoke` (`macos/scripts/ui_smoke.sh`) relaunches with tone wanted and restore on and checks
+  an External tone server is adopted with no server of the app's own started. Every launch uses a
+  throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` / `-restore.wanted` launch
+  arguments, and the run fails if a read-only hash of the real `restore.wanted` changed.
 
 ## [0.8.3] - 2026-10-28
 

@@ -17,6 +17,12 @@ import Testing
         #expect(QuitReason.systemCodes == expected)
     }
 
+    /// `kAEQuitReason` from AERegistry.h: the attribute the app reads the reason from.
+    @Test func theReasonAttributeKeywordIsWhy() {
+        #expect(QuitReason.attributeKeyword == 0x7768_793F)
+        #expect(QuitReason.text(QuitReason.attributeKeyword) == "why?")
+    }
+
     @Test func aPlainQuitIsUserInitiated() {
         #expect(QuitReason.quitAll == QuitReason.fourCC("quit"))
         #expect(!QuitReason.isSystemInitiated(code: QuitReason.quitAll))

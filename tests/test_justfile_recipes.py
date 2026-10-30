@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -1288,8 +1289,9 @@ def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
     assert 'defaults write "$SUITE" restore.wanted' in code
     assert 'defaults write "$SUITE" restoreOnLaunch' in code
     assert 'defaults delete "$SUITE"' in code
-    # The arguments seed the wanted set on every launch.
-    assert '-restore.wanted "(${WANTED:-})"' in code
+    # The arguments seed the wanted set on every launch, as a plist array (`plist_array`).
+    assert '-restore.wanted "$wanted_arg"' in code
+    assert '-restore.wanted "(${WANTED:-})"' not in code, "space-separated values do not parse"
     # And the real domain is checked, not assumed, to be untouched.
     assert 'defaults read "$BUNDLE_ID" restore.wanted' in code
     # ... without ever printing the operator's value: only a hash is kept and compared.
@@ -1386,6 +1388,35 @@ def _bash_candidates() -> list:
         )
     )
     return params
+
+
+@pytest.mark.skipif(shutil.which("plutil") is None, reason="plutil is macOS-only")
+@pytest.mark.parametrize("bash", _bash_candidates())
+@pytest.mark.parametrize(
+    "values",
+    [[], ["tone"], ["tone", "kokoro"], ["pocket_tts", "whisper_large_v3", "kyutai_2_6b"]],
+)
+def test_ui_smoke_wanted_launch_argument_parses_as_the_seeded_array(
+    bash: str, values: list, tmp_path: Path
+) -> None:
+    # The `-restore.wanted` launch argument must parse as the same array the suite is seeded with:
+    # an unparseable value lands in the argument domain as a string, shadows the suite's array,
+    # and the app reads an empty wanted set. Old-style plist arrays need commas between values.
+    script = (
+        f"set -euo pipefail\n{_ui_smoke_functions('plist_array')}\nplist_array {' '.join(values)}\n"
+    )
+    r = subprocess.run([bash, "-c", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    plist = tmp_path / "arg.plist"
+    plist.write_text(r.stdout)
+    parsed = subprocess.run(
+        ["plutil", "-convert", "json", "-o", "-", str(plist)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert parsed.returncode == 0, (r.stdout, parsed.stderr)
+    assert json.loads(parsed.stdout) == values, r.stdout
 
 
 _SIGNAL_FUNCTIONS = ("ext_is_ours", "job_of", "job_running", "signal_job", "stop_job", "stop_ext")

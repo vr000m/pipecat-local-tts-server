@@ -77,6 +77,58 @@ import Testing
         #expect(!ConnectionCount.isUnrecognised(Self.loopback))
     }
 
+    /// The quit guard's count (`counts`) is `.known` only when every record of the output is
+    /// accounted for: each line a `p<pid>`, an `f<fd>` after one, or an `n` socket record after one
+    /// with a port on both ends, and each process naming at least one socket. Anything else is
+    /// `.unknown` for every port: a partial or changed record must never read as "no clients".
+    /// Recognised outputs count exactly what `parse` counts.
+    @Test func everyRecordMustBeAccountedForBeforeACountIsKnown() {
+        let server = "n127.0.0.1:19011->127.0.0.1:50217"
+        let client = "n127.0.0.1:50217->127.0.0.1:19011"
+        let cases: [(String, String, ClientCount)] = [
+            // Recognised: what lsof -nP -iTCP -sTCP:ESTABLISHED -Fpn emits.
+            ("empty", "", .known(0)),
+            ("a bare newline", "\n", .known(0)),
+            ("the recorded loopback listing", Self.loopback, .known(2)),
+            ("a server and its client", "p162\nf4\n\(server)\np205\nf3\n\(client)\n", .known(1)),
+            ("no fd lines", "p162\n\(server)\n", .known(1)),
+            ("a bracketed IPv6 row", "p162\nf4\nn[::1]:19011->[::1]:50219\n", .known(1)),
+            (
+                "a scoped link-local row (recorded)",
+                "p675\nf31\nn[fe80:19::4f41:8157:767a:6ea9]:1024->[fe80:19::5654:f797:89c:37ce]:1024\n", .known(0)
+            ),
+            ("one socket on two fds", "p162\nf4\n\(server)\nf5\n\(server)\n", .known(1)),
+            ("no trailing newline", "p162\nf4\n\(server)", .known(1)),
+            // Unrecognised: a record the parser cannot account for.
+            ("a process record alone", "p123\n", .unknown),
+            ("a process with an fd but no socket", "p123\nf4\n", .unknown),
+            ("a process with a malformed socket", "p123\nnmalformed\n", .unknown),
+            ("a socket with no peer (listening shape)", "p162\nf4\nn*:19011\n", .unknown),
+            ("a socket with no port on one end", "p162\nf4\nn127.0.0.1:19011->127.0.0.1\n", .unknown),
+            ("a good socket beside a malformed one", "p162\nf4\n\(server)\nf5\nnzzz\n", .unknown),
+            ("a later process with no socket", "p162\nf4\n\(server)\np205\n", .unknown),
+            ("an earlier process with no socket", "p205\np162\nf4\n\(server)\n", .unknown),
+            ("a socket before any process", "\(server)\np162\nf4\n\(server)\n", .unknown),
+            ("an fd before any process", "f4\np162\n\(server)\n", .unknown),
+            ("no process record at all", "\(server)\n", .unknown),
+            ("a non-numeric pid", "pabc\n\(server)\n", .unknown),
+            ("an empty fd field", "p162\nf\n\(server)\n", .unknown),
+            ("an unknown field", "p162\nf4\n\(server)\nt0\n", .unknown),
+            ("the human-readable format", "COMMAND PID USER\nfoo 1 bar\n", .unknown),
+            ("a stray control line", "p162\nf4\n\(server)\n\u{0}\u{1}\n", .unknown),
+        ]
+        for (name, output, expected) in cases {
+            let got = ConnectionCount.counts(output: output, ports: [19011, 19999], appPid: 1)
+            #expect(got[19011] == expected, "\(name)")
+            let other: ClientCount = expected == .unknown ? .unknown : .known(0)
+            #expect(got[19999] == other, "\(name): the other owned port")
+            #expect(ConnectionCount.isUnrecognised(output) == (expected == .unknown), "\(name)")
+            if expected != .unknown {
+                #expect(got == ConnectionCount.parse(output: output, ports: [19011, 19999], appPid: 1).mapValues { .known($0) })
+            }
+        }
+    }
+
     @Test func aPortWithNoClientsCountsZeroAndOtherPortsAreIgnored() {
         let result = ConnectionCount.parse(output: Self.loopback, ports: [19011, 19999], appPid: 1)
         #expect(Self.count(result, 19999) == 0)

@@ -30,26 +30,19 @@ public struct UserDefaultsWantedServiceStore: WantedServiceStore {
 
     public init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
-    /// Raw values that no longer map to a `Service` are dropped.
-    public func read() -> Set<Service> {
-        let raw = defaults.array(forKey: Self.key) as? [String] ?? []
-        return Set(raw.compactMap(Service.init(rawValue:)))
-    }
+    /// The stored array as written; anything that is not an array of strings reads as empty.
+    private func raw() -> [String] { defaults.array(forKey: Self.key) as? [String] ?? [] }
 
-    /// Replaces the whole set. Not part of `WantedServiceStore`: the app never rewrites the set
-    /// (tests seed with it).
-    func write(_ wanted: Set<Service>) {
-        defaults.set(wanted.map(\.rawValue).sorted(), forKey: Self.key)
-    }
+    /// Raw values that no longer map to a `Service` are dropped from what this build restores,
+    /// but stay stored: `setWanted` keeps them, so a newer build's flag survives an older launch.
+    public func read() -> Set<Service> { Set(raw().compactMap(Service.init(rawValue:))) }
 
     public func removeAll() { defaults.removeObject(forKey: Self.key) }
-
-    private func raw() -> [String] { defaults.array(forKey: Self.key) as? [String] ?? [] }
 
     public func contains(_ service: Service) -> Bool { raw().contains(service.rawValue) }
 
     /// Edits the stored array in place: no write when the flag already has that value, and raw
-    /// values this build does not know are kept (only `write` normalizes the whole set).
+    /// values this build does not know are kept.
     public func setWanted(_ wanted: Bool, for service: Service) {
         var values = raw()
         let present = values.contains(service.rawValue)

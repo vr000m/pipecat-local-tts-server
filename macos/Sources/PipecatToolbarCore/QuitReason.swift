@@ -8,6 +8,8 @@ import Foundation
 /// verify it against a menu Quit, an `osascript` quit and a real Log Out, then pin it in
 /// `QuitReasonTests`.
 public enum QuitReason {
+    /// `kAEQuitReason` ('why?'): the quit event's attribute keyword that carries the reason code.
+    public static let attributeKeyword = fourCC("why?")
     /// `kAEQuitApplication` ('quit'): the plain quit event (also what `osascript` sends); user-initiated.
     public static let quitAll = fourCC("quit")
     /// `kAEReallyLogOut` ('rlgo'), `kAELogOut` ('logo'), `kAERestart` ('rest'), `kAEShutDown` ('shut'),

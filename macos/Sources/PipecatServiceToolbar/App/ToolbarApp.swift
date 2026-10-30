@@ -99,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (a menu Quit has no event: user-initiated).
     private static func currentQuitReason() -> UInt32? {
         guard let event = NSAppleEventManager.shared().currentAppleEvent,
-            let attr = event.attributeDescriptor(forKeyword: AEKeyword(QuitReason.fourCC("why?")))
+            let attr = event.attributeDescriptor(forKeyword: AEKeyword(QuitReason.attributeKeyword))
         else { return nil }
         return attr.enumCodeValue
     }

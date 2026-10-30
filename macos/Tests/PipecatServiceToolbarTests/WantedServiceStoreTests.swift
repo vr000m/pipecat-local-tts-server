@@ -12,16 +12,21 @@ import Testing
         return (UserDefaults(suiteName: name)!, name)
     }
 
+    /// Seeds the whole stored set (the app never rewrites it: the store has no whole-set write).
+    static func seed(_ defaults: UserDefaults, _ wanted: Set<Service>) {
+        defaults.set(wanted.map(\.rawValue).sorted(), forKey: key)
+    }
+
     @Test func roundTrips() {
         let (defaults, name) = Self.isolated()
         defer { defaults.removePersistentDomain(forName: name) }
         let store = UserDefaultsWantedServiceStore(defaults: defaults)
         #expect(store.read().isEmpty)
-        store.write([.tone, .kokoro])
+        Self.seed(defaults, [.tone, .kokoro])
         #expect(store.read() == [.tone, .kokoro])
-        store.write([.kokoro])
+        Self.seed(defaults, [.kokoro])
         #expect(store.read() == [.kokoro])
-        store.write([])
+        Self.seed(defaults, [])
         #expect(store.read().isEmpty)
     }
 
@@ -37,7 +42,7 @@ import Testing
         let (defaults, name) = Self.isolated()
         defer { defaults.removePersistentDomain(forName: name) }
         let store = UserDefaultsWantedServiceStore(defaults: defaults)
-        store.write([.tone, .kokoro])
+        Self.seed(defaults, [.tone, .kokoro])
         store.removeAll()
         #expect(store.read().isEmpty)
     }
@@ -47,7 +52,7 @@ import Testing
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set("keep", forKey: "other.key")
         let store = UserDefaultsWantedServiceStore(defaults: defaults)
-        store.write([.tone])
+        Self.seed(defaults, [.tone])
         store.removeAll()
         #expect(defaults.string(forKey: "other.key") == "keep")
     }
@@ -105,7 +110,7 @@ import Testing
                 if present { seed.insert(.tone) }
                 defaults.removePersistentDomain(forName: name)
                 let userDefaults = UserDefaultsWantedServiceStore(defaults: defaults)
-                userDefaults.write(seed)
+                Self.seed(defaults, seed)
                 let memory = ServiceDriverTests.MemoryWantedStore(seed)
                 let stores: [any WantedServiceStore] = [memory, userDefaults]
                 for store in stores {

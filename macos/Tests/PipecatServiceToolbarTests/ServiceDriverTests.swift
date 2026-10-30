@@ -1128,6 +1128,62 @@ import Testing
         #expect(store.current == [.tone], "Quit cleared the flag")
     }
 
+    /// A server still starting at Quit whose ready line the drain still reads goes running, but
+    /// a quit never changes the flag: it must not newly set it (the next launch would restore a
+    /// service that was never running before Quit).
+    @Test func aReadyDuringTheQuitDrainDoesNotSetTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.start()
+        await until { driver.state.server != nil }
+        await driver.quit()
+        #expect(process.stops == 1)
+        process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        #expect(driver.state.phase == .running, "the drain read the ready line")
+        #expect(store.current.isEmpty, "a ready during the quit drain set the flag")
+        process.exit(15)
+        await until { driver.state.server == nil }
+        #expect(store.current.isEmpty)
+    }
+
+    /// The clear side: a failure entered after quit began (here an install that fails during the
+    /// shutdown) keeps the flag a restore set.
+    @Test func aFailureAfterQuitBeganKeepsTheFlag() async {
+        let store = MemoryWantedStore([.tone])
+        let host = FakeHost(environment: FailingInstallEnvironment())
+        let driver = wantedDriver(store, host: host)
+        await driver.refresh()
+        driver.install()
+        driver.beginQuit()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current == [.tone], "a failure during quit cleared the flag")
+    }
+
+    /// The user's own Stop clicked during the quit drain still clears the flag.
+    @Test func aStopClickDuringTheQuitDrainClearsTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        #expect(store.current == [.tone])
+        driver.beginQuit()
+        driver.stop()
+        #expect(store.current.isEmpty, "a Stop click after quit began did not clear the flag")
+        process.exit(15)
+        await until { driver.state.server == nil }
+    }
+
     @Test func aStaleReadyDoesNotSetTheFlag() async {
         let store = MemoryWantedStore()
         let host = FakeHost()

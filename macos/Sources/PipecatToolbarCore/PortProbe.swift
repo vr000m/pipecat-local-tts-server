@@ -74,8 +74,8 @@ public enum PortProbe {
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (SIGTERM at expiry, SIGKILL a second later if it still runs). A failure, a non-zero exit with output or stderr, or the deadline gives
-    /// `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
+    /// (SIGTERM at expiry, SIGKILL a second later if it still runs). A failure, a non-zero exit with output or stderr, the deadline,
+    /// or output with a record `ConnectionCount` cannot account for gives `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
     ) -> [Int: ClientCount] {
@@ -126,9 +126,8 @@ public enum PortProbe {
         guard status == 0 || (status == 1 && output.isEmpty && errors.isEmpty) else {
             return unknown
         }
-        // Output with no process record at all is a format we cannot read: unknown, not zero.
-        if ConnectionCount.isUnrecognised(output) { return unknown }
-        return ConnectionCount.parse(output: output, ports: ports, appPid: appPid).mapValues { .known($0) }
+        // A record the parser cannot account for is unknown, not zero (`ConnectionCount.counts`).
+        return ConnectionCount.counts(output: output, ports: ports, appPid: appPid)
     }
 
     private final class OutputBox: @unchecked Sendable {

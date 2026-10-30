@@ -13,6 +13,13 @@ public enum RestoreDecision: Equatable, Sendable {
 /// Which services to start after `.bootstrapDone`, as a pure function of the persisted
 /// wanted set and the services' lifecycle states.
 public enum RestorePolicy {
+    /// Whether `AppModel` runs the launch restore now: once per process (`alreadyRan`), and only
+    /// from a bootstrap that ended in `ready` (a quit or failure that overtook it restores nothing).
+    /// The `restoreOnLaunch` preference is `plan`'s `preferenceOn`, not part of this gate.
+    public static func shouldRun(alreadyRan: Bool, phase: AppPhase) -> Bool {
+        !alreadyRan && phase == .ready
+    }
+
     /// One decision per service in `states`. An installed service with an outdated environment
     /// is `start`: the reducer turns that into a packages refresh.
     public static func plan(
@@ -44,14 +51,17 @@ public enum RestorePolicy {
 }
 
 /// How the per-service "wanted running" flag changes on a lifecycle event. Precedence, first
-/// match wins: (1) the phase newly enters `.failed` clears; (2) `stopRequested` clears;
-/// (3) `removeRequested` clears; (4) `ready` / `nativeBound` with the phase newly `.running`
-/// sets; (5) everything else keeps. The kind switch has no `default`: a new event kind must
-/// choose its effect here.
+/// match wins: (0) once app quit began (`quitting`), every kind but the user's own
+/// `stopRequested` / `removeRequested` keeps (a quit never changes the flag: not a `ready` the
+/// drain still reads, nor a failure the shutdown causes); (1) the phase newly enters `.failed`
+/// clears; (2) `stopRequested` clears; (3) `removeRequested` clears; (4) `ready` / `nativeBound`
+/// with the phase newly `.running` sets; (5) everything else keeps. The kind switch has no
+/// `default`: a new event kind must choose its effect here.
 public enum WantedTransition {
     public static func next(
-        wanted: Bool, kind: LifecycleEvent.Kind, before: ServicePhase, after: ServicePhase
+        wanted: Bool, kind: LifecycleEvent.Kind, before: ServicePhase, after: ServicePhase, quitting: Bool = false
     ) -> Bool {
+        if quitting, kind != .stopRequested, kind != .removeRequested { return wanted }
         if case .failed = after {
             if case .failed = before {} else { return false }
         }

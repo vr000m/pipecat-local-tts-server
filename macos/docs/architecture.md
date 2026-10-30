@@ -233,7 +233,9 @@ in `UserDefaults`, `WantedServiceStore`). Precedence per lifecycle phase change:
 change into `failed` (from a phase that was not already `failed`) clears the flag,
 `stopRequested` clears it, `removeRequested` clears it, a service newly running (`ready`
 or `nativeBound` while the phase was not already `running`) sets it, anything else keeps
-it.
+it. Ahead of all of these, once quit began (`ServiceDriver.quitting`) every event but a Stop
+or Delete keeps it: a `ready` the shutdown drain still reads, or a failure the shutdown
+causes, never changes what the next launch restores. Reset clears the whole set.
 
 **Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
 standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`
@@ -244,7 +246,8 @@ cache, Try-it text) are harmless UI state and stay in the standard domain. `AppM
 and `removeAll` (Reset), so no store can inherit a whole-set rewrite.
 
 **Restore timing.** `RestorePolicy` plans once per process, after `bootstrapDone` and
-the `ready` guard, from the stored set and each service's state. The
+the `ready` guard (`RestorePolicy.shouldRun`, which `AppModel` asks), from the stored set
+and each service's state. The
 `restoreOnLaunch` preference defaults on. A stale or busy port ends `failed` and is not
 retried.
 
@@ -263,8 +266,10 @@ port, server-side rows minus the server-side mirror of the app's own client sock
 row is excluded only when its local and peer endpoints are the swapped endpoints of a row
 the app owns whose peer port is a requested service port; a bare port match is not used,
 because a remote client's ephemeral port could equal an app socket's port. A socket held
-on several fds of one process counts once; non-empty output with no process record is an
-unknown count (asks). Loopback
+on several fds of one process counts once. The count is known only when every line is
+accounted for (`ConnectionCount.isUnrecognised`): a `p<pid>`, an `f<fd>` after one, or an `n`
+socket record after one with a port on both ends, every process naming at least one socket;
+anything else is an unknown count for every port (asks). Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
 140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
 here). External servers are not counted or stopped.
@@ -300,7 +305,8 @@ during the alert.
   Stop, Delete, Get or Install (each External row reads its buttons from
   `ExternalPresentation.Actions`). Reset is app-wide (`AppEvent.reset`), gated by
   `blocksReset`, which is false for `.external`: it deletes only the app's own
-  `envs` directory and layout file and never signals or stops an External server. STT Try it on an External row offers the test
+  `envs` directory and layout file, clears `restore.wanted` (`AppEffect.clearWantedServices`,
+  before `runReset`), and never signals or stops an External server. STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
   for the discovery pass it cancels (`SerialPass`), so no probe or owner lookup
@@ -373,8 +379,9 @@ Every Python server, and the native server, follows one contract.
    started never outlives it. An External server (one the app adopted, not
    started) is not the app's child and keeps running after Quit by design.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all the servers it started, in parallel, and leaves
-   External servers running; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. Once the child is reaped its pid may be reused, so a stop after that signals the group only while no process holds the pid (a group with members keeps its id reserved); a live process on it is another one and is left alone. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
+   10 s. Quitting the app (once the [quit guard](#restore-and-quit-guard) lets it: a quit
+   with clients connected asks first and can be cancelled) stops all the servers it started,
+   in parallel, and leaves External servers running; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. Once the child is reaped its pid may be reused, so a stop after that signals the group only while no process holds the pid (a group with members keeps its id reserved); a live process on it is another one and is left alone. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the upstream

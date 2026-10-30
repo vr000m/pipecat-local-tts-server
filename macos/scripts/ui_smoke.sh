@@ -174,6 +174,14 @@ descendants() {
     done
 }
 
+# An old-style plist array of the arguments, as a launch argument is parsed: "(tone, kokoro)".
+# Without the commas the value does not parse and lands as a string that shadows the suite's array.
+plist_array() {
+    local out="" v
+    for v in "$@"; do out="${out:+$out, }$v"; done
+    printf '(%s)' "$out"
+}
+
 launch() {
     : >"$WORK/app.log"
     /usr/bin/log stream --level info --style compact \
@@ -186,19 +194,22 @@ launch() {
     # search list including the suite's: the app's reads of these two keys return the arguments
     # (that is how step 6 seeds its wanted set), while its writes go to the suite. So in-run
     # wanted-set writes are not read back by the app, and the real domain is never touched.
-    local restore_bool=false wanted_values=()
+    local restore_bool=false wanted_values=() wanted_arg
     [[ "${RESTORE:-NO}" != YES ]] || restore_bool=true
     # shellcheck disable=SC2206
     wanted_values=(${WANTED:-})
     defaults delete "$SUITE" >/dev/null 2>&1 || true
     defaults write "$SUITE" restoreOnLaunch -bool "$restore_bool"
+    # The same values in both seeds (an empty array is unset under bash 3.2's `set -u`).
     if ((${#wanted_values[@]})); then
         defaults write "$SUITE" restore.wanted -array "${wanted_values[@]}"
+        wanted_arg="$(plist_array "${wanted_values[@]}")"
     else
         defaults write "$SUITE" restore.wanted -array
+        wanted_arg="$(plist_array)"
     fi
     PIPECAT_TOOLBAR_DEFAULTS_SUITE="$SUITE" "$EXE" \
-        -restoreOnLaunch "${RESTORE:-NO}" -restore.wanted "(${WANTED:-})" >"$WORK/stdout.log" 2>&1 &
+        -restoreOnLaunch "${RESTORE:-NO}" -restore.wanted "$wanted_arg" >"$WORK/stdout.log" 2>&1 &
     APP_PID=$!
     local deadline=$((SECONDS + LAUNCH_WAIT))
     SEEN=""

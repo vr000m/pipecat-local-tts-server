@@ -22,9 +22,10 @@ public enum ClientCount: Equatable, Sendable {
 /// instead would drop a tunnelled remote client's row, and excluding the app's pid would drop the
 /// Apple Speech server's own rows (the app hosts it), so neither is used.
 ///
-/// Line shapes (`-F`): `p<pid>` starts a process; `f<fd>` (when requested) starts a file;
+/// Line shapes (`-F`): `p<pid>` starts a process; `f<fd>` (lsof always adds it) starts a file;
 /// `n<local>-><peer>` names a connected socket. IPv4 is `127.0.0.1:50189`, IPv6 is bracketed
-/// `[::1]:50191`. A listening socket has no `->`. Unknown lines are ignored.
+/// `[::1]:50191`. A listening socket has no `->`. `rows` skips a line it cannot read, so a count
+/// is only trusted (`counts`) when `isUnrecognised` accounts for every line.
 public enum ConnectionCount {
     struct Row: Equatable {
         var pid: Int32
@@ -45,12 +46,45 @@ public enum ConnectionCount {
         return Int(endpoint[endpoint.index(after: colon)...])
     }
 
-    /// True when non-empty output has no `p<pid>` process record at all: a format this parser
-    /// cannot read (zero would be a false "no clients"), so the caller treats the count as unknown.
+    /// True when non-empty output holds a record this parser cannot account for, so a count from
+    /// it could be a false "no clients": the caller treats it as unknown. Every line must be a
+    /// `p<pid>`, an `f<fd>` after one, or an `n` record after one that `row` reads (a port on both
+    /// ends), and every process must name at least one socket (`-sTCP:ESTABLISHED` lists a process
+    /// only for its connected sockets). Empty output is lsof's "nothing matched": recognised.
     public static func isUnrecognised(_ output: String) -> Bool {
-        let lines = output.split(whereSeparator: \.isNewline)
-        guard !lines.isEmpty else { return false }
-        return !lines.contains { $0.first == "p" && Int32($0.dropFirst()) != nil }
+        var pid: Int32?
+        var named = true  // the current process named a socket (vacuously, before the first)
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let tag = line.first else { continue }
+            let rest = line.dropFirst()
+            switch tag {
+            case "p":
+                guard named, let next = Int32(rest) else { return true }
+                pid = next
+                named = false
+            case "f":
+                guard pid != nil, !rest.isEmpty else { return true }
+            case "n":
+                guard let pid, row(pid: pid, name: rest) != nil else { return true }
+                named = true
+            default:
+                return true
+            }
+        }
+        return !named
+    }
+
+    /// The socket an `n` record names, or nil when it is not `<local>-><peer>` with a port on both
+    /// ends. `rows` and `isUnrecognised` both read `n` records through it, so they agree on which
+    /// records are rows.
+    static func row(pid: Int32, name rest: Substring) -> Row? {
+        guard let arrow = rest.range(of: "->"),
+            let localPort = port(of: rest[..<arrow.lowerBound]),
+            let peerPort = port(of: rest[arrow.upperBound...])
+        else { return nil }
+        return Row(
+            pid: pid, local: String(rest[..<arrow.lowerBound]), peer: String(rest[arrow.upperBound...]),
+            localPort: localPort, peerPort: peerPort)
     }
 
     static func rows(_ output: String) -> [Row] {
@@ -65,21 +99,21 @@ public enum ConnectionCount {
             case "p":
                 pid = Int32(rest)
             case "n":
-                guard let pid, let arrow = rest.range(of: "->"),
-                    let localPort = port(of: rest[..<arrow.lowerBound]),
-                    let peerPort = port(of: rest[arrow.upperBound...])
-                else { continue }
-                guard seen.insert([String(pid), String(rest[..<arrow.lowerBound]), String(rest[arrow.upperBound...])]).inserted
-                else { continue }
-                rows.append(
-                    Row(
-                        pid: pid, local: String(rest[..<arrow.lowerBound]), peer: String(rest[arrow.upperBound...]),
-                        localPort: localPort, peerPort: peerPort))
+                guard let pid, let row = row(pid: pid, name: rest) else { continue }
+                guard seen.insert([String(pid), row.local, row.peer]).inserted else { continue }
+                rows.append(row)
             default:
                 continue
             }
         }
         return rows
+    }
+
+    /// The quit guard's count per port in `ports` from one lsof output: `.known` (what `parse`
+    /// counts) only when `isUnrecognised` accounts for every record, else `.unknown` for every port.
+    public static func counts(output: String, ports: [Int], appPid: Int32) -> [Int: ClientCount] {
+        if isUnrecognised(output) { return Dictionary(uniqueKeysWithValues: ports.map { ($0, .unknown) }) }
+        return parse(output: output, ports: ports, appPid: appPid).mapValues { .known($0) }
     }
 
     /// Every port in `ports` gets an entry (0 when nothing is connected).

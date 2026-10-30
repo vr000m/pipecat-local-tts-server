@@ -74,7 +74,8 @@ for running both.
   An External service has no per-service Stop, Delete, Get or Install; it offers
   Try it (for STT, the test clip only, never the microphone) and the Copy items.
   Reset is app-wide: it deletes only the app's own `envs` directory and layout
-  file, never signals or stops an External server, and is not blocked by one.
+  file and clears the saved set of services to restore (`restore.wanted`), never
+  signals or stops an External server, and is not blocked by one.
   **Quit leaves it running**
   (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
 - **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the
@@ -96,7 +97,9 @@ for running both.
   them again at the next launch, after the launch check finishes, once per process.
   The **Restore running services on launch** preference (`restoreOnLaunch`) is on by default.
   A service whose port is stale or busy ends Failed and is not retried. A service you
-  stopped, deleted, or that failed is not restored.
+  stopped, deleted, or that failed is not restored. Quitting does not change the set (a
+  server that becomes ready, or fails, during Quit's shutdown keeps its entry), and Reset
+  clears it.
 - **Quit confirmation**: Quit (and any quit that is not system-initiated, including the one `just
   app-open` / `app-install` send via `quit_app.sh`) asks first when a client is connected to a server
   the app started: "Quit anyway" or "Cancel". A count that cannot be read also asks.
@@ -106,7 +109,8 @@ for running both.
   when its local and peer endpoints are the swapped endpoints of a row the app owns whose
   peer port is a requested service port; a bare port match is not used, because a remote
   client's ephemeral port could equal an app socket's port. One bounded `lsof` call; a socket held on several fds of one process counts once,
-  and `lsof` output the parser does not recognise counts as unreadable (asks). Loopback
+  and `lsof` output the parser cannot fully account for (any malformed or unknown line, or a
+  process with no readable socket) counts as unreadable (asks). Loopback
   tunnels (for example SSH) count as clients. A half-open connection
   from a vanished peer keeps counting until the server's keepalive reaps it (about
   140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`
@@ -156,7 +160,8 @@ for running both.
   weights) and checks the services again. It is refused while a server the app
   started runs, or a service installs or is being deleted; an External server
   does not block it (Reset deletes only the app's own environments and never
-  touches that server). While Reset or the launch check runs, the
+  touches that server). Reset also clears the saved set of services to restore,
+  so the next launch restores none. While Reset or the launch check runs, the
   Python services' Get, Start and Delete are disabled.
 
 ## Use a service from Pipecat
@@ -264,8 +269,10 @@ Manual UI checklist, for what needs a person (or a terminal granted Accessibilit
    shows the app; Try it > Test Clip shows "Matches the clip" (no microphone needed).
    Right-click a running Tone or Apple Speech row: Test Voice plays a line, Test
    Transcription shows the same match.
-4. Stop each: the port closes. Quit from the panel with Tone running: within ~10 s
-   `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
+4. Stop each: the port closes. Quit from the panel with Tone running and a client
+   connected (a Pipecat bot, say): Quit asks first, and Cancel keeps everything running.
+   Quit again and choose Quit anyway (with no client connected it does not ask): within
+   ~10 s `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
 5. Tone > Delete: the row returns to Install.
 
 To check the server side of the app's contract without the app, `just smoke-supervised

@@ -150,15 +150,16 @@ public final class ServiceDriver {
     }
 
     /// The one place an event reaches the reducer: the service's persisted wanted flag follows
-    /// `WantedTransition` from the event and the phase before and after, and is written only
-    /// when it changes, through the store's per-service operations (other services' flags are never
-    /// touched).
+    /// `WantedTransition` from the event, the phase before and after and `quitting` (after quit
+    /// began only a Stop or Delete moves it), and is written only when it changes, through the
+    /// store's per-service operations (other services' flags are never touched).
     private func reduce(_ event: LifecycleEvent) -> [LifecycleEffect] {
         let before = state.phase
         let effects = ServiceLifecycle.reduce(&state, event)
         let store = dependencies.wanted
         let was = store.contains(service)
-        let now = WantedTransition.next(wanted: was, kind: event.kind, before: before, after: state.phase)
+        let now = WantedTransition.next(
+            wanted: was, kind: event.kind, before: before, after: state.phase, quitting: quitting)
         if now != was { store.setWanted(now, for: service) }
         return effects
     }

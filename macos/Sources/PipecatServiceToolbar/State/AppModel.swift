@@ -219,7 +219,7 @@ final class AppModel {
 
     /// Starts the services the last session left running (`RestorePolicy`), once per process.
     private func restoreWantedServices() {
-        guard !restoredThisProcess, phase == .ready else { return }
+        guard RestorePolicy.shouldRun(alreadyRan: restoredThisProcess, phase: phase) else { return }
         restoredThisProcess = true
         let states = Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) })
         let plan = RestorePolicy.plan(wanted: wantedStore.read(), states: states, preferenceOn: restoreOnLaunch)

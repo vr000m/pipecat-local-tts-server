@@ -94,6 +94,23 @@ import Testing
         #expect(plan[.dia] == .skip(.modelNotCached))
     }
 
+    // MARK: - The launch restore gate
+
+    /// Every `AppPhase` x already ran: only the first call in `ready` runs the restore.
+    @Test func theRestoreRunsOnceAndOnlyFromReady() {
+        for kind in AppLifecycleTests.PhaseKind.allCases {
+            for alreadyRan in [false, true] {
+                let phase = AppLifecycleTests.sample(kind)
+                let want: Bool
+                switch kind {
+                case .ready: want = !alreadyRan
+                case .idle, .bootstrapping, .resetting, .failed, .shuttingDown: want = false
+                }
+                #expect(RestorePolicy.shouldRun(alreadyRan: alreadyRan, phase: phase) == want, "\(kind) ran=\(alreadyRan)")
+            }
+        }
+    }
+
     // MARK: - WantedTransition: one row per Kind
 
     /// What the flag does for each event kind, written independently of `WantedTransition`.
@@ -121,21 +138,26 @@ import Testing
             for before in ServiceLifecycleTests.phases {
                 for after in ServiceLifecycleTests.phases {
                     for wanted in [true, false] {
-                        let label = "\(kind) \(before) -> \(after) wanted=\(wanted)"
-                        let got = WantedTransition.next(wanted: wanted, kind: kind, before: before, after: after)
-                        let entersFailed = !Self.isFailed(before) && Self.isFailed(after)
-                        let entersRunning = before != .running && after == .running
-                        let want: Bool
-                        if entersFailed {
-                            want = false  // (1) any route into .failed clears
-                        } else {
-                            switch Self.expected(kind) {
-                            case .clear: want = false  // (2), (3)
-                            case .setOnNewlyRunning: want = entersRunning ? true : wanted  // (4)
-                            case .keep: want = wanted  // (5)
+                        for quitting in [false, true] {
+                            let label = "\(kind) \(before) -> \(after) wanted=\(wanted) quitting=\(quitting)"
+                            let got = WantedTransition.next(
+                                wanted: wanted, kind: kind, before: before, after: after, quitting: quitting)
+                            let entersFailed = !Self.isFailed(before) && Self.isFailed(after)
+                            let entersRunning = before != .running && after == .running
+                            let want: Bool
+                            if quitting, Self.expected(kind) != .clear {
+                                want = wanted  // (0) after quit began only a Stop or Delete moves it
+                            } else if entersFailed {
+                                want = false  // (1) any route into .failed clears
+                            } else {
+                                switch Self.expected(kind) {
+                                case .clear: want = false  // (2), (3)
+                                case .setOnNewlyRunning: want = entersRunning ? true : wanted  // (4)
+                                case .keep: want = wanted  // (5)
+                                }
                             }
+                            #expect(got == want, "\(label)")
                         }
-                        #expect(got == want, "\(label)")
                     }
                 }
             }
