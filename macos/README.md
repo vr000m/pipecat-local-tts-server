@@ -98,8 +98,8 @@ for running both.
   The **Restore running services on launch** preference (`restoreOnLaunch`) is on by default.
   A service whose port is stale or busy ends Failed and is not retried. A service you
   stopped, deleted, or that failed is not restored. Quitting does not change the set (a
-  server that becomes ready, or fails, during Quit's shutdown keeps its entry), and Reset
-  clears it.
+  server that becomes ready, or fails, during Quit's shutdown keeps its entry; a Stop during
+  shutdown still clears that service), and Reset clears it.
 - **Quit confirmation**: Quit (and any quit that is not system-initiated, including the one `just
   app-open` / `app-install` send via `quit_app.sh`) asks first when a client is connected to a server
   the app started: "Quit anyway" or "Cancel". A count that cannot be read also asks.

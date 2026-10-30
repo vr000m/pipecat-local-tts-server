@@ -1286,14 +1286,22 @@ def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
     launches = re.findall(r'^\s*(?:\S+=\S+ )*"\$EXE"', code, re.MULTILINE)
     assert len(launches) == 1, "the app must be launched from exactly one place (launch())"
     assert f'{var.group(1)}="$SUITE" "$EXE"' in code
-    assert 'defaults write "$SUITE" restore.wanted' in code
-    assert 'defaults write "$SUITE" restoreOnLaunch' in code
+    # The two key names come from the Swift sources, so a rename there fails here.
+    wanted_swift = (
+        _MACOS / "Sources" / "PipecatToolbarCore" / "WantedServiceStore.swift"
+    ).read_text()
+    wanted_m = re.search(r'static let key = "([\w.]+)"', wanted_swift)
+    restore_m = re.search(r'static let key = "([\w.]+)"', swift)
+    assert wanted_m and restore_m, "WantedServiceStore.key / RestorePreference.key not found"
+    wanted_key, restore_key = wanted_m.group(1), restore_m.group(1)
+    assert f'defaults write "$SUITE" {wanted_key}' in code
+    assert f'defaults write "$SUITE" {restore_key}' in code
     assert 'defaults delete "$SUITE"' in code
     # The arguments seed the wanted set on every launch, as a plist array (`plist_array`).
-    assert '-restore.wanted "$wanted_arg"' in code
-    assert '-restore.wanted "(${WANTED:-})"' not in code, "space-separated values do not parse"
+    assert f'-{wanted_key} "$wanted_arg"' in code
+    assert f'-{wanted_key} "(${{WANTED:-}})"' not in code, "space-separated values do not parse"
     # And the real domain is checked, not assumed, to be untouched.
-    assert 'defaults read "$BUNDLE_ID" restore.wanted' in code
+    assert f'defaults read "$BUNDLE_ID" {wanted_key}' in code
     # ... without ever printing the operator's value: only a hash is kept and compared.
     assert "real_wanted_hash" in code and "shasum" in code
     assert "REAL_WANTED_AFTER" not in code
