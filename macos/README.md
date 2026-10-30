@@ -104,25 +104,30 @@ for running both.
   app-open` / `app-install` send via `quit_app.sh`) asks first when a client is connected to a server
   the app started: "Quit anyway" or "Cancel". A count that cannot be read also asks.
   Logout, Restart and Shut Down are not asked (provisional codes; see Known limits).
-- **Counting**: server-side connections on the app's own port, minus the server-side
-  mirror of the app's own client sockets (its probes and Try it). A row is excluded only
-  when its local and peer endpoints are the swapped endpoints of a row the app owns whose
-  peer port is a requested service port; a bare port match is not used, because a remote
-  client's ephemeral port could equal an app socket's port. The count is one bounded `lsof`
-  call with a 2 s deadline. An `lsof` still running then is sent SIGKILL, and the count is
-  unknown, so it asks. The killed `lsof` is reaped within 0.2 s, else by a background reaper.
+- **Counting**: server-side connections on the app's own port count.
+  The server-side mirrors of the app's own client sockets (its probes and Try it) do not.
+  A row is a mirror only when its two endpoints are those of an app-owned row, swapped.
+  That app row's peer port must be a requested service port.
+  A bare port match is not used: a remote client's ephemeral port could equal an app socket's port.
+  The count is one bounded `lsof` call with a 2 s deadline. An `lsof` still running then is sent
+  SIGKILL, and the count is unknown, so it asks. The killed `lsof` is reaped within 0.2 s, else
+  by a background reaper.
   These are also unknown (asks): `lsof` did not launch, died on a signal, or wrote any stderr.
   So is an exit other than 0 (or 1 with no output). So is an `lsof` that exited while a pipe
   stayed open past the deadline. Exit 1 with no output at all is zero. A socket held on several
   fds of one process counts once. `lsof` output the parser cannot fully account for counts as
-  unreadable (asks): any malformed or unknown line, or a process with no readable socket. A
-  socket name must be one `->` between two endpoints. Each is exactly `<IPv4>:<port>` or
-  `[<IPv6>]:<port>`, with a port of 1-65535. The check uses no C parser. It allows ASCII
+  unreadable (asks). That is any malformed or unknown line, or a process with no readable socket.
+  Every line must end in `\n`, and no line may be empty.
+  A pid must be ASCII decimal 1 to 2147483647, and an fd 0 to 2147483647.
+  Neither may have a sign or a leading zero. A
+  socket name must be one `->` between two endpoints. Each is `<IPv4>:<port>` or
+  `[<IPv6>]:<port>`, with a port of 1-65535. The IPv6 form may use `::`, a dotted IPv4 tail
+  or a `%scope`. The check uses no C parser. It allows ASCII
   only, no leading zero in an octet or port, and 1-4 hex digits a group. Loopback
-  tunnels (for example SSH) count as clients. A half-open connection
-  from a vanished peer keeps counting until the server's keepalive reaps it (about
-  140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`
-  120; the STT servers' keepalive is not verified here).
+  tunnels (for example SSH) count as clients.
+  A half-open connection from a vanished peer counts until the server's keepalive reaps it.
+  That is about 140 s at the TTS server's keepalive defaults (`TTS_WS_PING_INTERVAL` 20 +
+  `TTS_WS_PING_TIMEOUT` 120). The STT servers' keepalive is not verified here.
 - **Updating with no dropped clients**: the app's Quit stops its servers. For a
   zero-drop update run the TTS server as a LaunchAgent (`just tts-install <backend>`);
   the app then shows it as External and leaves it running. TTS servers only.
@@ -254,9 +259,11 @@ grant, so it cannot open the panel or click. It launches the app with your real
 support and log folders (installing nothing) and refuses while another copy runs.
 Step 5 starts a tone server outside the app on 8665, checks the bootstrap
 log reports it as External, and checks it is still running after Quit. Step 6 relaunches
-with tone in the wanted set and restore on: it checks tone is still External, the log has
-no `restore: starting`, and no `tts_server`/`stt_server` process was started (the
-bootstrap's own probe children are normal, so it does not assert zero children). Steps 5
+with tone in the wanted set and restore on. It checks the log reports tone as External again.
+It checks the log has no `restore: starting` and does have `restore: skipping tone: external`.
+It checks no `tts_server`/`stt_server` `serve` process was started. The bootstrap's own probe
+children are normal, so it does not assert zero children. Its Quit must exit clean and leave
+the external server running. Steps 5
 and 6 are skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
 the repo `.venv` cannot import `tts_server`. `LAUNCH_WAIT` (seconds, default 30) bounds the
 wait for the bootstrap to log its end and `QUIT_WAIT` (seconds, default 20) the wait for each

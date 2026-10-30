@@ -72,14 +72,15 @@ public enum PortProbe {
     }
 
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
-    /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
-    /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (an lsof still running then is sent SIGKILL before this returns; it is reaped within
-    /// `reapGrace`, else by a background reaper). A launch failure, death by a signal, any stderr (whatever
-    /// the exit status), an exit other than 0 (or 1 with no output), the deadline, a pipe still open
-    /// past the deadline after lsof exited, or output that does not fit the `-Fpn` grammar
-    /// (`ConnectionCount.rows`) gives `.unknown` for every port. lsof exits 1 with no output when
-    /// nothing matches: that is zero.
+    /// -Fpn` run (see `ConnectionCount` for the rule).
+    /// It blocks because `applicationShouldTerminate` must answer synchronously.
+    /// `timeout` bounds the run: an lsof still running then is sent SIGKILL before this returns.
+    /// That child is reaped within `reapGrace`, else by a background reaper.
+    /// These give `.unknown` for every port: a launch failure, a death by a signal, or any stderr.
+    /// So do an exit other than 0 (or 1 with no output) and the deadline.
+    /// So does a pipe still open past the deadline after lsof exited.
+    /// So does output that does not fit the `-Fpn` grammar (`ConnectionCount.rows`).
+    /// lsof exits 1 with no output when nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
     ) -> [Int: ClientCount] {

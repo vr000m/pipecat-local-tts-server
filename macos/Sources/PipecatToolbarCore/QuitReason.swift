@@ -12,7 +12,7 @@ public enum QuitReason {
     public static let attributeKeyword = fourCC("why?")
     /// `kAEReallyLogOut` ('rlgo'), `kAELogOut` ('logo'), `kAERestart` ('rest'), `kAEShutDown` ('shut'),
     /// `kAEShowRestartDialog` ('rrst'), `kAEShowShutdownDialog` ('rsdn').
-    public static let systemCodes: Set<UInt32> = [
+    static let systemCodes: Set<UInt32> = [
         fourCC("rlgo"), fourCC("logo"), fourCC("rest"), fourCC("shut"), fourCC("rrst"), fourCC("rsdn"),
     ]
 
@@ -28,7 +28,7 @@ public enum QuitReason {
     }
 
     /// The big-endian value of a four-character code.
-    public static func fourCC(_ s: String) -> UInt32 {
+    static func fourCC(_ s: String) -> UInt32 {
         s.utf8.prefix(4).reduce(0) { ($0 << 8) | UInt32($1) }
     }
 

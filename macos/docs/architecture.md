@@ -272,11 +272,11 @@ a terminate in the same turn sees it, and begins the quit in that same turn). Th
 system-quit state to `decide`, which evaluates the blocking `lsof` count only when none of
 those arms has already decided.
 
-**Counting.** `ConnectionCount` takes one bounded `lsof` call and counts, per owned
-port, server-side rows minus the server-side mirror of the app's own client sockets. A
-row is excluded only when its local and peer endpoints are the swapped endpoints of a row
-the app owns whose peer port is a requested service port; a bare port match is not used,
-because a remote client's ephemeral port could equal an app socket's port. A socket held
+**Counting.** `PortProbe.clientCounts` runs one bounded `lsof` call. `ConnectionCount` reads
+its output. Per owned port, it counts server-side rows. The server-side mirrors of the app's
+own client sockets do not count. A row is a mirror only when its two endpoints are those of an
+app-owned row, swapped. That app row's peer port must be a requested service port. A bare port
+match is not used: a remote client's ephemeral port could equal an app socket's port. A socket held
 on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s
 deadline. An `lsof` still running then is sent SIGKILL before the call returns. The result is
 then unknown (the guard asks). The run is started with `posix_spawn`, and only the call reaps
@@ -286,17 +286,20 @@ reaped within 0.2 s, else by a background reaper. A launch failure, a death by s
 stderr output is also unknown. So is an exit other than 0 (or 1 with no output). So is an
 `lsof` that exited while a pipe stayed open past the deadline. Exit 1 with no stdout and no
 stderr is `lsof`'s "nothing matched" and counts zero. One walk of lsof's `-Fpn` grammar
-(`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
-one or more file records, each an `f<fd>` followed by exactly one `n` socket record. That
-record is one `->` between two whole endpoints, each `<IPv4>:<port>` or `[<IPv6>]:<port>`
-(port 1-65535, `ConnectionCount.port(of:)`). That check uses no C parser. It allows ASCII only,
+(`ConnectionCount.rows`) yields every row or nothing. Each process is a `p<pid>` followed by
+one or more file records. Each file record is an `f<fd>` followed by exactly one `n` socket
+record. Every line ends in `\n`, the last one included. No line is empty, and a `\r` is a bad byte. A pid
+is ASCII decimal 1 to Int32.max, and an fd 0 to Int32.max. Neither has a sign or leading zero. A
+socket record is one `->` between two whole endpoints, each `<IPv4>:<port>` or `[<IPv6>]:<port>`
+(port 1-65535, `ConnectionCount.port(of:)`). The IPv6 form allows `::`, a dotted IPv4 tail and
+a `%scope`. That check uses no C parser. It allows ASCII only,
 no leading zero in an octet or port, and 1-4 hex digits a group. Any other line gives no rows.
 So does an `f` without its `n`, or an `n` without its `f`. So does a process with no file
 record. `ConnectionCount.clientCounts(lsofOutput:ports:appPid:)` turns no rows into an unknown
 count for every port (asks). Empty output is zero. Loopback
-tunnels count as clients. Half-open peers count until keepalive reaps them (about
-140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified
-here). External servers are not counted or stopped.
+tunnels count as clients. Half-open peers count until keepalive reaps them: about
+140 s at the TTS server's keepalive defaults. The STT servers' keepalive is not verified
+here. External servers are not counted or stopped.
 
 **Zero-drop updates.** Run the TTS server as a LaunchAgent (`just tts-install`); the
 app shows it as External and Quit leaves it running. TTS servers only.

@@ -13,20 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - macOS app: running services are restored on the next launch (preference `restoreOnLaunch`, on by default; the toggle is in the panel's gear menu).
   A stale or busy port ends Failed and is not retried.
-- macOS app: Quit asks for confirmation when a client is connected to a server the app started (or the count
-  cannot be read). Connections are counted from one bounded `lsof` call, excluding the app's own sockets.
+- macOS app: Quit asks for confirmation when a client is connected to a server the app started.
+  It also asks when the count cannot be read.
+  Connections are counted from one bounded `lsof` call, excluding the app's own sockets.
   An `lsof` still running at its 2 s deadline is sent SIGKILL, and the count is unknown (asks).
   The killed `lsof` is reaped within 0.2 s, else by a background reaper.
   A launch failure, signal death or any stderr also asks. So does an exit other than 0 (or 1 with no output).
   So does a pipe held open past the deadline.
   So does any malformed or unknown `lsof` line, or a process with no readable socket.
+  So does a line not ended by `\n`, or an empty line. So does a pid or fd with a sign or leading zero.
   So does a socket name that is not two whole IPv4 or bracketed IPv6 endpoints joined by one `->`.
+  IPv6 may use `::`, a dotted IPv4 tail or a `%scope`.
   Endpoints are checked without a C parser: ASCII only, no leading zero in an octet or port.
   Exit 1 with no output is zero.
-  System-initiated quits are not asked, but that exemption rests on a provisional quit-reason code table (the
-  documented Apple Event codes, not yet observed): a manual Log Out / Restart / Shut Down check has not run.
-  Half-open peers count until keepalive reaps them (about 140 s at the TTS server's keepalive defaults; the
-  STT servers' keepalive is not verified here).
+  System-initiated quits are not asked. That exemption rests on a provisional quit-reason code table.
+  The table holds the documented Apple Event codes, not yet observed.
+  A manual Log Out / Restart / Shut Down check has not run.
+  Half-open peers count until keepalive reaps them: about 140 s at the TTS server's keepalive defaults.
+  The STT servers' keepalive is not verified here.
 - `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
 - macOS app: Reset also clears the saved set of services to restore (`restore.wanted`), so the next
   launch restores none. Quitting never changes the set; a Stop during shutdown still clears that service.

@@ -53,3 +53,17 @@ public struct UserDefaultsWantedServiceStore: WantedServiceStore {
         defaults.set(values.sorted(), forKey: Self.key)
     }
 }
+
+/// The "Restore running services on launch" preference: on when the key was never written, so a
+/// first launch restores, and a stored value wins afterwards.
+public enum RestorePreference {
+    public static let key = "restoreOnLaunch"
+
+    public static func isOn(_ defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) == nil ? true : defaults.bool(forKey: key)
+    }
+
+    public static func set(_ on: Bool, in defaults: UserDefaults) {
+        defaults.set(on, forKey: key)
+    }
+}

@@ -86,7 +86,7 @@ import Testing
         #expect(ConnectionCount.rows("COMMAND PID USER\nfoo 1 bar\n") == nil)
         #expect(ConnectionCount.rows("n127.0.0.1:1->127.0.0.1:2\n") == nil)
         #expect(ConnectionCount.rows("") == [])
-        #expect(ConnectionCount.rows("\n") == [])
+        #expect(ConnectionCount.rows("\n") == nil, "an empty line is off-grammar")
         #expect(ConnectionCount.rows(Self.loopback)?.count == 7)
     }
 
@@ -100,7 +100,6 @@ import Testing
         let cases: [(String, String, ClientCount)] = [
             // Recognised: what lsof -nP -iTCP -sTCP:ESTABLISHED -Fpn emits.
             ("empty", "", .known(0)),
-            ("a bare newline", "\n", .known(0)),
             ("the recorded loopback listing", Self.loopback, .known(2)),
             ("a server and its client", "p162\nf4\n\(server)\np205\nf3\n\(client)\n", .known(1)),
             ("a bracketed IPv6 row", "p162\nf4\nn[::1]:19011->[::1]:50219\n", .known(1)),
@@ -109,8 +108,10 @@ import Testing
                 "p675\nf31\nn[fe80:19::4f41:8157:767a:6ea9]:1024->[fe80:19::5654:f797:89c:37ce]:1024\n", .known(0)
             ),
             ("one socket on two fds", "p162\nf4\n\(server)\nf5\n\(server)\n", .known(1)),
-            ("no trailing newline", "p162\nf4\n\(server)", .known(1)),
             // Unrecognised: a record the parser cannot account for.
+            // lsof ends every line in `\n`: a missing last one may be a cut record.
+            ("no trailing newline", "p162\nf4\n\(server)", .unknown),
+            ("a bare newline", "\n", .unknown),
             ("a process record alone", "p123\n", .unknown),
             ("a process with an fd but no socket", "p123\nf4\n", .unknown),
             ("a process with a malformed socket", "p123\nf4\nnmalformed\n", .unknown),
@@ -338,6 +339,88 @@ import Testing
         }
     }
 
+    /// Codex round 9: `Int32("+300")` read the pid as 300. With 300 the app pid, the client row
+    /// became the app's own socket and excluded the server row: `.known(0)`, so Quit skipped asking.
+    @Test func aSignedPidCannotPassForTheAppsPid() {
+        let server = "p162\nf4\nn127.0.0.1:19011->127.0.0.1:51000\n"
+        let client = "f9\nn127.0.0.1:51000->127.0.0.1:19011\n"
+        for pid in ["+300", "0300", "+0300"] {
+            let output = server + "p\(pid)\n" + client
+            #expect(ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 300) == [19011: .unknown], "\(pid)")
+            #expect(ConnectionCount.rows(output) == nil, "\(pid): rows")
+        }
+        // The canonical pid is the app's own probe: excluded, as before.
+        #expect(Self.count(Self.known(output: server + "p300\n" + client, ports: [19011], appPid: 300), 19011) == 0)
+    }
+
+    /// Every token of the walker apart from the endpoints, one defect at a time. Each case sits
+    /// beside a clean server row (pid 162), and an accepted case adds a second server row, so a
+    /// wrong accept shows as `.known(2)` and a wrong reject as `.unknown`. lsof prints canonical
+    /// positive pids and a socket's fd as its number; every line ends in `\n`.
+    @Test func theRecordGrammarIsStrictOverItsStateSpace() {
+        let clean = "p162\nf4\nn127.0.0.1:19011->10.0.0.50:61000\n"
+        let second = "n127.0.0.1:19011->10.0.0.51:61001"
+        // (pid value, accepted)
+        let pids: [(String, Bool)] = [
+            ("1", true), ("163", true), ("675", true), ("2147483647", true), ("1000000000", true),
+            ("", false), ("0", false), ("00", false), ("007", false), ("0163", false), ("+300", false),
+            ("-5", false), ("-0", false), ("+0", false), (" 5", false), ("5 ", false), ("\t5", false), ("5x", false),
+            ("x5", false), ("0x1F", false), ("1_000", false), ("1e3", false), ("1.0", false), ("2147483648", false),
+            ("4294967296", false), ("99999999999", false), ("12345678901", false), ("5\r", false), ("5\u{0}", false),
+            ("\u{0}5", false), ("5\u{7F}", false), ("\u{0661}", false), ("\u{FF15}", false), ("5\u{301}", false),
+            ("p5", false), ("5\u{FFFD}", false),
+        ]
+        for (value, ok) in pids {
+            let output = clean + "p\(value)\nf5\n\(second)\n"
+            let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]
+            #expect(got == (ok ? .known(2) : .unknown), "pid \(value.debugDescription)")
+            #expect((ConnectionCount.rows(output) == nil) == !ok, "pid \(value.debugDescription): rows")
+        }
+        // (fd value, accepted)
+        let fds: [(String, Bool)] = [
+            ("0", true), ("3", true), ("31", true), ("2147483647", true),
+            ("", false), ("00", false), ("03", false), ("+3", false), ("-1", false), (" 3", false), ("3 ", false),
+            ("3u", false), ("cwd", false), ("txt", false), ("mem", false), ("rtd", false), ("NOFD", false), ("DEL", false),
+            ("2147483648", false), ("99999999999", false), ("3\r", false), ("3\u{0}", false), ("\u{0661}", false),
+            ("3\u{FFFD}", false), ("f3", false),
+        ]
+        for (value, ok) in fds {
+            let output = clean + "f\(value)\n\(second)\n"
+            let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]
+            #expect(got == (ok ? .known(2) : .unknown), "fd \(value.debugDescription)")
+            #expect((ConnectionCount.rows(output) == nil) == !ok, "fd \(value.debugDescription): rows")
+        }
+        // Whole-output shapes: line ends, empty lines, unknown tags and record order. (output, accepted)
+        let shapes: [(String, Bool)] = [
+            (clean + "p163\nf5\n\(second)\n", true), (clean + "f5\n\(second)\n", true),
+            // Line ends: only `\n`, and on every line.
+            (clean + "p163\nf5\n\(second)", false), (clean + "p163\r\nf5\r\n\(second)\r\n", false),
+            (clean + "p163\rf5\r\(second)\r", false), (clean + "p163\nf5\n\(second)\r\n", false),
+            (clean + "p163\u{2028}f5\u{2028}\(second)\n", false), (clean + "p163\u{85}f5\u{85}\(second)\n", false),
+            (clean + "p163\u{0B}f5\u{0B}\(second)\n", false), (clean + "p163\u{0C}f5\u{0C}\(second)\n", false),
+            // Empty lines and trailing bytes.
+            (clean + "\n", false), ("\n" + clean, false), ("p162\n\nf4\nn127.0.0.1:19011->10.0.0.50:61000\n", false),
+            (clean + "\u{0}", false), (clean + "\u{0}\n", false), (clean + " \n", false), (clean + "\r", false),
+            // Leading or trailing whitespace on a whole line.
+            (clean + " p163\nf5\n\(second)\n", false), (clean + "p163\n f5\n\(second)\n", false),
+            (clean + "p163\nf5\n \(second)\n", false), (clean + "p163\nf5\n\(second) \n", false),
+            // Unknown tags, in each position, and a known tag's other case.
+            (clean + "c\n", false), (clean + "cpython3\n", false), (clean + "t0\n", false), (clean + "P163\n", false),
+            (clean + "F5\n\(second)\n", false), (clean + "f5\nN127.0.0.1:19011->10.0.0.51:61001\n", false),
+            (clean + "p163\nc\nf5\n\(second)\n", false), (clean + "p163\nf5\nt0\n\(second)\n", false),
+            (clean + "\u{FFFD}\n", false), (clean + "\u{0661}\n", false),
+            // Order: duplicate `p`, `f` without `n`, `n` without `f`, two names for one fd.
+            (clean + "p163\np164\nf5\n\(second)\n", false), (clean + "p163\n", false), (clean + "f5\n", false),
+            (clean + "f5\nf6\n\(second)\n", false), (clean + "p163\n\(second)\n", false), (clean + "\(second)\n", false),
+            (clean + "f5\n\(second)\n\(second)\n", false), ("f4\n" + clean, false),
+        ]
+        for (output, ok) in shapes {
+            let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]
+            #expect(got == (ok ? .known(2) : .unknown), "\(output.debugDescription)")
+            #expect((ConnectionCount.rows(output) == nil) == !ok, "\(output.debugDescription): rows")
+        }
+    }
+
     /// The host state space, checked by the validator alone with no C parser. Each host is tried
     /// in its endpoint form on both sides of the arrow, beside a clean server row, so a wrong
     /// accept shows as `.known` and a wrong reject as `.unknown`.
@@ -388,7 +471,6 @@ import Testing
         for (host, v6, ok) in hosts {
             let endpoint = v6 ? "[\(host)]:50217" : "\(host):50217"
             #expect((ConnectionCount.port(of: Substring(endpoint)) == 50217) == ok, "\(endpoint.debugDescription)")
-            #expect((v6 ? ConnectionCount.isIPv6(Substring(host)) : ConnectionCount.isIPv4(Substring(host))) == ok)
             for name in ["\(endpoint)->\(good)", "\(good)->\(endpoint)"] {
                 let output = "p162\nf4\n\(server)\nf5\nn\(name)\n"
                 let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]

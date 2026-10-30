@@ -38,7 +38,7 @@ public enum QuitGuardPolicy {
 
     /// Client count per owned service from a per-port probe result; a port the probe did not
     /// report is `.unknown` (which the guard asks about).
-    public static func counts(
+    static func counts(
         ports: [Service: Int], byPort: [Int: ClientCount]
     ) -> [Service: ClientCount] {
         ports.mapValues { byPort[$0] ?? .unknown }
