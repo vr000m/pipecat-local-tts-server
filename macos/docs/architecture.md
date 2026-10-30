@@ -263,7 +263,9 @@ retried.
 **Quit guard.** `applicationShouldTerminate` decides synchronously through
 `QuitGuardPolicy.decide`: a drain in progress terminates now; a prompt already showing
 answers cancel; a system-initiated quit and the no-client case proceed after the
-shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks. A quit is
+shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks. The ask carries
+the whole `QuitPrompt` (title, one line per busy service, closing sentence), so the app only
+renders it; when no count could be read the title says clients may be connected. A quit is
 system-initiated when `QuitReason` says so for the Apple Event's reason code, or when the
 `willPowerOffNotification` flag is set (the app sets it synchronously on the main queue, so
 a terminate in the same turn sees it, and begins the quit in that same turn). The delegate passes its real drain, prompt and

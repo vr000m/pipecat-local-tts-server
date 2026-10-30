@@ -130,11 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         case .cancel:
             return .terminateCancel
-        case .confirm(let message):
+        case .confirm(let prompt):
             NSApp.activate()
             let alert = NSAlert()
-            alert.messageText = "Clients are connected"
-            alert.informativeText = message + "\n\nQuitting stops these servers and drops the connections."
+            alert.messageText = prompt.title
+            alert.informativeText = prompt.informativeText
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Quit anyway")
             alert.buttons[0].keyEquivalent = "\r"

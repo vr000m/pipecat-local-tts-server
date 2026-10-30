@@ -4,21 +4,21 @@ import Foundation
 /// shut down), where the quit guard must not prompt or block.
 ///
 /// The code is the `kAEQuitReason` attribute of the quit event, a four-character code.
-/// TODO(Phase 3 spike): this table is the documented set from AEMachine.h, not yet observed;
-/// verify it against a menu Quit, an `osascript` quit and a real Log Out, then pin it in
+/// TODO(manual check, not yet run): this table is the documented set from AEMachine.h, not yet
+/// observed; verify it against a menu Quit, an `osascript` quit and a real Log Out, then pin it in
 /// `QuitReasonTests`.
 public enum QuitReason {
     /// `kAEQuitReason` ('why?'): the quit event's attribute keyword that carries the reason code.
     public static let attributeKeyword = fourCC("why?")
-    /// `kAEQuitApplication` ('quit'): the plain quit event (also what `osascript` sends); user-initiated.
-    public static let quitAll = fourCC("quit")
     /// `kAEReallyLogOut` ('rlgo'), `kAELogOut` ('logo'), `kAERestart` ('rest'), `kAEShutDown` ('shut'),
     /// `kAEShowRestartDialog` ('rrst'), `kAEShowShutdownDialog` ('rsdn').
     public static let systemCodes: Set<UInt32> = [
         fourCC("rlgo"), fourCC("logo"), fourCC("rest"), fourCC("shut"), fourCC("rrst"), fourCC("rsdn"),
     ]
 
-    public static func isSystemInitiated(code: UInt32) -> Bool {
+    /// Whether `code` is one of `systemCodes`; any other code (the plain `kAEQuitApplication`
+    /// 'quit' included) is user-initiated. Callers use `isSystemQuit`.
+    static func isSystemInitiated(code: UInt32) -> Bool {
         systemCodes.contains(code)
     }
 

@@ -18,9 +18,55 @@ import Testing
         return false
     }
 
-    static func message(_ d: QuitGuardDecision) -> String? {
-        if case .confirm(let message) = d { return message }
+    static func prompt(_ d: QuitGuardDecision) -> QuitPrompt? {
+        if case .confirm(let prompt) = d { return prompt }
         return nil
+    }
+
+    /// The prompt's per-service lines.
+    static func message(_ d: QuitGuardDecision) -> String? { prompt(d)?.body }
+
+    // The whole prompt's wording, pinned exactly: Core owns the title, body and footer, and the
+    // app only renders them (the alert's informative text is body, a blank line, footer).
+
+    @Test func theWholePromptWhenEveryCountIsKnown() throws {
+        let tone = Service.tone.info.displayName
+        let whisper = Service.whisper.info.displayName
+        let prompt = try #require(Self.prompt(Self.decide([.tone: .known(1), .whisper: .known(3)])))
+        #expect(prompt.title == "Clients are connected")
+        let lines = Set(prompt.body.split(separator: "\n").map(String.init))
+        #expect(lines == ["\(tone): 1 connected client", "\(whisper): 3 connected clients"], "\(prompt.body)")
+        #expect(prompt.footer == "Quitting stops these servers and drops the connections.")
+        #expect(prompt.informativeText == prompt.body + "\n\n" + prompt.footer)
+    }
+
+    @Test func theWholePromptWhenKnownAndUnknownCountsMix() throws {
+        let tone = Service.tone.info.displayName
+        let whisper = Service.whisper.info.displayName
+        let prompt = try #require(
+            Self.prompt(Self.decide([.tone: .known(2), .whisper: .unknown, .kokoro: .known(0)])))
+        #expect(prompt.title == "Clients are connected")
+        let lines = Set(prompt.body.split(separator: "\n").map(String.init))
+        #expect(
+            lines == ["\(tone): 2 connected clients", "\(whisper): could not check for connected clients"],
+            "\(prompt.body)")
+        #expect(prompt.footer == "Quitting stops these servers and drops the connections.")
+    }
+
+    /// No count could be read: the prompt must not claim that clients are connected.
+    @Test func theWholePromptWhenEveryCountIsUnknown() throws {
+        let tone = Service.tone.info.displayName
+        let whisper = Service.whisper.info.displayName
+        let prompt = try #require(Self.prompt(Self.decide([.tone: .unknown, .whisper: .unknown])))
+        #expect(prompt.title == "Clients may be connected")
+        let lines = Set(prompt.body.split(separator: "\n").map(String.init))
+        #expect(
+            lines == [
+                "\(tone): could not check for connected clients",
+                "\(whisper): could not check for connected clients",
+            ], "\(prompt.body)")
+        #expect(prompt.footer == "Quitting stops these servers and drops any connections they have.")
+        #expect(prompt.informativeText == prompt.body + "\n\n" + prompt.footer)
     }
 
     @Test func noCountsAndZeroCountsQuitAfterShuttingDown() {

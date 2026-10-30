@@ -28,7 +28,9 @@ public struct UserDefaultsWantedServiceStore: WantedServiceStore {
     static let key = "restore.wanted"
     private nonisolated(unsafe) let defaults: UserDefaults
 
-    public init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    /// No default: the app passes `PreferencesDomain.defaults()`, so a smoke run's suite is never
+    /// bypassed by a store that silently fell back to `.standard`.
+    public init(defaults: UserDefaults) { self.defaults = defaults }
 
     /// The stored array as written; anything that is not an array of strings reads as empty.
     private func raw() -> [String] { defaults.array(forKey: Self.key) as? [String] ?? [] }

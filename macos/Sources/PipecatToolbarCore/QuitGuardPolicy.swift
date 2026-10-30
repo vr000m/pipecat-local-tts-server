@@ -6,10 +6,21 @@ public enum QuitGuardDecision: Equatable, Sendable {
     case proceedNow
     /// `.terminateLater` and `shutdownAll()`: nothing to protect, or the system is quitting us.
     case proceedAfterShutdown
-    /// Ask first (Quit anyway / Cancel) with this message.
-    case confirm(message: String)
+    /// Ask first (Quit anyway / Cancel) with this prompt.
+    case confirm(QuitPrompt)
     /// `.terminateCancel`: a terminate arrived while the prompt is already showing.
     case cancel
+}
+
+/// The whole quit confirmation's text, so the app target only renders it: `title` is the alert's
+/// message text, `body` (one line per busy service) and `footer` make its informative text.
+public struct QuitPrompt: Equatable, Sendable {
+    public let title: String
+    public let body: String
+    public let footer: String
+
+    /// `body` and `footer`, a blank line apart: the alert's informative text.
+    public var informativeText: String { body + "\n\n" + footer }
 }
 
 public enum QuitGuardPolicy {
@@ -37,16 +48,25 @@ public enum QuitGuardPolicy {
         if systemQuit { return .proceedAfterShutdown }
         let busy = counts().filter { $0.value != .known(0) }
         if busy.isEmpty { return .proceedAfterShutdown }
-        return .confirm(message: message(busy))
+        return .confirm(prompt(busy))
     }
 
-    static func message(_ busy: [Service: ClientCount]) -> String {
+    /// The prompt for the busy services (none of them `known(0)`). The title and footer claim
+    /// connections only when at least one count is known; when every count is unknown they say
+    /// clients may be connected.
+    static func prompt(_ busy: [Service: ClientCount]) -> QuitPrompt {
         let lines = busy.sorted { $0.key.rawValue < $1.key.rawValue }.map { service, count in
             switch count {
             case .known(let n): "\(service.info.displayName): \(n) connected client\(n == 1 ? "" : "s")"
             case .unknown: "\(service.info.displayName): could not check for connected clients"
             }
         }
-        return lines.joined(separator: "\n")
+        let anyKnown = busy.values.contains { if case .known = $0 { true } else { false } }
+        return QuitPrompt(
+            title: anyKnown ? "Clients are connected" : "Clients may be connected",
+            body: lines.joined(separator: "\n"),
+            footer: anyKnown
+                ? "Quitting stops these servers and drops the connections."
+                : "Quitting stops these servers and drops any connections they have.")
     }
 }

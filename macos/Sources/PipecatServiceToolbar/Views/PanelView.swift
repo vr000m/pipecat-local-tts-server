@@ -35,7 +35,7 @@ struct PanelView: View {
         .animation(.snappy(duration: 0.28), value: app.page)
         // Discovery re-probes only while the panel is visible. UNVERIFIED: that a
         // `MenuBarExtra(.window)` content view gets both on every open and close
-        // (a person must confirm; Phase 3 re-checks by hand).
+        // (a person must confirm; manual check, not yet run).
         .onAppear { app.panelVisibilityChanged(true) }
         .onDisappear { app.panelVisibilityChanged(false) }
     }

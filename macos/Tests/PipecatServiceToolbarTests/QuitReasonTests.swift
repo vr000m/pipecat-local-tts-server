@@ -23,9 +23,9 @@ import Testing
         #expect(QuitReason.text(QuitReason.attributeKeyword) == "why?")
     }
 
+    /// `kAEQuitApplication` ('quit'): the plain quit event (also what `osascript` sends).
     @Test func aPlainQuitIsUserInitiated() {
-        #expect(QuitReason.quitAll == QuitReason.fourCC("quit"))
-        #expect(!QuitReason.isSystemInitiated(code: QuitReason.quitAll))
+        #expect(!QuitReason.isSystemInitiated(code: QuitReason.fourCC("quit")))
     }
 
     @Test(arguments: ["abcd", "QUIT", "rlg0", "shu", "    "])
