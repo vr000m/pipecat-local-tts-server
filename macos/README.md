@@ -108,9 +108,16 @@ for running both.
   mirror of the app's own client sockets (its probes and Try it). A row is excluded only
   when its local and peer endpoints are the swapped endpoints of a row the app owns whose
   peer port is a requested service port; a bare port match is not used, because a remote
-  client's ephemeral port could equal an app socket's port. One bounded `lsof` call (2 s deadline; one still running then is sent SIGKILL and reaped, taking up to 0.2 s more, before the call returns, and the count is unknown, so it asks). These are also unknown (asks): `lsof` did not launch, it died on a signal, it wrote any stderr, it exited other than 0 (or 1 with no output), or it exited but a pipe stayed open past the deadline. Exit 1 with no output at all is zero; a socket held on several fds of one process counts once,
-  and `lsof` output the parser cannot fully account for (any malformed or unknown line, or a
-  process with no readable socket) counts as unreadable (asks). Loopback
+  client's ephemeral port could equal an app socket's port. The count is one bounded `lsof`
+  call with a 2 s deadline. An `lsof` still running then is sent SIGKILL, and the count is
+  unknown, so it asks. The killed `lsof` is reaped within 0.2 s, else by a background reaper.
+  These are also unknown (asks): `lsof` did not launch, died on a signal, or wrote any stderr.
+  So is an exit other than 0 (or 1 with no output). So is an `lsof` that exited while a pipe
+  stayed open past the deadline. Exit 1 with no output at all is zero. A socket held on several
+  fds of one process counts once. `lsof` output the parser cannot fully account for counts as
+  unreadable (asks): any malformed or unknown line, or a process with no readable socket. A
+  socket name must be one `->` between two endpoints. Each is exactly `<IPv4>:<port>` or
+  `[<IPv6>]:<port>`, with a port of 1-65535. Loopback
   tunnels (for example SSH) count as clients. A half-open connection
   from a vanished peer keeps counting until the server's keepalive reaps it (about
   140 s at the TTS server's keepalive defaults, `TTS_WS_PING_INTERVAL` 20 + `TTS_WS_PING_TIMEOUT`

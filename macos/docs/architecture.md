@@ -277,10 +277,19 @@ port, server-side rows minus the server-side mirror of the app's own client sock
 row is excluded only when its local and peer endpoints are the swapped endpoints of a row
 the app owns whose peer port is a requested service port; a bare port match is not used,
 because a remote client's ephemeral port could equal an app socket's port. A socket held
-on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s deadline; an `lsof` still running then is sent SIGKILL before the call returns, and the result is unknown (the guard asks). The run is started with `posix_spawn` and only the call reaps it (`waitid` with `WNOWAIT` watches for the exit without reaping), so the pid it signals at the deadline is still the child's, alive or a zombie, never a reused one; the killed child is reaped within 0.2 s more, or on a background thread if it takes longer to die. A launch failure, a death by signal, any stderr output, an exit other than 0 (or 1 with no output), or an `lsof` that exited while a pipe stayed open past the deadline is also unknown; exit 1 with no stdout and no stderr is `lsof`'s "nothing matched" and counts zero. One walk of lsof's `-Fpn` grammar
+on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s
+deadline. An `lsof` still running then is sent SIGKILL before the call returns. The result is
+then unknown (the guard asks). The run is started with `posix_spawn`, and only the call reaps
+it. `waitid` with `WNOWAIT` watches for the exit without reaping. So the pid signalled at the
+deadline is still the child's, alive or a zombie, never a reused one. The killed child is
+reaped within 0.2 s, else by a background reaper. A launch failure, a death by signal or any
+stderr output is also unknown. So is an exit other than 0 (or 1 with no output). So is an
+`lsof` that exited while a pipe stayed open past the deadline. Exit 1 with no stdout and no
+stderr is `lsof`'s "nothing matched" and counts zero. One walk of lsof's `-Fpn` grammar
 (`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
-one or more file records, each an `f<fd>` followed by exactly one `n` socket record with a port
-on both ends. Any other line, an `f` without its `n`, an `n` without its `f`, or a process with
+one or more file records, each an `f<fd>` followed by exactly one `n` socket record. That
+record is one `->` between two whole endpoints, each `<IPv4>:<port>` or `[<IPv6>]:<port>`
+(port 1-65535, `ConnectionCount.port(of:)`). Any other line, an `f` without its `n`, an `n` without its `f`, or a process with
 no file record gives no rows, and `ConnectionCount.clientCounts(lsofOutput:ports:appPid:)` turns that into
 an unknown count for every port (asks); empty output is zero. Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about

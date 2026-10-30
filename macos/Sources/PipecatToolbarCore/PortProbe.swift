@@ -74,8 +74,8 @@ public enum PortProbe {
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (an lsof still running then is sent SIGKILL before this returns, and reaped: the call waits
-    /// at most `reapGrace` more for that). A launch failure, death by a signal, any stderr (whatever
+    /// (an lsof still running then is sent SIGKILL before this returns; it is reaped within
+    /// `reapGrace`, else by a background reaper). A launch failure, death by a signal, any stderr (whatever
     /// the exit status), an exit other than 0 (or 1 with no output), the deadline, a pipe still open
     /// past the deadline after lsof exited, or output that does not fit the `-Fpn` grammar
     /// (`ConnectionCount.rows`) gives `.unknown` for every port. lsof exits 1 with no output when

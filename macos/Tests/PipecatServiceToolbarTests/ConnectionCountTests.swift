@@ -317,6 +317,63 @@ import Testing
         }
     }
 
+    /// Codex round 7: an empty host and a second `->` were accepted, so this read as `.known(0)`.
+    @Test func anEmptyHostWithExtraArrowsIsUnknown() {
+        let got = ConnectionCount.clientCounts(lsofOutput: "p1\nf1\nn:50000->:19011->:123\n", ports: [19011], appPid: 1)
+        #expect(got == [19011: .unknown])
+        #expect(ConnectionCount.rows("p1\nf1\nn:50000->:19011->:123\n") == nil)
+    }
+
+    /// The whole `n` name grammar, one side at a time: every endpoint shape against a valid other
+    /// side, in both positions, plus the arrow and the whole line. A name is a row only when it is
+    /// exactly `<endpoint>-><endpoint>`; anything else makes the whole output unknown, never a
+    /// skipped record. Each case sits beside a clean server row so a skipped line would show.
+    @Test func theSocketNameGrammarAcceptsOnlyWholeEndpoints() {
+        let good = "127.0.0.1:50217"
+        // (endpoint, accepted)
+        let endpoints: [(String, Bool)] = [
+            ("127.0.0.1:50217", true), ("10.0.0.133:1", true), ("255.255.255.255:65535", true),
+            ("[::1]:50217", true), ("[2600:1901:0:47fc::]:443", true),
+            ("[fe80:19::4f41:8157:767a:6ea9]:1024", true), ("[fe80::1%en0]:1024", true),
+            ("[::ffff:127.0.0.1]:50217", true),
+            // Host defects.
+            (":50217", false), ("[]:50217", false), ("*:50217", false), ("localhost:50217", false),
+            ("127.0.0.1.5:50217", false), ("127.0.0:50217", false), ("256.0.0.1:50217", false),
+            (" 127.0.0.1:50217", false), ("::1:50217", false), ("[::1:50217", false), ("::1]:50217", false),
+            ("[zz::1]:50217", false), ("[fe80::1%]:1024", false), ("[fe80::1%en 0]:1024", false),
+            ("[127.0.0.1]:50217", false), ("127.0.0.1:x:50217", false),
+            // Port defects.
+            ("127.0.0.1:", false), ("127.0.0.1", false), ("127.0.0.1:0", false), ("127.0.0.1:65536", false),
+            ("127.0.0.1:-1", false), ("127.0.0.1:+50217", false), ("127.0.0.1:050217", false),
+            ("127.0.0.1:99999999999999999999", false), ("127.0.0.1:5 0", false), ("127.0.0.1:abc", false),
+            ("127.0.0.1:\u{0661}", false), ("[::1]:", false), ("[::1]50217", false), ("[::1]:0", false),
+            // Trailing junk.
+            ("127.0.0.1:50217 (ESTABLISHED)", false), ("127.0.0.1:50217 ", false), ("[::1]:50217]", false),
+            ("[::1]:50217:1", false),
+        ]
+        var names: [(String, Bool)] = []
+        for (endpoint, ok) in endpoints {
+            names.append(("\(endpoint)->\(good)", ok))
+            names.append(("\(good)->\(endpoint)", ok))
+        }
+        names += [
+            ("\(good)\(good)", false), ("\(good)->", false), ("->\(good)", false), ("\(good)-->\(good)", false),
+            ("\(good)->\(good)->\(good)", false), ("\(good)->->\(good)", false), ("\(good)<-\(good)", false),
+            ("\(good) -> \(good)", false), ("\(good)->\(good)\t", false),
+        ]
+        let server = "n127.0.0.1:19011->10.0.0.50:61000"
+        for (name, ok) in names {
+            let output = "p162\nf4\n\(server)\nf5\nn\(name)\n"
+            let got = ConnectionCount.clientCounts(lsofOutput: output, ports: [19011], appPid: 1)[19011]
+            if ok {
+                #expect(got != .unknown, "accepted: \(name)")
+            } else {
+                #expect(got == .unknown, "rejected: \(name)")
+                #expect(ConnectionCount.rows(output) == nil, "rejected: \(name): rows")
+            }
+        }
+    }
+
     /// The colons inside an IPv6 address must not be read as the port separator.
     @Test func aBracketedIPv6AddressIsReadByItsPortNotItsColons() {
         let output = """

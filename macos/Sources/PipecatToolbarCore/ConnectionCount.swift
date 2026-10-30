@@ -25,8 +25,9 @@ public enum ClientCount: Equatable, Sendable {
 ///
 /// Grammar (`-F`, recorded from the real binary): the output is zero or more process records,
 /// each `p<pid>` followed by one or more file records; a file record is `f<fd>` (lsof always adds
-/// it) followed by exactly one `n<local>-><peer>`. IPv4 is `127.0.0.1:50189`, IPv6 is bracketed
-/// `[::1]:50191` (a scoped address carries its scope inside the brackets). `rows` is the one walk
+/// it) followed by exactly one `n<local>-><peer>` with one `->`. Each endpoint is a whole IPv4
+/// `127.0.0.1:50189` or bracketed IPv6 `[::1]:50191` with a port of 1-65535 (a scoped address
+/// carries its scope inside the brackets; `port(of:)` is the exact form). `rows` is the one walk
 /// of that grammar: it returns every row, or nil when any line does not fit it, and a count is
 /// `.known` only from a non-nil walk (`clientCounts`).
 public enum ConnectionCount {
@@ -45,22 +46,61 @@ public enum ConnectionCount {
         var peer: String
     }
 
-    /// The port after the last colon of an endpoint (`host:port`, `[v6]:port`).
+    /// The port of a whole endpoint as `lsof -nP` prints it, or nil when it is anything else.
+    /// The endpoint is `<IPv4>:<port>` or `[<IPv6>]:<port>`. IPv4 is a dotted quad. IPv6 may
+    /// carry a `%<scope>` of letters and digits. `inet_pton` checks each address. The port is
+    /// 1-65535 in decimal, with no sign or leading zero. Nothing may precede or follow it.
     static func port(of endpoint: Substring) -> Int? {
-        guard let colon = endpoint.lastIndex(of: ":") else { return nil }
-        return Int(endpoint[endpoint.index(after: colon)...])
+        let host: Substring
+        let portText: Substring
+        if endpoint.first == "[" {
+            guard let close = endpoint.firstIndex(of: "]") else { return nil }
+            let after = endpoint[endpoint.index(after: close)...]
+            guard after.first == ":" else { return nil }
+            host = endpoint[endpoint.index(after: endpoint.startIndex)..<close]
+            portText = after.dropFirst()
+            guard isIPv6(host) else { return nil }
+        } else {
+            let parts = endpoint.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 2 else { return nil }
+            host = parts[0]
+            portText = parts[1]
+            guard isIPv4(host) else { return nil }
+        }
+        guard (1...5).contains(portText.count), portText.first != "0",
+            portText.allSatisfy({ $0.isASCII && $0.isNumber }), let port = Int(portText), port <= 65535
+        else { return nil }
+        return port
     }
 
-    /// The socket an `n` record names, or nil when it is not `<local>-><peer>` with a port on both
-    /// ends (a listening socket has no `->`).
+    /// A dotted-quad IPv4 address (`inet_pton` is the judge; it rejects an empty host).
+    static func isIPv4(_ host: Substring) -> Bool {
+        var address = in_addr()
+        return inet_pton(AF_INET, String(host), &address) == 1
+    }
+
+    /// An IPv6 address, optionally scoped (`fe80::1%en0`): the address is judged by `inet_pton`,
+    /// and a scope must be one or more ASCII letters or digits.
+    static func isIPv6(_ host: Substring) -> Bool {
+        var address = host
+        if let percent = host.firstIndex(of: "%") {
+            let scope = host[host.index(after: percent)...]
+            guard !scope.isEmpty, scope.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return false }
+            address = host[..<percent]
+        }
+        var parsed = in6_addr()
+        return inet_pton(AF_INET6, String(address), &parsed) == 1
+    }
+
+    /// The socket an `n` record names, or nil when it is not exactly `<local>-><peer>`: one `->`,
+    /// and each side a whole endpoint that `port(of:)` accepts. A listening socket has no `->`.
     static func row(pid: Int32, name rest: Substring) -> Row? {
-        guard let arrow = rest.range(of: "->"),
-            let localPort = port(of: rest[..<arrow.lowerBound]),
-            let peerPort = port(of: rest[arrow.upperBound...])
+        guard let arrow = rest.range(of: "->") else { return nil }
+        let local = rest[..<arrow.lowerBound]
+        let peer = rest[arrow.upperBound...]
+        guard peer.range(of: "->") == nil, let localPort = port(of: local), let peerPort = port(of: peer)
         else { return nil }
-        return Row(
-            pid: pid, local: String(rest[..<arrow.lowerBound]), peer: String(rest[arrow.upperBound...]),
-            localPort: localPort, peerPort: peerPort)
+        return Row(pid: pid, local: String(local), peer: String(peer), localPort: localPort, peerPort: peerPort)
     }
 
     /// Where the walk is in the grammar: before any line (`start`), after a `p` (`process`: an `f`
