@@ -74,7 +74,7 @@ public enum PortProbe {
     /// Connected clients per port in `ports`, from one blocking `lsof -nP -iTCP -sTCP:ESTABLISHED
     /// -Fpn` run (see `ConnectionCount` for the rule). Blocking because
     /// `applicationShouldTerminate` must answer synchronously; the run is bounded by `timeout`
-    /// (an lsof still running then is sent SIGKILL before this returns). A failure, a non-zero exit with output or stderr, the deadline,
+    /// (an lsof still running then is sent SIGKILL before this returns). A failure, any stderr (whatever the exit status), a non-zero exit with output, the deadline,
     /// or output that does not fit the `-Fpn` grammar (`ConnectionCount.rows`) gives `.unknown` for every port. lsof exits 1 with no output when nothing matches: that is zero.
     public static func clientCounts(
         ports: [Int], appPid: Int32, timeout: TimeInterval = 2
@@ -135,8 +135,10 @@ public enum PortProbe {
         let output = String(decoding: box.data, as: UTF8.self)
         let errors = String(decoding: errBox.data, as: UTF8.self)
         let status = process.terminationStatus
-        // Exit 1 with both streams empty is lsof's "nothing matched": zero. Exit 1 with stderr is a failure.
-        guard status == 0 || (status == 1 && output.isEmpty && errors.isEmpty) else {
+        // Any stderr is a failure, whatever the exit status: a run that warned may have listed only
+        // some of the sockets (an undercount would let Quit skip its confirmation). Exit 1 with both
+        // streams empty is lsof's "nothing matched": zero.
+        guard errors.isEmpty, status == 0 || (status == 1 && output.isEmpty) else {
             return unknown
         }
         // Output that does not fit lsof's grammar is unknown, not zero (`ConnectionCount.rows`).

@@ -99,6 +99,15 @@ import Testing
         #expect(try Self.run("exit 2").counts == Self.allUnknown)
     }
 
+    /// Any stderr makes the run unknown, even at exit 0 with valid rows: a warning can mean the
+    /// listing is partial, and a partial count could let Quit skip its confirmation.
+    @Test func exitZeroWithStderrIsUnknown() throws {
+        let valid = "printf 'p500\\nf4\\nn127.0.0.1:19011->10.0.0.50:61000\\n'"
+        #expect(try Self.run("\(valid); echo 'lsof: WARNING: partial' >&2; exit 0").counts == Self.allUnknown)
+        #expect(try Self.run("echo 'lsof: WARNING' >&2; exit 0").counts == Self.allUnknown)
+        #expect(try Self.run("\(valid); echo warn >&2; exit 1").counts == Self.allUnknown)
+    }
+
     /// A command that cannot be launched is unknown, at once.
     @Test func aLaunchFailureIsUnknown() {
         let counts = PortProbe.clientCounts(
