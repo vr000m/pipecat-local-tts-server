@@ -1,7 +1,8 @@
 import Foundation
 
 /// How many clients are connected to an owned server: a count, or "could not tell"
-/// (lsof failed, missed its deadline, or printed output that does not fit its grammar). The quit guard asks the user for `unknown`.
+/// (lsof failed, died by a signal, wrote anything to stderr (whatever the exit status), exited non-zero with output,
+/// missed its deadline, or printed output that does not fit its grammar). The quit guard asks the user for `unknown`.
 public enum ClientCount: Equatable, Sendable {
     case known(Int)
     case unknown
