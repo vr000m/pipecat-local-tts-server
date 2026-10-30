@@ -215,8 +215,12 @@ shutdown (every service's, the bootstrap's subprocesses, the environment
 manager's installs and cache probes), even when no service is busy, then waits
 for the job in flight; after quit no job's end moves the phase or starts
 another. Each service's part starts with `ServiceDriver.quit()`; the app sets its
-`quitting` flag (`beginQuit()`) already in the Quit turn, before the shutdown task
-runs, so a probe answer queued meanwhile launches nothing. From then on no
+`quitting` flag (`beginQuit()`) already in the turn that accepts the quit, before the
+shutdown task runs: `AppModel.beginShutdown()` (the synchronous half of `shutdownAll()`)
+sends `.quit` from `applicationShouldTerminate`'s accepted arms before it returns
+`.terminateLater`, and from the power-off observer, never from a deferred task and never
+on a Cancel. So a probe answer queued meanwhile launches nothing, and a ready, failure or
+exit queued meanwhile is folded with `quitting` and can't move the wanted flag. From then on no
 read is issued or lands and no intent starts work, so a refresh the bootstrap
 issued late (or one in flight) can't attach an Apple Speech install the
 shutdown already passed. The download-size lookup starts only from a bootstrap
@@ -262,7 +266,7 @@ answers cancel; a system-initiated quit and the no-client case proceed after the
 shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks. A quit is
 system-initiated when `QuitReason` says so for the Apple Event's reason code, or when the
 `willPowerOffNotification` flag is set (the app sets it synchronously on the main queue, so
-a terminate in the same turn sees it). The delegate passes its real drain, prompt and
+a terminate in the same turn sees it, and begins the quit in that same turn). The delegate passes its real drain, prompt and
 system-quit state to `decide`, which evaluates the blocking `lsof` count only when none of
 those arms has already decided.
 
@@ -275,7 +279,7 @@ on several fds of one process counts once. One walk of lsof's `-Fpn` grammar
 (`ConnectionCount.rows`) yields every row or nothing: each process is a `p<pid>` followed by
 one or more file records, each an `f<fd>` followed by exactly one `n` socket record with a port
 on both ends. Any other line, an `f` without its `n`, an `n` without its `f`, or a process with
-no file record gives no rows, and `ConnectionCount.clientCounts(lsofOutput:)` turns that into
+no file record gives no rows, and `ConnectionCount.clientCounts(lsofOutput:ports:appPid:)` turns that into
 an unknown count for every port (asks); empty output is zero. Loopback
 tunnels count as clients. Half-open peers count until keepalive reaps them (about
 140 s at the TTS server's keepalive defaults; the STT servers' keepalive is not verified

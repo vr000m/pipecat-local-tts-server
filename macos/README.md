@@ -332,7 +332,9 @@ Build knobs (environment variables read by `macos/scripts/`):
 | `CONFIG` | `build_app.sh` | Swift build configuration, `release` (default) or `debug`. |
 | `APP_INSTALL_DIR` | `just app-install` | Install destination (default `~/Applications`). For the identity it signs with, see `SIGN_IDENTITY`. |
 | `BUNDLE_ID` | `build_app.sh` | Overrides `CFBundleIdentifier` (default `ai.pipecat.ServiceToolbar`); `just app-open` quits the id the build wrote. |
-| `QUIT_WAIT_SECS` | `quit_app.sh` | Whole seconds (default `30`) that `just app-open` and `just app-install` wait for a running copy to quit before launching or replacing the bundle: one deadline for the whole step, osascript calls included. Either recipe stops, without launching or replacing, on any non-zero exit of `quit_app.sh`; its header is the contract for the timing bound and the exit codes (a missing bundle id or a value that is not whole seconds is a usage error). |
+| `QUIT_WAIT_SECS` | `quit_app.sh` | Whole seconds (default `30`) that `just app-open` and `just app-install` wait for a running copy to quit before launching or replacing the bundle: one deadline for the whole step, osascript calls included. Either recipe stops, without launching or replacing, on any non-zero exit of `quit_app.sh`; its header is the contract for the timing bound and the exit codes (a missing bundle id or a value that is not whole seconds is a usage error). Not the smoke's `QUIT_WAIT` below. |
+| `LAUNCH_WAIT` | `ui_smoke.sh` | Seconds (default `30`) `just app-smoke` waits for each launch's bootstrap to log its end. |
+| `QUIT_WAIT` | `ui_smoke.sh` | Seconds (default `20`) `just app-smoke` waits for each quit it sends to finish. A separate knob from `QUIT_WAIT_SECS` (`quit_app.sh`, default `30`), which the smoke does not read. |
 | `PIPECAT_TTS_BUILD_CACHE` | `fetch_uv.sh` | Root of the build cache for the pinned `uv` download (default `~/Library/Caches/pipecat-tts-build`). |
 | `PIPECAT_UV` | `compile_stt_constraints.py` | The `uv` binary used to compile the STT constraints (default: the app's pinned uv). |
 

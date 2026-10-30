@@ -285,8 +285,10 @@ public final class ServiceDriver {
         await shutdown()
     }
 
-    /// Sets `quitting` now, before the asynchronous `quit()` runs: the app calls it in the same
-    /// main-actor turn as Quit, so a probe or read continuation already queued can't start work.
+    /// Sets `quitting` now, before the asynchronous `quit()` runs: the app calls it (through
+    /// `AppModel.beginShutdown`) in the main-actor turn that accepts a quit or power-off, so a
+    /// probe or read continuation already queued can't start work, and a ready, failure or exit
+    /// already queued is folded with `quitting` (`WantedTransition`) and can't move the flag.
     public func beginQuit() { quitting = true }
 
     public func dismissFailure() { dispatch(.dismissFailure) }

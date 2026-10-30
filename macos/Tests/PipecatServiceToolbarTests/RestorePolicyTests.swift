@@ -114,14 +114,12 @@ import Testing
     // MARK: - WantedTransition: one row per Kind
 
     /// What the flag does for each event kind before quit and after, written independently of
-    /// `WantedTransition`. The switch is exhaustive: a new `LifecycleEvent.Kind` fails to compile
-    /// until both of its effects are decided here.
-    enum Effect { case keep, clear, setOnNewlyRunning }
-
-    static func expected(_ kind: LifecycleEvent.Kind) -> (normal: Effect, quitting: Effect) {
+    /// `WantedTransition.rule` (only its `Effect` vocabulary is shared). The switch is exhaustive: a
+    /// new `LifecycleEvent.Kind` fails to compile until both of its effects are decided here.
+    static func expected(_ kind: LifecycleEvent.Kind) -> (normal: WantedTransition.Effect, quitting: WantedTransition.Effect) {
         switch kind {
         case .stopRequested, .removeRequested: (.clear, .clear)
-        case .ready, .nativeBound: (.setOnNewlyRunning, .keep)
+        case .ready, .nativeBound: (.setWhenNewlyRunning, .keep)
         case .refreshRequested, .environmentRead, .refreshed, .environmentChanged, .installRequested,
             .cancelInstallRequested, .installStage, .installEnded, .appleSpeechInstallEnded, .startRequested,
             .portOwnerFound, .launched, .launchFailed, .nativeLaunched, .nativeFailed, .supervisedError,
@@ -152,7 +150,7 @@ import Testing
                                 // After quit began the failure rule is off and only Stop or Delete clears.
                                 switch quitting ? Self.expected(kind).quitting : Self.expected(kind).normal {
                                 case .clear: want = false
-                                case .setOnNewlyRunning: want = entersRunning ? true : wanted
+                                case .setWhenNewlyRunning: want = entersRunning ? true : wanted
                                 case .keep: want = wanted
                                 }
                             }
@@ -166,16 +164,9 @@ import Testing
 
     /// Each kind's two effects, as `WantedTransition.rule` states them.
     @Test func everyKindChoosesItsEffectBeforeAndAfterQuit() {
-        func core(_ effect: Effect) -> WantedTransition.Effect {
-            switch effect {
-            case .keep: .keep
-            case .clear: .clear
-            case .setOnNewlyRunning: .setWhenNewlyRunning
-            }
-        }
         for kind in LifecycleEvent.Kind.allCases {
             let want = Self.expected(kind)
-            #expect(WantedTransition.rule(kind) == .init(normal: core(want.normal), quitting: core(want.quitting)), "\(kind)")
+            #expect(WantedTransition.rule(kind) == .init(normal: want.normal, quitting: want.quitting), "\(kind)")
         }
     }
 

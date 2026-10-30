@@ -168,7 +168,8 @@ final class AppModel {
                 job = Task { await runReset(old: old) }
             case .shutdown:
                 // In this turn, before the shutdown task runs: a probe or read continuation
-                // already queued on the main actor must not launch a server after Quit.
+                // already queued on the main actor must not launch a server after Quit, nor a
+                // queued ready, failure or exit move the wanted set (`WantedTransition`).
                 for model in services { model.driver.beginQuit() }
                 shutdownTask = Task { await runShutdown() }
             }
@@ -258,13 +259,21 @@ final class AppModel {
         }
     }
 
+    /// App quit (and power-off), the synchronous half: the phase moves to `shuttingDown`, every
+    /// driver's `quitting` is set and the shutdown task starts, all in the caller's turn. The
+    /// delegate calls it in the main-actor turn that accepts the quit, so a ready, failure or exit
+    /// callback already queued on the main actor runs with `quitting` set and can't move the
+    /// wanted set. A second call does nothing (`AppLifecycle`: no event moves `shuttingDown`).
+    func beginShutdown() { send(.quit) }
+
     /// App quit (and power-off): stops every running server (SIGTERM, 10 s
     /// grace, then SIGKILL), the bootstrap's subprocesses and the manager's
     /// (installs, cache probes), waits for busy families to drain
     /// (`EnvironmentManager.shutdown`), then for the bootstrap or Reset in
-    /// flight. Every call waits for the same shutdown.
+    /// flight. Begins the quit if `beginShutdown()` has not; every call waits
+    /// for the same shutdown.
     func shutdownAll() async {
-        send(.quit)
+        beginShutdown()
         await shutdownTask?.value
     }
 

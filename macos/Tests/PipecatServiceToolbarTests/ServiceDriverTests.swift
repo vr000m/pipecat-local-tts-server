@@ -1151,6 +1151,55 @@ import Testing
         #expect(store.current.isEmpty)
     }
 
+    /// The app begins the quit in the turn that accepts it (`AppModel.beginShutdown`, from
+    /// `applicationShouldTerminate`'s accepted arms and the power-off observer). A crash
+    /// callback already queued on the main actor at that moment runs after it, is folded with
+    /// `quitting` and keeps the flag. A `beginQuit` deferred to a later task (the old
+    /// `Task { await shutdownAll() }`) runs after the queued callback, which then clears it.
+    @Test func anExitQueuedWhenQuitIsAcceptedKeepsTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        #expect(store.current == [.tone])
+        guard let id = driver.state.server else {
+            Issue.record("no server: \(driver.state.phase)")
+            return
+        }
+        Task { @MainActor in driver.serverExited(id, status: 1) }
+        driver.beginQuit()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current == [.tone], "an exit queued when Quit was accepted cleared the flag")
+        process.exit(1)
+    }
+
+    /// The set side of the same turn: a ready line already emitted when Quit is accepted is read
+    /// after `beginQuit` (however many hops the reader takes) and does not newly set the flag.
+    @Test func aReadyQueuedWhenQuitIsAcceptedDoesNotSetTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.start()
+        await until { driver.state.server != nil }
+        process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        #expect(driver.state.phase == .starting, "the ready line was applied before this turn ended")
+        driver.beginQuit()
+        await until { driver.state.phase == .running }
+        #expect(driver.state.phase == .running, "the queued ready line was not read")
+        #expect(store.current.isEmpty, "a ready queued when Quit was accepted set the flag")
+        process.exit(15)
+        await until { driver.state.server == nil }
+        #expect(store.current.isEmpty)
+    }
+
     /// The clear side: a failure entered after quit began (here an install that fails during the
     /// shutdown) keeps the flag a restore set.
     @Test func aFailureAfterQuitBeganKeepsTheFlag() async {

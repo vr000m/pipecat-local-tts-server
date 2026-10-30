@@ -29,7 +29,9 @@ public enum ClientCount: Equatable, Sendable {
 /// of that grammar: it returns every row, or nil when any line does not fit it, and a count is
 /// `.known` only from a non-nil walk (`clientCounts`).
 public enum ConnectionCount {
-    struct Row: Equatable {
+    /// One socket row. Hashable on all fields; the ports are read from the endpoints, so two rows
+    /// are equal exactly when their (pid, local, peer) are.
+    struct Row: Hashable {
         var pid: Int32
         var local: String
         var peer: String
@@ -72,7 +74,7 @@ public enum ConnectionCount {
     /// one row (counted once per (pid, local, peer)).
     static func rows(_ output: String) -> [Row]? {
         var rows: [Row] = []
-        var seen = Set<[String]>()
+        var seen = Set<Row>()
         var pid: Int32 = 0
         var position = Position.start
         for line in output.split(whereSeparator: \.isNewline) {
@@ -87,7 +89,7 @@ public enum ConnectionCount {
                 position = .file
             case (.file, "n"):
                 guard let row = row(pid: pid, name: rest) else { return nil }
-                if seen.insert([String(pid), row.local, row.peer]).inserted { rows.append(row) }
+                if seen.insert(row).inserted { rows.append(row) }
                 position = .named
             default:
                 return nil

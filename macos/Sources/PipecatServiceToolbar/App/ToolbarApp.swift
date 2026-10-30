@@ -82,10 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
         ) { [weak self, model] _ in
-            // The observer runs on the main queue: set the flag in this turn, so a terminate
-            // handled before a deferred task starts can't miss it. Only the shutdown is async.
-            MainActor.assumeIsolated { self?.powerOffSeen = true }
-            Task { @MainActor in await model.shutdownAll() }
+            // The observer runs on the main queue: in this turn, set the flag (a terminate handled
+            // next can't miss it) and begin the quit (every driver's `quitting`, so a callback
+            // already queued can't move the wanted set). The shutdown task runs on its own; a
+            // later terminate waits for it.
+            MainActor.assumeIsolated {
+                self?.powerOffSeen = true
+                model.beginShutdown()
+            }
         }
         model.bootstrap()
     }
@@ -158,8 +162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return QuitGuardPolicy.counts(ports: ports, byPort: byPort)
     }
 
+    /// The quit is accepted: begin it in this turn (before `.terminateLater` returns and any
+    /// queued main-actor job runs), then reply once the shared shutdown ends. Only the accepted
+    /// arms call it; a Cancel never begins the quit.
     private func beginDrain() -> NSApplication.TerminateReply {
         terminateReplyPending = true
+        model.beginShutdown()
         Task {
             await model.shutdownAll()
             NSApp.reply(toApplicationShouldTerminate: true)

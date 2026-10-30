@@ -113,7 +113,7 @@ import Testing
             // Unrecognised: a record the parser cannot account for.
             ("a process record alone", "p123\n", .unknown),
             ("a process with an fd but no socket", "p123\nf4\n", .unknown),
-            ("a process with a malformed socket", "p123\nnmalformed\n", .unknown),
+            ("a process with a malformed socket", "p123\nf4\nnmalformed\n", .unknown),
             ("a socket with no peer (listening shape)", "p162\nf4\nn*:19011\n", .unknown),
             ("a socket with no port on one end", "p162\nf4\nn127.0.0.1:19011->127.0.0.1\n", .unknown),
             ("a good socket beside a malformed one", "p162\nf4\n\(server)\nf5\nnzzz\n", .unknown),
@@ -122,7 +122,9 @@ import Testing
             ("a socket before any process", "\(server)\np162\nf4\n\(server)\n", .unknown),
             ("an fd before any process", "f4\np162\n\(server)\n", .unknown),
             ("no process record at all", "\(server)\n", .unknown),
-            ("a non-numeric pid", "pabc\n\(server)\n", .unknown),
+            // The pid is the only defect: the rest is a valid server record.
+            ("a non-numeric pid", "pabc\nf4\n\(server)\n", .unknown),
+            ("an empty pid", "p\nf4\n\(server)\n", .unknown),
             ("an empty fd field", "p162\nf\n\(server)\n", .unknown),
             ("an unknown field", "p162\nf4\n\(server)\nt0\n", .unknown),
             ("the human-readable format", "COMMAND PID USER\nfoo 1 bar\n", .unknown),
