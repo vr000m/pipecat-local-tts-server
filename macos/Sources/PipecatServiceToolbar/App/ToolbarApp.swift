@@ -1,4 +1,5 @@
 import AppKit
+import PipecatToolbarCore
 import SwiftUI
 
 /// Entry point. `--render-icon <dir>` writes the app icon as an `.iconset` and
@@ -80,19 +81,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
-        ) { [model] _ in
-            Task { @MainActor in await model.shutdownAll() }
+        ) { [weak self, model] _ in
+            // The observer runs on the main queue: in this turn, set the flag (a terminate handled
+            // next can't miss it) and begin the quit (every driver's `quitting`, so a callback
+            // already queued can't move the wanted set). The shutdown task runs on its own; a
+            // later terminate waits for it.
+            MainActor.assumeIsolated {
+                self?.powerOffSeen = true
+                model.beginShutdown()
+            }
         }
         model.bootstrap()
     }
 
-    /// Quit always runs the shutdown: even with nothing running, a cache probe
+    /// Set while the quit confirmation is on screen; a terminate arriving then is refused.
+    private var promptShowing = false
+    /// Set by `willPowerOffNotification`, which may arrive before or after the terminate.
+    private var powerOffSeen = false
+
+    /// The four-character quit reason of the Apple Event being handled, nil without one
+    /// (a menu Quit has no event: user-initiated).
+    private static func currentQuitReason() -> UInt32? {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+            let attr = event.attributeDescriptor(forKeyword: AEKeyword(QuitReason.attributeKeyword))
+        else { return nil }
+        return attr.enumCodeValue
+    }
+
+    /// A user quit with clients connected asks first; a system log out, restart or shut down
+    /// never does. Quit otherwise runs the shutdown: even with nothing running, a cache probe
     /// or the bootstrap's build may be (`AppLifecycle`).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // A second quit request while the drain runs ends the app at once: the way out of a
-        // stuck drain. Servers still exit with it (stdin EOF).
-        guard !terminateReplyPending else { return .terminateNow }
+        let reason = Self.currentQuitReason()
+        let reasonText = QuitReason.text(reason)
+        let systemQuit = QuitReason.isSystemQuit(code: reason, powerOffSeen: powerOffSeen)
+        // `QuitGuardPolicy` owns the arm order (a second quit while the drain runs ends the app at
+        // once, the way out of a stuck drain; a terminate while the prompt shows is refused; a
+        // system quit is never blocked). It calls the `counts` closure (`clientCounts()`, the
+        // blocking lsof) only when none of those has decided.
+        let decision = QuitGuardPolicy.decide(
+            counts: { clientCounts() }, systemQuit: systemQuit, drainInProgress: terminateReplyPending,
+            promptShowing: promptShowing)
+        Log.app.info(
+            "terminate: \(String(describing: decision), privacy: .public) (reason \(reasonText, privacy: .public), system \(systemQuit, privacy: .public))"
+        )
+        switch decision {
+        case .proceedNow:
+            return .terminateNow
+        case .cancel:
+            return .terminateCancel
+        case .confirm(let prompt):
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.messageText = prompt.title
+            alert.informativeText = prompt.informativeText
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit anyway")
+            alert.buttons[0].keyEquivalent = "\r"
+            alert.buttons[1].keyEquivalent = ""
+            promptShowing = true
+            let response = alert.runModal()
+            promptShowing = false
+            guard response == .alertSecondButtonReturn else {
+                Log.app.info("terminate: cancelled at the prompt")
+                return .terminateCancel
+            }
+            return beginDrain()
+        case .proceedAfterShutdown:
+            return beginDrain()
+        }
+    }
+
+    /// Connected clients per owned service, one bounded lsof for every owned port; a port the
+    /// probe did not report is unknown (`QuitGuardPolicy.counts` owns the pipeline).
+    private func clientCounts() -> [Service: ClientCount] {
+        let appPid = ProcessInfo.processInfo.processIdentifier
+        return QuitGuardPolicy.counts(
+            ports: model.ownedPorts, probe: { PortProbe.clientCounts(ports: $0, appPid: appPid) })
+    }
+
+    /// The quit is accepted: begin it in this turn (before `.terminateLater` returns and any
+    /// queued main-actor job runs), then reply once the shared shutdown ends. Only the accepted
+    /// arms call it; a Cancel never begins the quit.
+    private func beginDrain() -> NSApplication.TerminateReply {
         terminateReplyPending = true
+        model.beginShutdown()
         Task {
             await model.shutdownAll()
             NSApp.reply(toApplicationShouldTerminate: true)

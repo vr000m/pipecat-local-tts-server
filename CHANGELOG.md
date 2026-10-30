@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-29
+
+### Added
+
+- macOS app: running services are restored on the next launch (preference `restoreOnLaunch`, on by default; the toggle is in the panel's gear menu).
+  A stale or busy port ends Failed and is not retried.
+- macOS app: Quit asks for confirmation when a client is connected to a server the app started.
+  It also asks when the count cannot be read.
+  Connections are counted from one bounded `lsof` call, excluding the app's own sockets.
+  An `lsof` still running at its 2 s deadline is sent SIGKILL, and the count is unknown (asks).
+  The killed `lsof` is reaped within 0.2 s, else by a background reaper.
+  A launch failure, signal death or any stderr also asks. So does an exit other than 0 (or 1 with no output).
+  So does a pipe held open past the deadline.
+  So does any malformed or unknown `lsof` line, or a process with no readable socket.
+  So does a line not ended by `\n`, or an empty line. So does a pid or fd with a sign or leading zero.
+  So does a socket name that is not two whole IPv4 or bracketed IPv6 endpoints joined by one `->`.
+  IPv6 may use `::`, a dotted IPv4 tail or a `%scope`.
+  Endpoints are checked without a C parser: ASCII only, no leading zero in an octet or port.
+  Exit 1 with no output is zero.
+  System-initiated quits are not asked. That exemption rests on a provisional quit-reason code table.
+  The table holds the documented Apple Event codes, not yet observed.
+  A manual Log Out / Restart / Shut Down check has not run.
+  Half-open peers count until keepalive reaps them: about 140 s at the TTS server's keepalive defaults.
+  The STT servers' keepalive is not verified here.
+- `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
+- macOS app: Reset also clears the saved set of services to restore (`restore.wanted`), so the next
+  launch restores none. Quitting never changes the set; a Stop during shutdown still clears that service.
+- `just app-smoke` (`macos/scripts/ui_smoke.sh`) relaunches with tone wanted and restore on.
+  It checks an External tone server is adopted and no server of the app's own is started.
+  Every launch uses a throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` and
+  `-restore.wanted` launch arguments.
+  The run fails if a read-only hash of the real `restore.wanted` changed.
+
 ## [0.8.3] - 2026-10-28
 
 ### Fixed
@@ -681,7 +714,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.0...v0.8.1

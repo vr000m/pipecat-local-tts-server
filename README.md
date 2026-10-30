@@ -122,6 +122,9 @@ just app-install # build it signed with a stable identity and install into ~/App
                  # (fails before building when the keychain lacks the `Code Signing` identity)
 ```
 
+The app restores the services you had running when it launches, and asks before quitting
+while a client is connected to one of its servers.
+
 See [`macos/README.md`](macos/README.md). The app drives the
 [`prefetch`](#prefetching-models) and [`serve --supervised`](#supervised-mode)
 commands below.

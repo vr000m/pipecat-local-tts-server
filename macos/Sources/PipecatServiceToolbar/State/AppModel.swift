@@ -40,17 +40,38 @@ final class AppModel {
     var page: Page = .running
     /// Families of variants opened in the catalog's Available group.
     var expandedFamilies: Set<Service> = []
+    /// Restore the services in the persisted wanted set after each launch's bootstrap
+    /// (`RestorePolicy`). Default on when unset, see `RestorePreference`.
+    /// Stored, so the gear menu's checkmark follows a click.
+    var restoreOnLaunch: Bool {
+        didSet { RestorePreference.set(restoreOnLaunch, in: preferences) }
+    }
     /// The catalog's TTS / STT tab (remembered between launches).
     var catalogKind: ServiceKind = ServiceKind(rawValue: UserDefaults.standard.string(forKey: "catalogKind") ?? "") ?? .tts {
         didSet { UserDefaults.standard.set(catalogKind.rawValue, forKey: "catalogKind") }
     }
 
-    init(paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe()) {
+    /// `preferences` holds the restore preference and the wanted set
+    /// (`PreferencesDomain`: the standard domain, or the suite a smoke run names).
+    init(
+        paths: AppPaths = .standard(), prober: any HelloProber = ExternalProbe(),
+        preferences: UserDefaults = PreferencesDomain.defaults()
+    ) {
         self.paths = paths
         self.prober = prober
-        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober) }
+        self.preferences = preferences
+        restoreOnLaunch = RestorePreference.isOn(preferences)
+        let wantedStore = UserDefaultsWantedServiceStore(defaults: preferences)
+        self.wantedStore = wantedStore
+        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober, wanted: wantedStore) }
         for model in services { model.app = self }
     }
+
+    /// The persisted "wanted running" set, shared by every service's driver.
+    @ObservationIgnored private let wantedStore: any WantedServiceStore
+    @ObservationIgnored private let preferences: UserDefaults
+    /// The one restore this process may run.
+    @ObservationIgnored private var restoredThisProcess = false
 
     func model(_ service: Service) -> ServiceModel {
         services.first { $0.service == service }!
@@ -82,6 +103,14 @@ final class AppModel {
     func active(_ kind: ServiceKind) -> [ServiceModel] { services.filter { $0.kind == kind && $0.isActive } }
     /// The menu's counting (`ServiceCounts`, Core): External services count as running.
     var counts: ServiceCounts { ServiceCounts(services.map { $0.driver.state }) }
+    /// Ports of the services the app started (server or native), keyed by service: what the
+    /// quit guard counts clients on. External servers are not the app's to protect.
+    var ownedPorts: [Service: Int] { ServiceCounts.ownedPorts(states) }
+    /// Each service's lifecycle state, keyed by service (the quit guard's and the restore's input).
+    private var states: [Service: LifecycleState] {
+        Dictionary(uniqueKeysWithValues: services.map { ($0.service, $0.driver.state) })
+    }
+
     var anyActive: Bool { counts.active > 0 }
 
     /// Installed (or downloading) services that aren't running: what the main
@@ -132,6 +161,7 @@ final class AppModel {
         for effect in AppLifecycle.reduce(&phase, event) {
             switch effect {
             case .runBootstrap: job = Task { await runBootstrap() }
+            case .clearWantedServices: wantedStore.removeAll()
             case .runReset:
                 staleLayout = false
                 let old = manager
@@ -139,7 +169,8 @@ final class AppModel {
                 job = Task { await runReset(old: old) }
             case .shutdown:
                 // In this turn, before the shutdown task runs: a probe or read continuation
-                // already queued on the main actor must not launch a server after Quit.
+                // already queued on the main actor must not launch a server after Quit, nor a
+                // queued ready, failure or exit move the wanted set (`WantedTransition`).
                 for model in services { model.driver.beginQuit() }
                 shutdownTask = Task { await runShutdown() }
             }
@@ -184,9 +215,29 @@ final class AppModel {
             Log.app.info("\(model.service.rawValue, privacy: .public): \(String(describing: model.phase), privacy: .public)")
         }
         send(.bootstrapDone)
-        // Only a bootstrap that ended the job (not one quit overtook) looks up sizes.
+        // `RestorePolicy.shouldRun` owns the restore's phase gate (a bootstrap quit overtook
+        // restores nothing); only a bootstrap that ended the job looks up sizes.
+        restoreWantedServices()
         guard phase == .ready else { return }
         sizes = Task { await loadDownloadSizes() }
+    }
+
+    /// Starts the services the last session left running (`RestorePolicy`), once per process.
+    private func restoreWantedServices() {
+        guard RestorePolicy.shouldRun(alreadyRan: restoredThisProcess, phase: phase) else { return }
+        restoredThisProcess = true
+        let plan = RestorePolicy.plan(wanted: wantedStore.read(), states: states, preferenceOn: restoreOnLaunch)
+        for model in services {
+            switch plan[model.service] {
+            case .start:
+                Log.app.info("restore: starting \(model.service.rawValue, privacy: .public)")
+                model.start()
+            case .skip(let reason) where reason != .notWanted:
+                Log.app.info("restore: skipping \(model.service.rawValue, privacy: .public): \(String(describing: reason), privacy: .public)")
+            default:
+                break
+            }
+        }
     }
 
     /// Approximate sizes for providers that aren't installed, cached for a week.
@@ -210,13 +261,21 @@ final class AppModel {
         }
     }
 
+    /// App quit (and power-off), the synchronous half: the phase moves to `shuttingDown`, every
+    /// driver's `quitting` is set and the shutdown task starts, all in the caller's turn. The
+    /// delegate calls it in the main-actor turn that accepts the quit, so a ready, failure or exit
+    /// callback already queued on the main actor runs with `quitting` set and can't move the
+    /// wanted set. A second call does nothing (`AppLifecycle`: no event moves `shuttingDown`).
+    func beginShutdown() { send(.quit) }
+
     /// App quit (and power-off): stops every running server (SIGTERM, 10 s
     /// grace, then SIGKILL), the bootstrap's subprocesses and the manager's
     /// (installs, cache probes), waits for busy families to drain
     /// (`EnvironmentManager.shutdown`), then for the bootstrap or Reset in
-    /// flight. Every call waits for the same shutdown.
+    /// flight. Begins the quit if `beginShutdown()` has not; every call waits
+    /// for the same shutdown.
     func shutdownAll() async {
-        send(.quit)
+        beginShutdown()
         await shutdownTask?.value
     }
 

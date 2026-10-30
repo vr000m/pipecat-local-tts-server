@@ -74,7 +74,8 @@ for running both.
   An External service has no per-service Stop, Delete, Get or Install; it offers
   Try it (for STT, the test clip only, never the microphone) and the Copy items.
   Reset is app-wide: it deletes only the app's own `envs` directory and layout
-  file, never signals or stops an External server, and is not blocked by one.
+  file and clears the saved set of services to restore (`restore.wanted`), never
+  signals or stops an External server, and is not blocked by one.
   **Quit leaves it running**
   (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
 - **Beside launchd agents.** `just tts-install` and `just stt-*` agents use the
@@ -89,6 +90,56 @@ for running both.
   (`python -m stt_server serve --supervised`). An STT agent on an older version
   is still adopted by its hello, but an app-started STT server needs 0.5.0.
 
+
+## Restore and Quit
+
+- **Restore on launch**: the app remembers which services you had running and starts
+  them again at the next launch, after the launch check finishes, once per process.
+  The **Restore running services on launch** preference (`restoreOnLaunch`) is on by default; the toggle is in the panel's gear menu beside Open at Login.
+  A service whose port is stale or busy ends Failed and is not retried. A service you
+  stopped, deleted, or that failed is not restored. Quitting does not change the set (a
+  server that becomes ready, or fails, during Quit's shutdown keeps its entry; a Stop during
+  shutdown still clears that service), and Reset clears it.
+- **Quit confirmation**: Quit asks first when a client is connected to a server the app started.
+  The choices are "Quit anyway" or "Cancel". A count that cannot be read also asks.
+  So does any quit that is not system-initiated, including the one `just app-open` and
+  `app-install` send via `quit_app.sh`.
+  Logout, Restart and Shut Down are not asked (provisional codes; see Known limits).
+- **Counting**: server-side connections on the app's own port count.
+  The server-side mirrors of the app's own client sockets (its probes and Try it) do not.
+  A row is a mirror only when its two endpoints are those of an app-owned row, swapped.
+  That app row's peer port must be a requested service port.
+  A bare port match is not used: a remote client's ephemeral port could equal an app socket's port.
+  The count is one bounded `lsof` call with a 2 s deadline. An `lsof` still running then is sent
+  SIGKILL, and the count is unknown, so it asks. The killed `lsof` is reaped within 0.2 s, else
+  by a background reaper.
+  These are also unknown (asks): `lsof` did not launch, died on a signal, or wrote any stderr.
+  So is an exit other than 0 (or 1 with no output). So is an `lsof` that exited while a pipe
+  stayed open past the deadline. Exit 1 with no output at all is zero. A socket held on several
+  fds of one process counts once. `lsof` output the parser cannot fully account for counts as
+  unreadable (asks). That is any malformed or unknown line, or a process with no readable socket.
+  Every line must end in `\n`, and no line may be empty.
+  A pid must be ASCII decimal 1 to 2147483647, and an fd 0 to 2147483647.
+  Neither may have a sign or a leading zero. A
+  socket name must be one `->` between two endpoints. Each is `<IPv4>:<port>` or
+  `[<IPv6>]:<port>`, with a port of 1-65535. The IPv6 form may use `::`, a dotted IPv4 tail
+  or a `%scope`. The check uses no C parser. It allows ASCII
+  only, no leading zero in an octet or port, and 1-4 hex digits a group. Loopback
+  tunnels (for example SSH) count as clients.
+  A half-open connection from a vanished peer counts until the server's keepalive reaps it.
+  That is about 140 s at the TTS server's keepalive defaults (`TTS_WS_PING_INTERVAL` 20 +
+  `TTS_WS_PING_TIMEOUT` 120). The STT servers' keepalive is not verified here.
+- **Updating with no dropped clients**: the app's Quit stops its servers. For a
+  zero-drop update run the TTS server as a LaunchAgent (`just tts-install <backend>`);
+  the app then shows it as External and leaves it running. TTS servers only.
+
+### Known limits / unverified
+
+- The quit-reason codes that identify a system-initiated quit are provisional
+  (the standard four-character codes). A manual check on a real Log Out, Restart and
+  Shut Down has not been run yet.
+- What happens when a second terminate arrives while the confirmation is showing is
+  unverified; the code answers it with cancel.
 
 ## Menu bar
 
@@ -123,7 +174,8 @@ for running both.
   weights) and checks the services again. It is refused while a server the app
   started runs, or a service installs or is being deleted; an External server
   does not block it (Reset deletes only the app's own environments and never
-  touches that server). While Reset or the launch check runs, the
+  touches that server). Reset also clears the saved set of services to restore,
+  so the next launch restores none. While Reset or the launch check runs, the
   Python services' Get, Start and Delete are disabled.
 
 ## Use a service from Pipecat
@@ -206,10 +258,26 @@ are reserved per client, so the bundled app's install does not count). Once:
 `just app-smoke` (`scripts/ui_smoke.sh`) needs no Accessibility or Screen Recording
 grant, so it cannot open the panel or click. It launches the app with your real
 support and log folders (installing nothing) and refuses while another copy runs.
-Its last step starts a tone server outside the app on 8665, checks the bootstrap
-log reports it as External, and checks it is still running after Quit; it skips
-that step when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
-the repo `.venv` cannot import `tts_server`.
+Step 5 starts a tone server outside the app on 8665, checks the bootstrap
+log reports it as External, and checks it is still running after Quit. Step 6 relaunches
+with tone in the wanted set and restore on. It checks the log reports tone as External again.
+It checks the log has no `restore: starting` and does have `restore: skipping tone: external`.
+It checks no `tts_server`/`stt_server` `serve` process was started. The bootstrap's own probe
+children are normal, so it does not assert zero children. Its Quit must exit clean and leave
+the external server running. Steps 5
+and 6 are skipped when 8665 is held, a `pipecat.tts-server.tone` LaunchAgent is loaded, or
+the repo `.venv` cannot import `tts_server`. `LAUNCH_WAIT` (seconds, default 30) bounds the
+wait for the bootstrap to log its end and `QUIT_WAIT` (seconds, default 20) the wait for each
+quit to finish.
+The smoke runs under your real bundle id, so it must not read or write your wanted set:
+every launch gets `-restoreOnLaunch` and `-restore.wanted` as launch arguments and
+`PIPECAT_TOOLBAR_DEFAULTS_SUITE=<throwaway suite>` (`PreferencesDomain`, which scopes only
+`restore.wanted` and `restoreOnLaunch`). Launch arguments live in the argument domain, which
+heads every `UserDefaults` search list including the suite's: the app's reads of those two
+keys return the arguments (that is how step 6 seeds its wanted set) while its writes go to the
+suite, so a smoke run's own wanted-set writes are not read back. The script seeds and deletes
+the suite, and fails if a hash of `defaults read <bundle id> restore.wanted` differs before and
+after (a read-only isolation check; the value is never printed).
 Manual UI checklist, for what needs a person (or a terminal granted Accessibility):
 
 1. `just app-open`; the Pipecat icon appears in the menu bar; click it, the panel opens.
@@ -219,8 +287,10 @@ Manual UI checklist, for what needs a person (or a terminal granted Accessibilit
    shows the app; Try it > Test Clip shows "Matches the clip" (no microphone needed).
    Right-click a running Tone or Apple Speech row: Test Voice plays a line, Test
    Transcription shows the same match.
-4. Stop each: the port closes. Quit from the panel with Tone running: within ~10 s
-   `pgrep -fl "Pipecat Service Toolbar"` and `lsof -nP -iTCP:8665` print nothing.
+4. Stop each: the port closes. Quit from the panel with Tone running and a client
+   connected (a Pipecat bot, say): Quit asks first, and Cancel keeps everything running.
+   Quit again and choose Quit anyway: within ~10 s `pgrep -fl "Pipecat Service Toolbar"`
+   and `lsof -nP -iTCP:8665` print nothing. (With no client connected, Quit does not ask.)
 5. Tone > Delete: the row returns to Install.
 
 To check the server side of the app's contract without the app, `just smoke-supervised
@@ -278,7 +348,9 @@ Build knobs (environment variables read by `macos/scripts/`):
 | `CONFIG` | `build_app.sh` | Swift build configuration, `release` (default) or `debug`. |
 | `APP_INSTALL_DIR` | `just app-install` | Install destination (default `~/Applications`). For the identity it signs with, see `SIGN_IDENTITY`. |
 | `BUNDLE_ID` | `build_app.sh` | Overrides `CFBundleIdentifier` (default `ai.pipecat.ServiceToolbar`); `just app-open` quits the id the build wrote. |
-| `QUIT_WAIT_SECS` | `quit_app.sh` | Whole seconds (default `30`) that `just app-open` and `just app-install` wait for a running copy to quit before launching or replacing the bundle: one deadline for the whole step, osascript calls included. Either recipe stops, without launching or replacing, on any non-zero exit of `quit_app.sh`; its header is the contract for the timing bound and the exit codes (a missing bundle id or a value that is not whole seconds is a usage error). |
+| `QUIT_WAIT_SECS` | `quit_app.sh` | Whole seconds (default `30`) that `just app-open` and `just app-install` wait for a running copy to quit before launching or replacing the bundle: one deadline for the whole step, osascript calls included. Either recipe stops, without launching or replacing, on any non-zero exit of `quit_app.sh`; its header is the contract for the timing bound and the exit codes (a missing bundle id or a value that is not whole seconds is a usage error). Not the smoke's `QUIT_WAIT` below. |
+| `LAUNCH_WAIT` | `ui_smoke.sh` | Seconds (default `30`) `just app-smoke` waits for each launch's bootstrap to log its end. |
+| `QUIT_WAIT` | `ui_smoke.sh` | Seconds (default `20`) `just app-smoke` waits for each quit it sends to finish. A separate knob from `QUIT_WAIT_SECS` (`quit_app.sh`, default `30`), which the smoke does not read. |
 | `PIPECAT_TTS_BUILD_CACHE` | `fetch_uv.sh` | Root of the build cache for the pinned `uv` download (default `~/Library/Caches/pipecat-tts-build`). |
 | `PIPECAT_UV` | `compile_stt_constraints.py` | The `uv` binary used to compile the STT constraints (default: the app's pinned uv). |
 

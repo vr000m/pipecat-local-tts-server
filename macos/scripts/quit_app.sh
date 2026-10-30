@@ -23,8 +23,9 @@
 # job spec while it is still a running job of this shell (live_job): once bash has reaped
 # it, its pid may name an unrelated process, so it is only waited for.
 #
-# Exit 0: not running, or exited within the wait. Exit 1: still running, or no answer,
-# after QUIT_WAIT_SECS. Exit 2: usage, or QUIT_WAIT_SECS is not a whole number. Exit 3:
+# Exit 0: not running, or exited within the wait. Exit 1: still running after
+# QUIT_WAIT_SECS (a quit confirmation may be waiting in the app: a connected client asks
+# first), or no answer from osascript in that time. Exit 2: usage, or QUIT_WAIT_SECS is not a whole number. Exit 3:
 # osascript failed or gave an answer other than true/false, so whether the app runs is
 # unknown (never read as "not running", or the caller would open or replace the bundle
 # under a live copy). The one osascript error read as "not running" is -1728, no
@@ -179,5 +180,5 @@ while ((SECONDS < deadline)); do
     sleep 0.1
 done
 stop_quit
-echo "error: $id did not quit within ${wait_secs}s; quit it and re-run${quit_err:+ ($quit_err)}" >&2
+echo "error: $id did not quit within ${wait_secs}s; a quit confirmation may be waiting in the app (a connected client asks first); answer it or quit the app, then re-run${quit_err:+ ($quit_err)}" >&2
 exit 1

@@ -1039,4 +1039,302 @@ import Testing
         let again = try await HelloFixtures.liveHello(port: port)
         #expect(again.backendName == "tone")
     }
+
+    // MARK: - The persisted wanted set
+
+    /// An environment whose install fails.
+    struct FailingInstallEnvironment: ServiceEnvironment {
+        struct Boom: Error {}
+        func environmentStatus(_ backend: Service) -> EnvironmentStatus { .missing }
+        func isRequested(_ service: Service) -> Bool { true }
+        func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus? { nil }
+        func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
+            AsyncThrowingStream { $0.finish(throwing: Boom()) }
+        }
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {}
+        func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
+    }
+
+    /// An environment that cannot build serve arguments: Start ends in `launchFailed`.
+    struct NoServeEnvironment: ServiceEnvironment {
+        func environmentStatus(_ backend: Service) -> EnvironmentStatus { FakeEnvironment().environmentStatus(backend) }
+        func isRequested(_ service: Service) -> Bool { true }
+        func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus? { nil }
+        func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {}
+        func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { nil }
+    }
+
+    func wantedDriver(
+        _ store: MemoryWantedStore, host: FakeHost, process: FakeProcess = FakeProcess(), service: Service = .tone
+    ) -> ServiceDriver {
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in true }
+        deps.makeProcess = { _ in process }
+        deps.wanted = store
+        let driver = ServiceDriver(info: service.info, dependencies: deps)
+        driver.host = host
+        return driver
+    }
+
+    func startToRunning(_ driver: ServiceDriver, _ process: FakeProcess, port: Int = 8665) async {
+        await driver.refresh()
+        driver.start()
+        process.emit(#"{"event":"ready","port":\#(port),"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+    }
+
+    @Test func aReadyServerIsWantedAndStopClearsIt() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        let driver = wantedDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.start()
+        #expect(store.current.isEmpty, "Start alone (not yet ready) must not set the flag")
+        process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        #expect(store.current == [.tone])
+        driver.stop()
+        #expect(store.current.isEmpty, "the Stop click did not clear the flag")
+        await until { driver.state.phase == .installed }
+        #expect(store.current.isEmpty, "the exit after a requested stop changed the flag")
+    }
+
+    @Test func quitKeepsTheWantedFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        await driver.quit()
+        #expect(process.stops == 1)
+        #expect(store.current == [.tone], "Quit cleared the flag")
+    }
+
+    /// A server still starting at Quit whose ready line the drain still reads goes running, but
+    /// a quit never changes the flag: it must not newly set it (the next launch would restore a
+    /// service that was never running before Quit).
+    @Test func aReadyDuringTheQuitDrainDoesNotSetTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.start()
+        await until { driver.state.server != nil }
+        await driver.quit()
+        #expect(process.stops == 1)
+        process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        #expect(driver.state.phase == .running, "the drain read the ready line")
+        #expect(store.current.isEmpty, "a ready during the quit drain set the flag")
+        process.exit(15)
+        await until { driver.state.server == nil }
+        #expect(store.current.isEmpty)
+    }
+
+    /// The app begins the quit in the turn that accepts it (`AppModel.beginShutdown`, from
+    /// `applicationShouldTerminate`'s accepted arms and the power-off observer). A crash
+    /// callback already queued on the main actor at that moment runs after it, is folded with
+    /// `quitting` and keeps the flag. A `beginQuit` deferred to a later task (the old
+    /// `Task { await shutdownAll() }`) runs after the queued callback, which then clears it.
+    @Test func anExitQueuedWhenQuitIsAcceptedKeepsTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        #expect(store.current == [.tone])
+        guard let id = driver.state.server else {
+            Issue.record("no server: \(driver.state.phase)")
+            return
+        }
+        Task { @MainActor in driver.serverExited(id, status: 1) }
+        driver.beginQuit()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current == [.tone], "an exit queued when Quit was accepted cleared the flag")
+        process.exit(1)
+    }
+
+    /// The set side of the same turn: a ready line already emitted when Quit is accepted is read
+    /// after `beginQuit` (however many hops the reader takes) and does not newly set the flag.
+    @Test func aReadyQueuedWhenQuitIsAcceptedDoesNotSetTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.start()
+        await until { driver.state.server != nil }
+        process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
+        #expect(driver.state.phase == .starting, "the ready line was applied before this turn ended")
+        driver.beginQuit()
+        await until { driver.state.phase == .running }
+        #expect(driver.state.phase == .running, "the queued ready line was not read")
+        #expect(store.current.isEmpty, "a ready queued when Quit was accepted set the flag")
+        process.exit(15)
+        await until { driver.state.server == nil }
+        #expect(store.current.isEmpty)
+    }
+
+    /// The clear side: a failure entered after quit began (here an install that fails during the
+    /// shutdown) keeps the flag a restore set.
+    @Test func aFailureAfterQuitBeganKeepsTheFlag() async {
+        let store = MemoryWantedStore([.tone])
+        let host = FakeHost(environment: FailingInstallEnvironment())
+        let driver = wantedDriver(store, host: host)
+        await driver.refresh()
+        driver.install()
+        driver.beginQuit()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current == [.tone], "a failure during quit cleared the flag")
+    }
+
+    /// The user's own Stop clicked during the quit drain still clears the flag.
+    @Test func aStopClickDuringTheQuitDrainClearsTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        #expect(store.current == [.tone])
+        driver.beginQuit()
+        driver.stop()
+        #expect(store.current.isEmpty, "a Stop click after quit began did not clear the flag")
+        process.exit(15)
+        await until { driver.state.server == nil }
+    }
+
+    @Test func aStaleReadyDoesNotSetTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        process.exitsOnStop = false
+        let driver = wantedDriver(store, host: host, process: process)
+        driver.start()
+        driver.stop()
+        process.emit(#"{"event":"ready","port":8665}"#)
+        try? await Task.sleep(for: .milliseconds(50))
+        process.exit(15)
+        await until { driver.state.server == nil }
+        #expect(store.current.isEmpty, "a ready after Stop set the flag")
+    }
+
+    @Test func aCrashClearsTheFlag() async {
+        let store = MemoryWantedStore()
+        let host = FakeHost()
+        let process = FakeProcess()
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        #expect(store.current == [.tone])
+        process.exit(1)
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        #expect(store.current.isEmpty, "a crash left the flag set")
+    }
+
+    @Test func aLaunchFailureClearsTheFlag() async {
+        let store = MemoryWantedStore([.tone])
+        let host = FakeHost(environment: NoServeEnvironment())
+        let driver = wantedDriver(store, host: host)
+        await driver.refresh()
+        driver.start()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current.isEmpty, "a launch failure left the flag set")
+    }
+
+    @Test func aBusyPortFailureClearsTheFlag() async {
+        let store = MemoryWantedStore([.tone])
+        let host = FakeHost()  // answers kokoro on the tone port: the busy failure
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in false }
+        deps.portOwner = { _, _ in PortProbe.Owner(pid: 1, command: "other") }
+        deps.makeProcess = { _ in FakeProcess() }
+        deps.wanted = store
+        let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
+        driver.host = host
+        await driver.refresh()
+        driver.start()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current.isEmpty, "a busy-port failure left the flag set")
+    }
+
+    @Test func anInstallFailureClearsTheFlag() async {
+        let store = MemoryWantedStore([.tone])
+        let host = FakeHost(environment: FailingInstallEnvironment())
+        let driver = wantedDriver(store, host: host)
+        await driver.refresh()
+        driver.install()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed = driver.state.phase else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.current.isEmpty, "an install failure left the flag set")
+    }
+
+    @Test func anExternalServerKeepsTheFlagAndNeverSetsIt() async {
+        for seed: Set<Service> in [[], [.tone]] {
+            let store = MemoryWantedStore(seed)
+            let host = FakeHost()
+            let driver = wantedDriver(store, host: host)
+            await driver.refresh()
+            driver.discovered(.found(driver.service, epoch: driver.state.externalEpoch, info: Self.toneInfo))
+            #expect(driver.state.phase.isExternal)
+            #expect(store.current == seed, "externalFound changed the flag (seed \(seed))")
+        }
+    }
+
+    @Test func oneServicesWriteLeavesAnothersFlagAlone() async {
+        let store = MemoryWantedStore([.kokoro])
+        let host = FakeHost()
+        let process = FakeProcess()
+        let driver = wantedDriver(store, host: host, process: process)
+        await startToRunning(driver, process)
+        #expect(store.current == [.kokoro, .tone])
+        driver.stop()
+        await until { driver.state.phase == .installed }
+        #expect(store.current == [.kokoro], "Stop on tone clobbered kokoro's flag")
+    }
+
+    /// The driver changes its own flag only through the per-service operations: a store that
+    /// records whole-set `read` calls sees none (the protocol has no whole-set write to call).
+    @Test func theDriverNeverReadsOrWritesTheWholeSet() async {
+        let spy = MemoryWantedStore([.kokoro])
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in true }
+        let process = FakeProcess()
+        deps.makeProcess = { _ in process }
+        deps.wanted = spy
+        let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
+        let host = FakeHost()  // the driver holds its host weakly
+        driver.host = host
+        await startToRunning(driver, process)
+        #expect(spy.current == [.kokoro, .tone])
+        driver.stop()
+        await until { driver.state.phase == .installed }
+        #expect(spy.current == [.kokoro])
+        #expect(spy.wholeSetReads == 0, "the driver did a whole-set read")
+    }
 }

@@ -1,0 +1,58 @@
+import Testing
+
+@testable import PipecatToolbarCore
+
+/// PROVISIONAL: the codes are the documented AEMachine.h set, not yet observed. The operator will
+/// run a manual spike (menu Quit, `osascript` quit, real Log Out / Restart / Shut Down) and pin the
+/// observed codes here.
+@Suite struct QuitReasonTests {
+    @Test(arguments: ["rlgo", "logo", "rest", "shut", "rrst", "rsdn"])
+    func systemCodesAreSystemInitiated(_ code: String) {
+        #expect(QuitReason.isSystemInitiated(code: QuitReason.fourCC(code)))
+        #expect(QuitReason.systemCodes.contains(QuitReason.fourCC(code)))
+    }
+
+    @Test func theSystemTableHasExactlyTheDocumentedCodes() {
+        let expected = Set(["rlgo", "logo", "rest", "shut", "rrst", "rsdn"].map(QuitReason.fourCC))
+        #expect(QuitReason.systemCodes == expected)
+    }
+
+    /// `kAEQuitReason` from AERegistry.h: the attribute the app reads the reason from.
+    @Test func theReasonAttributeKeywordIsWhy() {
+        #expect(QuitReason.attributeKeyword == 0x7768_793F)
+        #expect(QuitReason.text(QuitReason.attributeKeyword) == "why?")
+    }
+
+    /// `kAEQuitApplication` ('quit'): the plain quit event (also what `osascript` sends).
+    @Test func aPlainQuitIsUserInitiated() {
+        #expect(!QuitReason.isSystemInitiated(code: QuitReason.fourCC("quit")))
+    }
+
+    @Test(arguments: ["abcd", "QUIT", "rlg0", "shu", "    "])
+    func unknownCodesAreUserInitiated(_ code: String) {
+        #expect(!QuitReason.isSystemInitiated(code: QuitReason.fourCC(code)))
+    }
+
+    @Test func zeroIsUserInitiated() {
+        #expect(!QuitReason.isSystemInitiated(code: 0))
+    }
+
+    @Test func fourCCIsBigEndianAndRoundTrips() {
+        #expect(QuitReason.fourCC("quit") == 0x7175_6974)
+        #expect(QuitReason.fourCC("rlgo") == 0x726C_676F)
+        for s in ["quit", "rlgo", "logo", "rest", "shut", "rrst", "rsdn"] {
+            let v = QuitReason.fourCC(s)
+            #expect(QuitReason.text(v) == s)
+        }
+        #expect(QuitReason.text(nil) == "none")
+    }
+
+    @Test(arguments: [
+        (nil, false, false), (nil, true, true), ("shut", false, true), ("quit", true, true),
+        ("quit", false, false),
+    ] as [(String?, Bool, Bool)])
+    func isSystemQuitCombinesCodeAndPowerOff(_ code: String?, _ powerOff: Bool, _ expected: Bool) {
+        #expect(
+            QuitReason.isSystemQuit(code: code.map(QuitReason.fourCC), powerOffSeen: powerOff) == expected)
+    }
+}

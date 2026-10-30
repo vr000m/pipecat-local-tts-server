@@ -23,12 +23,24 @@ public struct ServiceCounts: Equatable, Sendable {
 
     public init(_ states: [LifecycleState]) {
         running = states.filter(Self.isRunning).count
-        owned = states.filter { $0.server != nil || $0.native != nil }.count
+        owned = states.filter(Self.isOwned).count
         installed = states.filter(\.isInstalled).count
         active = states.filter(\.isActive).count
         startable = states.filter(Self.isStartable).count
         installing = states.filter(\.isInstalling).count
         blocksReset = states.contains { $0.blocksReset }
+    }
+
+    /// The app started this service's server (a subprocess or the in-process Apple Speech one),
+    /// whatever its phase: Quit stops it. An External server is never owned.
+    static func isOwned(_ s: LifecycleState) -> Bool {
+        s.server != nil || s.native != nil
+    }
+
+    /// Port of each owned service: what the quit guard counts clients on. External servers are
+    /// not the app's to protect, so they are absent.
+    public static func ownedPorts(_ states: [Service: LifecycleState]) -> [Service: Int] {
+        states.filter { isOwned($0.value) }.mapValues(\.port)
     }
 
     /// A server answers for this service: one the app runs, or an External one.

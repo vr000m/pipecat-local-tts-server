@@ -71,7 +71,7 @@ import Testing
             }
         case .reset(let busy):
             switch p {
-            case .ready, .failed: return busy ? nil : (.resetting, [.runReset])
+            case .ready, .failed: return busy ? nil : (.resetting, [.clearWantedServices, .runReset])
             case .idle, .bootstrapping, .resetting, .shuttingDown: return nil
             }
         case .bootstrapDone:
@@ -123,7 +123,7 @@ import Testing
         for phase in Self.phases {
             for busy in [false, true] {
                 var p = phase
-                let accepted = AppLifecycle.reduce(&p, .reset(servicesBusy: busy)) == [.runReset]
+                let accepted = AppLifecycle.reduce(&p, .reset(servicesBusy: busy)) == [.clearWantedServices, .runReset]
                 #expect(phase.allowsReset(servicesBusy: busy) == accepted, "\(phase) busy=\(busy)")
             }
         }
@@ -171,9 +171,17 @@ import Testing
         #expect(p == .bootstrapping && effects == [.runBootstrap])
     }
 
+    /// Reset forgets the wanted set before deleting: the first effect, never on a refused Reset.
+    @Test func resetClearsTheWantedSetFirstAndRefusedResetDoesNot() {
+        var p = AppPhase.ready
+        #expect(AppLifecycle.reduce(&p, .reset(servicesBusy: false)) == [.clearWantedServices, .runReset])
+        var busy = AppPhase.ready
+        #expect(AppLifecycle.reduce(&busy, .reset(servicesBusy: true)).isEmpty)
+    }
+
     @Test func resetTwiceStartsOneReset() {
         let (p, effects) = Self.run(.ready, [.reset(servicesBusy: false), .reset(servicesBusy: false)])
-        #expect(p == .resetting && effects == [.runReset])
+        #expect(p == .resetting && effects == [.clearWantedServices, .runReset])
         // Its bootstrap is the same job's tail: a Reset during it is refused too.
         let (after, tail) = Self.run(p, [.resetDone, .reset(servicesBusy: false), .retry])
         #expect(after == .bootstrapping && tail == [.runBootstrap])
@@ -183,7 +191,7 @@ import Testing
     /// waits for the Reset job), and the Reset's end starts no bootstrap after it.
     @Test func quitDuringResetWaitsAndStartsNothing() {
         let (p, effects) = Self.run(.ready, [.reset(servicesBusy: false), .quit, .resetDone])
-        #expect(p == .shuttingDown && effects == [.runReset, .shutdown])
+        #expect(p == .shuttingDown && effects == [.clearWantedServices, .runReset, .shutdown])
     }
 
     @Test func quitDuringBootstrap() {

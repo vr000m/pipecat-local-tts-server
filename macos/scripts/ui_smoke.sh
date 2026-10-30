@@ -10,8 +10,10 @@
 #    It renders fixed states only: it cannot click, drive transitions or read text.
 # 2. Launch: the built bundle starts as a menu bar (UIElement) app, stays up,
 #    and logs a finished bootstrap (tools found in the bundle, every service's phase).
-# 3. Quit: `quit app id` (applicationShouldTerminate -> shutdownAll) exits within
-#    the grace period and leaves no process the app started (uv, python, lsof...).
+# 3. Quit: `quit app id` reaches applicationShouldTerminate, where QuitGuardPolicy.decide
+#    skips the prompt (no client is connected) and beginDrain runs the shutdown. The app
+#    exits within QUIT_WAIT (seconds, default 20) and leaves no process the app started
+#    (uv, python, lsof...). LAUNCH_WAIT (seconds, default 30) bounds each launch's bootstrap.
 # 4. SIGTERM: a second launch killed with SIGTERM also leaves no child behind.
 # 5. External: a tone server started OUT OF PROCESS on its canonical loopback port
 #    (8665) is adopted at launch (the bootstrap log line says `external(`) and is
@@ -19,6 +21,18 @@
 #    or the repo .venv cannot import tts_server. The script never starts or stops anything on 8965 or
 #    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
 #    read-only, at every launch.
+# 6. Restore: with that server still up, a launch whose persisted wanted set names tone
+#    (`restore.wanted` = tone, `restoreOnLaunch` = YES) shows tone External, logs no
+#    `restore: starting` and has no `tts_server`/`stt_server` process of its own. Every other
+#    launch has restore off and an empty wanted set.
+#
+# Isolation: the bundle runs under the operator's real bundle id, so no launch may read or write
+# the operator's `restore.wanted` / `restoreOnLaunch`. Every launch (a) passes both as launch
+# arguments (the argument domain heads every search list, the suite's included, so the app READS
+# these values from the arguments) and (b) sets PIPECAT_TOOLBAR_DEFAULTS_SUITE to a throwaway suite
+# the script seeds and deletes, where the app WRITES them (`PreferencesDomain`; launch arguments
+# never shadow writes, so a write is not read back during the run). The script also compares the real
+# domain's `restore.wanted` before and after and fails if it changed.
 #
 # Not covered (needs Accessibility, see macos/README.md "Manual UI checklist"):
 # opening the panel, clicking Install/Start, and the port a started service opens.
@@ -35,6 +49,7 @@ QUIT_WAIT="${QUIT_WAIT:-20}"       # seconds for a quit to finish
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/toolbar-ui-smoke.XXXXXX")"
 LOG_PID=""
 APP_PID=""
+SUITE=""          # the throwaway UserDefaults suite every launch uses (set below, deleted by cleanup)
 EXT_PID=""        # the out-of-process server this script started (step 5), nothing else
 EXT_LISTEN_PID="" # whatever pid listens on its port once it is up
 EXT_PORT=8665     # tone's canonical port (ServiceCatalog / justfile _resolve); not a real agent's
@@ -107,6 +122,10 @@ cleanup() {
     # Only the job this script started, through signal_job (never the lsof listener, never a
     # pid, never a pattern kill).
     stop_ext
+    if [[ -n "$SUITE" ]]; then
+        defaults delete "$SUITE" >/dev/null 2>&1 || true
+        rm -f "$HOME/Library/Preferences/$SUITE.plist"  # `defaults delete` leaves an empty plist behind
+    fi
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -117,6 +136,15 @@ if [[ "${1:-}" == "--build" || ! -x "$APP/Contents/MacOS/$EXE_NAME" ]]; then
 fi
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
 EXE="$APP/Contents/MacOS/$EXE_NAME"
+# The app reads and writes its wanted set and restore preference in this suite, never in $BUNDLE_ID's
+# own domain (the operator's). Set before anything can launch the app.
+SUITE="$BUNDLE_ID.smoke.$$"
+# This read-only comparison is the isolation check, and the only touch of the real domain. Only a
+# hash is kept, so the operator's value is never printed.
+# (A missing key is a normal state: stderr carries a timestamped NSLog line that differs on every
+# call, so it is discarded and absence is recorded from the exit status instead.)
+real_wanted_hash() { { defaults read "$BUNDLE_ID" restore.wanted 2>/dev/null || echo '<absent>'; } | shasum -a 256 | cut -d' ' -f1; }
+REAL_WANTED_BEFORE="$(real_wanted_hash)"
 
 if pgrep -f "/Contents/MacOS/$EXE_NAME" >/dev/null; then
     fail "a copy of the app is already running (quit it first): $(pgrep -fl "/Contents/MacOS/$EXE_NAME" | head -1)"
@@ -148,13 +176,42 @@ descendants() {
     done
 }
 
+# An old-style plist array of the arguments, as a launch argument is parsed: "(tone, kokoro)".
+# Without the commas the value does not parse and lands as a string that shadows the suite's array.
+plist_array() {
+    local out="" v
+    for v in "$@"; do out="${out:+$out, }$v"; done
+    printf '(%s)' "$out"
+}
+
 launch() {
     : >"$WORK/app.log"
     /usr/bin/log stream --level info --style compact \
         --predicate "subsystem == \"$BUNDLE_ID\" OR subsystem == \"ai.pipecat.ServiceToolbar\"" >"$WORK/app.log" 2>&1 &
     LOG_PID=$!
     sleep 1
-    "$EXE" >"$WORK/stdout.log" 2>&1 &
+    # No launch restores unless the step asks (RESTORE=YES), and the wanted set is empty unless it
+    # names services (WANTED="tone"). Both are seeded in the throwaway suite and also passed as
+    # launch arguments. Arguments live in the argument domain, which heads every UserDefaults
+    # search list including the suite's: the app's reads of these two keys return the arguments
+    # (that is how step 6 seeds its wanted set), while its writes go to the suite. So in-run
+    # wanted-set writes are not read back by the app, and the real domain is never touched.
+    local restore_bool=false wanted_values=() wanted_arg
+    [[ "${RESTORE:-NO}" != YES ]] || restore_bool=true
+    # shellcheck disable=SC2206
+    wanted_values=(${WANTED:-})
+    defaults delete "$SUITE" >/dev/null 2>&1 || true
+    defaults write "$SUITE" restoreOnLaunch -bool "$restore_bool"
+    # The same values in both seeds (an empty array is unset under bash 3.2's `set -u`).
+    if ((${#wanted_values[@]})); then
+        defaults write "$SUITE" restore.wanted -array "${wanted_values[@]}"
+        wanted_arg="$(plist_array "${wanted_values[@]}")"
+    else
+        defaults write "$SUITE" restore.wanted -array
+        wanted_arg="$(plist_array)"
+    fi
+    PIPECAT_TOOLBAR_DEFAULTS_SUITE="$SUITE" "$EXE" \
+        -restoreOnLaunch "${RESTORE:-NO}" -restore.wanted "$wanted_arg" >"$WORK/stdout.log" 2>&1 &
     APP_PID=$!
     local deadline=$((SECONDS + LAUNCH_WAIT))
     SEEN=""
@@ -263,8 +320,36 @@ else
         || fail "the server we started no longer listens on $EXT_PORT after Quit"
     pass "external server (pid $EXT_PID) still running after Quit"
 
+    # --- 6. Restore skips a service that is already External ---
+    step "Restore: a wanted service that is External is not started again"
+    RESTORE=YES WANTED=tone launch
+    grep -qE "tone: external\($EXT_PORT" "$WORK/app.log" \
+        || { grep -E 'tone' "$WORK/app.log" | head -5; fail "restore launch did not report tone as external($EXT_PORT"; }
+    grep -q "restore: starting" "$WORK/app.log" && fail "restore started a service: $(grep 'restore: starting' "$WORK/app.log" | head -1)"
+    grep -qE "restore: skipping tone: external" "$WORK/app.log" \
+        || { grep -E 'restore' "$WORK/app.log" | head -5; fail "restore did not log tone as skipped (external)"; }
+    # No server of its own. Not "no children at all": the bootstrap's cache probes and discovery's
+    # lsof/launchctl lookups are normal descendants.
+    for p in $SEEN; do
+        cmd="$(ps -ww -o command= -p "$p" 2>/dev/null || true)"
+        # `serve` only: the bootstrap's `-m tts_server prefetch --check` probes are normal.
+        [[ "$cmd" != *"-m tts_server serve"* && "$cmd" != *"-m stt_server serve"* ]] \
+            || fail "restore launch started a server: pid $p: $cmd"
+    done
+    osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 &
+    quitter=$!
+    assert_clean_exit "restore launch with an external server"
+    stop_job "$quitter"
+    ext_is_ours || fail "the restore launch's Quit stopped the external server (pid $EXT_PID)"
+    pass "restore skipped the External tone and started nothing"
+
     # Stop what this script started; cleanup() repeats it if we fail before here.
     stop_ext
 fi
+
+step "Isolation: the operator's own wanted set is untouched"
+[[ "$(real_wanted_hash)" == "$REAL_WANTED_BEFORE" ]] \
+    || fail "the smoke changed $BUNDLE_ID restore.wanted (changed; values not printed)"
+pass "$BUNDLE_ID restore.wanted unchanged; every launch used the throwaway suite $SUITE"
 
 step "UI smoke passed"

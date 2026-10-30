@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -575,6 +576,17 @@ def test_quit_app_fails_when_the_quit_is_refused(tmp_path):
     assert run.result.returncode == 1, (run.result.returncode, run.result.stderr)
     assert run.sent
     assert "did not quit within 3s" in run.result.stderr
+
+
+def test_quit_app_failure_mentions_a_pending_quit_confirmation(tmp_path):
+    """The app's Quit guard can hold the quit behind a confirmation dialog, so the timeout
+    message must point the operator at it. Exit status and the one-deadline wait are
+    unchanged (see the neighbouring tests)."""
+    run = _run_quit_app(tmp_path, quit_ends_it=False, wait="2")
+    assert run.result.returncode == 1, (run.result.returncode, run.result.stderr)
+    assert run.sent
+    assert "did not quit within 2s" in run.result.stderr
+    assert "a quit confirmation may be waiting in the app" in run.result.stderr
 
 
 def test_quit_app_waits_at_least_the_stated_time(tmp_path):
@@ -1243,6 +1255,83 @@ def test_ui_smoke_skips_when_canonical_port_held() -> None:
     )
 
 
+def _ui_smoke_code() -> str:
+    return "\n".join(
+        ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")
+    )
+
+
+def test_ui_smoke_disables_restore_on_launch_by_default() -> None:
+    # Without it a developer's persisted wanted set would start real servers during the smoke.
+    code = _ui_smoke_code()
+    assert re.search(r'-restoreOnLaunch "\$\{RESTORE:-NO\}"|-restoreOnLaunch NO', code)
+
+
+def test_ui_smoke_external_step_seeds_the_wanted_set_and_restores() -> None:
+    code = _ui_smoke_code()
+    assert "-restore.wanted" in code, "the external step must seed the wanted set"
+    assert re.search(r"RESTORE=YES|-restoreOnLaunch YES", code), (
+        "the external step must turn restore on"
+    )
+
+
+def test_ui_smoke_every_launch_uses_a_throwaway_defaults_suite() -> None:
+    # The bundle runs under the operator's bundle id: launch arguments head the search list (reads
+    # return them) but writes land in the suite, so the app's writes of restore.wanted /
+    # restoreOnLaunch must go to a suite the smoke owns.
+    code = _ui_smoke_code()
+    swift = (_MACOS / "Sources" / "PipecatToolbarCore" / "PreferencesDomain.swift").read_text()
+    var = re.search(r'suiteVariable = "([A-Z_]+)"', swift)
+    assert var, "PreferencesDomain.suiteVariable not found"
+    launches = re.findall(r'^\s*(?:\S+=\S+ )*"\$EXE"', code, re.MULTILINE)
+    assert len(launches) == 1, "the app must be launched from exactly one place (launch())"
+    assert f'{var.group(1)}="$SUITE" "$EXE"' in code
+    # The two key names come from the Swift sources, so a rename there fails here.
+    wanted_swift = (
+        _MACOS / "Sources" / "PipecatToolbarCore" / "WantedServiceStore.swift"
+    ).read_text()
+    # Both keys live in WantedServiceStore.swift. Each search is anchored on its declaring type, so
+    # the key found is that type's whatever else the file gains or however it is ordered.
+    wanted_m = re.search(
+        r'struct UserDefaultsWantedServiceStore\b[^{]*\{[^}]*?static let key = "([\w.]+)"',
+        wanted_swift,
+    )
+    restore_m = re.search(
+        r'enum RestorePreference\b[^{]*\{[^}]*?static let key = "([\w.]+)"', wanted_swift
+    )
+    assert wanted_m and restore_m, "WantedServiceStore.key / RestorePreference.key not found"
+    wanted_key, restore_key = wanted_m.group(1), restore_m.group(1)
+
+    # Whole-token matches: a plain substring would let a renamed key that is a prefix of the
+    # old one (`restore` vs `restore.wanted`) still pass.
+    def has_token(prefix: str, key: str) -> bool:
+        return re.search(re.escape(prefix) + re.escape(key) + r"(?=\s)", code) is not None
+
+    assert has_token('defaults write "$SUITE" ', wanted_key)
+    assert has_token('defaults write "$SUITE" ', restore_key)
+    assert 'defaults delete "$SUITE"' in code
+    # The arguments seed the wanted set on every launch, as a plist array (`plist_array`).
+    assert f'-{wanted_key} "$wanted_arg"' in code
+    assert f'-{wanted_key} "(${{WANTED:-}})"' not in code, "space-separated values do not parse"
+    # And the real domain is checked, not assumed, to be untouched.
+    assert has_token('defaults read "$BUNDLE_ID" ', wanted_key)
+    # ... without ever printing the operator's value: only a hash is kept and compared.
+    assert "real_wanted_hash" in code and "shasum" in code
+    assert "REAL_WANTED_AFTER" not in code
+    # stderr must never be hashed: a missing key logs a timestamped line, so the two hashes differ.
+    helper = next(line for line in code.splitlines() if line.startswith("real_wanted_hash()"))
+    assert "2>&1" not in helper and "2>/dev/null" in helper and "<absent>" in helper
+
+
+def test_ui_smoke_restore_step_asserts_no_server_not_no_children() -> None:
+    # Bootstrap cache probes and discovery's lsof/launchctl are normal descendants of every launch.
+    code = _ui_smoke_code()
+    assert "restore launch started processes" not in code
+    assert "-m tts_server serve" in code and "-m stt_server serve" in code
+    assert "ps -ww -o command=" in code
+    assert 'grep -q "restore: starting"' in code
+
+
 def test_ui_smoke_never_names_real_agent_ports() -> None:
     code = [ln for ln in _UI_SMOKE.read_text().splitlines() if not ln.lstrip().startswith("#")]
     hits = [ln for ln in code if any(re.search(rf"\b{p}\b", ln) for p in _REAL_AGENT_PORTS)]
@@ -1320,6 +1409,35 @@ def _bash_candidates() -> list:
         )
     )
     return params
+
+
+@pytest.mark.skipif(shutil.which("plutil") is None, reason="plutil is macOS-only")
+@pytest.mark.parametrize("bash", _bash_candidates())
+@pytest.mark.parametrize(
+    "values",
+    [[], ["tone"], ["tone", "kokoro"], ["pocket_tts", "whisper_large_v3", "kyutai_2_6b"]],
+)
+def test_ui_smoke_wanted_launch_argument_parses_as_the_seeded_array(
+    bash: str, values: list, tmp_path: Path
+) -> None:
+    # The `-restore.wanted` launch argument must parse as the same array the suite is seeded with:
+    # an unparseable value lands in the argument domain as a string, shadows the suite's array,
+    # and the app reads an empty wanted set. Old-style plist arrays need commas between values.
+    script = (
+        f"set -euo pipefail\n{_ui_smoke_functions('plist_array')}\nplist_array {' '.join(values)}\n"
+    )
+    r = subprocess.run([bash, "-c", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    plist = tmp_path / "arg.plist"
+    plist.write_text(r.stdout)
+    parsed = subprocess.run(
+        ["plutil", "-convert", "json", "-o", "-", str(plist)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert parsed.returncode == 0, (r.stdout, parsed.stderr)
+    assert json.loads(parsed.stdout) == values, r.stdout
 
 
 _SIGNAL_FUNCTIONS = ("ext_is_ours", "job_of", "job_running", "signal_job", "stop_job", "stop_ext")

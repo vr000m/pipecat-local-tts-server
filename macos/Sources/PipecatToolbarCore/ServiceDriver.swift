@@ -81,6 +81,8 @@ public struct ServiceDependencies: Sendable {
     public var stopGrace: Duration = .seconds(10)
     /// How long an exit waits for stdout to drain.
     public var drainLimit: Duration = .seconds(2)
+    /// The persisted "wanted running" set (`WantedTransition`); the default keeps nothing.
+    public var wanted: any WantedServiceStore = NoopWantedServiceStore()
 
     public init() {}
 }
@@ -138,13 +140,29 @@ public final class ServiceDriver {
     /// effects (already running) for a caller that also inspects them.
     @discardableResult
     private func dispatch(_ event: LifecycleEvent) -> [LifecycleEffect] {
-        let effects = ServiceLifecycle.reduce(&state, event)
+        let effects = reduce(event)
         execute(effects)
         return effects
     }
 
     private func dispatchAwaiting(_ event: LifecycleEvent) async {
-        await run(ServiceLifecycle.reduce(&state, event))
+        await run(reduce(event))
+    }
+
+    /// The one place an event reaches the reducer: the service's persisted wanted flag follows
+    /// `WantedTransition` from the event, the phase before and after and `quitting` (after quit
+    /// began only a Stop moves it: `remove()` and the other intents are refused here, and
+    /// `WantedTransition.rule` keeps every other kind), and is written only when it changes, through the
+    /// store's per-service operations (other services' flags are never touched).
+    private func reduce(_ event: LifecycleEvent) -> [LifecycleEffect] {
+        let before = state.phase
+        let effects = ServiceLifecycle.reduce(&state, event)
+        let store = dependencies.wanted
+        let was = store.contains(service)
+        let now = WantedTransition.next(
+            wanted: was, kind: event.kind, before: before, after: state.phase, quitting: quitting)
+        if now != was { store.setWanted(now, for: service) }
+        return effects
     }
 
     /// Runs the leading effects that need no suspension now, the rest in a task.
@@ -267,8 +285,10 @@ public final class ServiceDriver {
         await shutdown()
     }
 
-    /// Sets `quitting` now, before the asynchronous `quit()` runs: the app calls it in the same
-    /// main-actor turn as Quit, so a probe or read continuation already queued can't start work.
+    /// Sets `quitting` now, before the asynchronous `quit()` runs: the app calls it (through
+    /// `AppModel.beginShutdown`) in the main-actor turn that accepts a quit or power-off, so a
+    /// probe or read continuation already queued can't start work, and a ready, failure or exit
+    /// already queued is folded with `quitting` (`WantedTransition`) and can't move the flag.
     public func beginQuit() { quitting = true }
 
     public func dismissFailure() { dispatch(.dismissFailure) }

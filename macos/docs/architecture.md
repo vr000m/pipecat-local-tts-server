@@ -32,8 +32,8 @@ flowchart LR
 | Catalog | `PipecatToolbarCore/Service.swift` | Each service's kind, runtime, port, model, licence and copy strings. |
 | Tools | `ToolLocator.swift` | Finds `uv`, the TTS wheel, the `uv.lock` constraints: bundle first, then the overrides below, then the repo checkout. |
 | Environments | `EnvironmentManager.swift` (actor) | Python, venvs, packages and model prefetch. Runs the offline cache checks and removal (which also probes outdated environments, falls back to the model's folder under `AppPaths.hubDir`, and throws `RemovalError` for model folders it cannot delete). It deletes only `models--*` folders directly in `AppPaths.hubDir` and `<backend>/<key>` folders in `AppPaths.derivedModelsDir`, whatever paths the probe reports: every component above the folder must resolve, symlinks included, to exactly that root or `<root>/<backend>`, so a symlinked backend directory can't carry a deletion outside it. Builds every command line by runtime. |
-| Processes | `Subprocess.swift` | `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
-| Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus the entry's `launchdLabel` agent, named only when its `launchctl print` pid equals the `lsof` pid): the "port busy" failure in the README's Problems section. |
+| Processes | `Subprocess.swift` | The async spawn path (one of two; the other is `PortProbe`'s blocking `posix_spawn`, see Ports). `Process` wrapper safe under Swift 6: line streams for stdout and stderr, a held stdin pipe, SIGTERM then SIGKILL to the child's process group. Its exit always resolves (`notLaunched` for a failed launch, or a `stop()` before `run()`, which refuses the launch), and `stop()` returns once no process of the group is left. |
+| Ports | `PortProbe.swift` | Whether a loopback port is free and, if not, who holds it (`lsof`, plus the entry's `launchdLabel` agent, named only when its `launchctl print` pid equals the `lsof` pid): the "port busy" failure in the README's Problems section. `clientCounts` is the second spawn path: blocking and synchronous (Quit needs the answer now), not `Subprocess`. |
 | Download sizes | `HubSizes.swift`, `ServiceCatalog.snapshots(for:)` | Approximate download size of a service from the public Hugging Face tree API (shown in Add Models before install): the sum over every snapshot its install fetches, each at its pinned revision and through its own file filter (mlx-audio's allow patterns, dia's codec patterns, pocket_tts's `embeddings/*.safetensors`, an "all but docs" filter for the STT repos, an approximation: upstream STT `prefetch` fetches the whole repo or the config-named weights). An STT default model is sized at the commit upstream pins it to (`ServiceCatalog.sttPinnedRevisions`, upstream's `PINNED_REVISIONS`), any other STT model at its `main`. The table sits in `Service.swift` next to the model repos; a lean drift test compares it with `prefetch_specs(model)`. `prefetch --check --json` can't be the source: its events carry no allow patterns, and it needs the installed environment the size is shown before. |
 | Lifecycle | `ServiceLifecycle.swift`, `ServiceDriver.swift`, `AppLifecycle.swift` | The per-service state machine and the app-wide one, UI-free. `ServiceLifecycle.reduce(_ state: inout LifecycleState, _ event: LifecycleEvent) -> [LifecycleEffect]` mutates only the state it is handed and does no I/O; it makes every phase change and guard (a ready, exit or ready timeout from a replaced server, or one after Stop or Delete, changes nothing; a requested exit only completes a Stop; an install ending during a removal leaves the phase to it). On quit each layer stops its own work: `ServiceDriver.quit()` first stops new reads and intents, then the reducer's `shutdownRequested` cancels an Apple Speech install (the app runs it; a Python install is the manager's); `EnvironmentManager.shutdown()` stops the install or prefetch step subprocess in flight and every probe, sets `shuttingDown` so no later step or probe starts (the interrupted install unwinds), and waits up to 20 s for busy families; the bootstrap's own `uv build`/`uv export` are stopped through a `ProcessRegistry`. `ServiceDriver` (`@MainActor @Observable`) runs the effects through injectable seams (`ServiceEnvironment` for `EnvironmentManager`, `ServerProcess` for `Subprocess`, `NativeSpeechServer`, the port probe, Apple Speech, the clock and the timeouts in `ServiceDependencies`) and holds the progress the UI shows. `AppLifecycle.reduce(_ phase: inout AppPhase, _ event: AppEvent) -> [AppEffect]` owns bootstrap, Reset and quit the same way ([App lifecycle](#app-lifecycle)). |
 | Protocols | `TTSClient.swift`, `TTSRequestMachine.swift`, `TTSRequestDriver.swift`, `STTClient.swift`, `STTWebSocketServer.swift`, `PCMStreamConverter.swift` | WebSocket clients for both wire protocols, the TTS Try it request lifecycle (a pure state machine and the driver that runs it on a connection), plus a native stt-protocol server; `STTWire` is the one definition of the stt audio format. |
@@ -215,8 +215,12 @@ shutdown (every service's, the bootstrap's subprocesses, the environment
 manager's installs and cache probes), even when no service is busy, then waits
 for the job in flight; after quit no job's end moves the phase or starts
 another. Each service's part starts with `ServiceDriver.quit()`; the app sets its
-`quitting` flag (`beginQuit()`) already in the Quit turn, before the shutdown task
-runs, so a probe answer queued meanwhile launches nothing. From then on no
+`quitting` flag (`beginQuit()`) already in the turn that accepts the quit, before the
+shutdown task runs: `AppModel.beginShutdown()` (the synchronous half of `shutdownAll()`)
+sends `.quit` from `applicationShouldTerminate`'s accepted arms before it returns
+`.terminateLater`, and from the power-off observer, never from a deferred task and never
+on a Cancel. So a probe answer queued meanwhile launches nothing, and a ready, failure or
+exit queued meanwhile is folded with `quitting` and can't move the wanted flag. From then on no
 read is issued or lands and no intent starts work, so a refresh the bootstrap
 issued late (or one in flight) can't attach an Apple Speech install the
 shutdown already passed. The download-size lookup starts only from a bootstrap
@@ -225,6 +229,84 @@ phase} x {every event} against an independent table written per event, then per
 phase, with no `default` (a new phase or event fails to compile), the Reset
 button against the reducer, the action gate, plus the concrete sequences (Try
 Again twice, Reset twice, quit during a Reset or a bootstrap).
+
+## Restore and quit guard
+
+**Wanted flag.** The app persists the set of services it should run (`restore.wanted`
+in `UserDefaults`, `WantedServiceStore`). `WantedTransition.rule` gives every event kind two
+effects in one exhaustive switch, one before quit began and one after, and `next` takes
+`quitting` with no default, so a new kind or caller must choose. Before quit: a change into
+`failed` (from a phase that was not already `failed`) clears the flag; otherwise
+`stopRequested` and `removeRequested` clear it, a service newly running (`ready` or
+`nativeBound` while the phase was not already `running`) sets it, anything else keeps it.
+Once quit began (`ServiceDriver.quitting`) the failure rule is off and only `stopRequested`
+and `removeRequested` clear; every other kind keeps, so a `ready` the shutdown drain still
+reads, or a failure the shutdown causes, never changes what the next launch restores. The
+driver refuses `remove()` and every other new intent but Stop once quitting, so in practice
+only a Stop moves the flag after Quit; which events can arrive is the driver's gate, what each
+does to the flag is only `WantedTransition`. Reset clears the whole set.
+
+**Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
+standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`
+(`PreferencesDomain`, used by `ui_smoke.sh`); the other preferences (catalog tab, hub-size
+cache, Try-it text) are harmless UI state and stay in the standard domain. `AppModel` builds the
+`UserDefaultsWantedServiceStore` from its `preferences` and passes it to each `ServiceModel`
+(no default); the protocol has only per-service `contains` / `setWanted` plus `read` (restore)
+and `removeAll` (Reset), so no store can inherit a whole-set rewrite.
+
+**Restore timing.** `RestorePolicy` plans once per process, after `bootstrapDone` and
+the `ready` guard (`RestorePolicy.shouldRun`, which `AppModel` asks), from the stored set
+and each service's state. The
+`restoreOnLaunch` preference defaults on (its toggle is in the panel's gear menu). A stale or busy port ends `failed` and is not
+retried.
+
+**Quit guard.** `applicationShouldTerminate` decides synchronously through
+`QuitGuardPolicy.decide`: a drain in progress terminates now; a prompt already showing
+answers cancel; a system-initiated quit and the no-client case proceed after the
+shutdown; otherwise it asks (Quit anyway / Cancel). An unknown count asks. The ask carries
+the whole `QuitPrompt` (title, one line per busy service, closing sentence), so the app only
+renders it; when no count could be read the title says clients may be connected. A quit is
+system-initiated when `QuitReason` says so for the Apple Event's reason code, or when the
+`willPowerOffNotification` flag is set (the app sets it synchronously on the main queue, so
+a terminate in the same turn sees it, and begins the quit in that same turn). The delegate passes its real drain, prompt and
+system-quit state to `decide`, which evaluates the blocking `lsof` count only when none of
+those arms has already decided.
+
+**Counting.** `PortProbe.clientCounts` runs one bounded `lsof` call. `ConnectionCount` reads
+its output. Per owned port, it counts server-side rows. The server-side mirrors of the app's
+own client sockets do not count. A row is a mirror only when its two endpoints are those of an
+app-owned row, swapped. That app row's peer port must be a requested service port. A bare port
+match is not used: a remote client's ephemeral port could equal an app socket's port. A socket held
+on several fds of one process counts once. The count is one bounded `lsof` run with a 2 s
+deadline. An `lsof` still running then is sent SIGKILL before the call returns. The result is
+then unknown (the guard asks). The run is started with `posix_spawn`, and only the call reaps
+it. `waitid` with `WNOWAIT` watches for the exit without reaping. So the pid signalled at the
+deadline is still the child's, alive or a zombie, never a reused one. The killed child is
+reaped within 0.2 s, else by a background reaper. A launch failure, a death by signal or any
+stderr output is also unknown. So is an exit other than 0 (or 1 with no output). So is an
+`lsof` that exited while a pipe stayed open past the deadline. Exit 1 with no stdout and no
+stderr is `lsof`'s "nothing matched" and counts zero. One walk of lsof's `-Fpn` grammar
+(`ConnectionCount.rows`) yields every row or nothing. Each process is a `p<pid>` followed by
+one or more file records. Each file record is an `f<fd>` followed by exactly one `n` socket
+record. Every line ends in `\n`, the last one included. No line is empty, and a `\r` is a bad byte. A pid
+is ASCII decimal 1 to Int32.max, and an fd 0 to Int32.max. Neither has a sign or leading zero. A
+socket record is one `->` between two whole endpoints, each `<IPv4>:<port>` or `[<IPv6>]:<port>`
+(port 1-65535, `ConnectionCount.port(of:)`). The IPv6 form allows `::`, a dotted IPv4 tail and
+a `%scope`. That check uses no C parser. It allows ASCII only,
+no leading zero in an octet or port, and 1-4 hex digits a group. Any other line gives no rows.
+So does an `f` without its `n`, or an `n` without its `f`. So does a process with no file
+record. `ConnectionCount.clientCounts(lsofOutput:ports:appPid:)` turns no rows into an unknown
+count for every port (asks). Empty output is zero. Loopback
+tunnels count as clients. Half-open peers count until keepalive reaps them: about
+140 s at the TTS server's keepalive defaults. The STT servers' keepalive is not verified
+here. External servers are not counted or stopped.
+
+**Zero-drop updates.** Run the TTS server as a LaunchAgent (`just tts-install`); the
+app shows it as External and Quit leaves it running. TTS servers only.
+
+**Unverified.** The system-quit reason table is provisional (standard four-char codes;
+a manual Log Out/Restart/Shut Down spike is still to run), as is a second terminate
+during the alert.
 
 ## External servers
 
@@ -250,7 +332,8 @@ Again twice, Reset twice, quit during a Reset or a bootstrap).
   Stop, Delete, Get or Install (each External row reads its buttons from
   `ExternalPresentation.Actions`). Reset is app-wide (`AppEvent.reset`), gated by
   `blocksReset`, which is false for `.external`: it deletes only the app's own
-  `envs` directory and layout file and never signals or stops an External server. STT Try it on an External row offers the test
+  `envs` directory and layout file, clears `restore.wanted` (`AppEffect.clearWantedServices`,
+  before `runReset`), and never signals or stops an External server. STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
   for the discovery pass it cancels (`SerialPass`), so no probe or owner lookup
@@ -323,8 +406,9 @@ Every Python server, and the native server, follows one contract.
    started never outlives it. An External server (one the app adopted, not
    started) is not the app's child and keeps running after Quit by design.
 4. **Stop.** Stop sends SIGTERM and closes stdin, then sends SIGKILL after
-   10 s. Quitting the app stops all the servers it started, in parallel, and leaves
-   External servers running; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. Once the child is reaped its pid may be reused, so a stop after that signals the group only while no process holds the pid (a group with members keeps its id reserved); a live process on it is another one and is left alone. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
+   10 s. Quitting the app (once the [quit guard](#restore-and-quit-guard) lets it: a quit
+   with clients connected asks first and can be cancelled) stops all the servers it started,
+   in parallel, and leaves External servers running; `EnvironmentManager.shutdown()` stops the install or download step subprocess in flight and every probe (SIGTERM, then SIGKILL after 5 s) and sets `shuttingDown`, so no later install step or offline `prefetch --check` probe starts and the interrupted install unwinds; it then waits up to 20 s for busy families (installs, removals) before the app exits. The bootstrap's repository wheel build is stopped the same way. Cancelling an install sends SIGTERM, then SIGKILL after 5 s, and reads as a cancellation (`AsyncThrowingStream.consume`), never as a finished install. Delete cancels an install in flight and waits for it to unwind first. An install queued behind a sibling's leaves the queue when cancelled and records nothing; the variant marker (`.variants/<service>`) is written only once packages are in and no Cancel has landed, so a cancel during the model download leaves the variant installed with weights to resume (needs model). An install step waits at most 2 s after its process exits for the output pipes to close (a grandchild such as a build backend can hold them), so the family lock is always released. Signals go to the child's process group, and a stopped step ends only once its descendants are gone too, so a removal or the next install never races a surviving grandchild. Once the child is reaped its pid may be reused, so a stop after that signals the group only while no process holds the pid (a group with members keeps its id reserved); a live process on it is another one and is left alone. A server exit the app asked for only completes a Stop (`stopping` -> `installed`); reported after the stdout drain, it never overrides a removal that finished first. Quit also cancels an Apple Speech model install and waits up to 5 s for it.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the upstream
@@ -434,9 +518,11 @@ State is rebuilt from disk on every launch, never persisted:
 - **Weights:** an offline `prefetch --check`.
 - **Apple Speech:** `AssetInventory.status`.
 
-Running state is never restored, because every server the app starts dies with
-it. A server the app did not start is not restored either: discovery finds it again
-at launch and shows it as External (Quit leaves it running).
+Live process state is never persisted: every server the app starts dies with it. What
+is persisted is the wanted set (`restore.wanted`), and the next launch restarts those
+services (see [Restore and quit guard](#restore-and-quit-guard)). A server the app did not
+start is never restored: discovery finds it again at launch and shows it as External (Quit
+leaves it running).
 
 ### Delete
 
