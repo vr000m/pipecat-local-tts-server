@@ -1,6 +1,6 @@
 # Task: Menubar app — offer the last-used model of the other category in the Running panel
 
-**Status**: Not Started
+**Status**: In Review (PR #30)
 **Component**: macos
 **Assigned to**: Varun Singh / Claude
 **Priority**: Medium
@@ -41,7 +41,7 @@ When one category (Text to Speech or Speech to Text) has a running service and t
 - The suggestion predicate: `isReadyToStart` only (phase `.installed` and not refused by the cache check), never `isInstalled` or `isStartable` (both admit `needsModel` / `installing`). Read `LifecycleState.isInstalled` (`ServiceLifecycle.swift:529-538`) and `ServiceCounts.isStartable` (`ServiceCounts.swift:55`).
 - Where last-used is written: only the user Start path, only when the driver accepts the start, once. `AppModel.restoreWantedServices()` calls the same `ServiceModel.start()` (`AppModel.swift:234`), and the reducer's `.start` effect re-enters `ServiceDriver.start()` after a packages refresh (`ServiceLifecycle.swift:718`, `ServiceDriver.swift:364`); neither may record.
 - That the row cannot flicker or double-render: Start makes the category occupied in the same dispatch that removes the row, including the packages-refresh path (`installing` before `starting`), the free-port, busy-port and outdated-environment paths, and the restore loop at launch.
-- Reset (`AppModel.send` → `.clearWantedServices`, `AppModel.swift:164`) and the suite-scoping doc in `PreferencesDomain.swift:7-12`.
+- Reset (`AppModel.send` → `.clearPersistedServiceState`, `AppModel.swift:164`) and the suite-scoping doc in `PreferencesDomain.swift:7-12`.
 - That `tone` is excluded in both places: never suggested, never recorded.
 
 ## Implementation Checklist
@@ -59,7 +59,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - `ServiceInfo.isTestSignal` (true for `tone` only), read by the policy and by the recorder.
 - `LifecycleState.isReadyToStart` in `ServiceLifecycle.swift`, and `RestorePolicy`'s `.installed` arm rewritten to call it (behaviour unchanged; `RestorePolicyTests` pin it).
 - `ServiceLifecycle.acceptsStart(...)`: the pure guard now inline at `ServiceLifecycle.swift:783-786` (`appAvailable`, no server, native, install or removal, phase not `.removing`, not external). The `.startRequested` reducer arm calls it, and so will the driver in Phase 2, so the reducer and the recorder cannot disagree. Behaviour unchanged.
-- `SuggestionPolicy.suggestion(for:states:lastUsed:) -> Service?` (`lastUsed` is a `[ServiceKind: Service]` snapshot that `AppModel` reads once from the store, as `restoreWantedServices()` does with `wantedStore.read()` at `AppModel.swift:229`; the policy never touches `UserDefaults`) implementing the Requirements rules (test-signal models filtered out of every candidate set; a category is occupied per the Requirements definition). `SuggestionPolicy.suggestions(states:lastUsed:ready:) -> [ServiceKind: Service]` returns nothing when `ready` is false (bootstrap not finished or restore not yet run). A pure `SuggestionPolicy.panelListing(states:lastUsed:ready:) -> [ServiceKind: [PanelEntry]]` returns, per kind, the active services as `.active(Service)` plus the suggestion as `.suggested(Service)`, in catalog order; `ready: false` keeps the `.active` entries and drops only the suggestion (an adopted External server renders during the launch pass while the gate is still false); the view only switches on the tag; `AppModel` maps entries to models. `PanelEntry` lives in `SuggestionPolicy.swift`.
+- `SuggestionPolicy.suggestion(for:states:lastUsed:) -> Service?` (`lastUsed` is a `[ServiceKind: Service]` snapshot that `AppModel` reads once from the store, as `restoreWantedServices()` does with `wantedStore.read()` at `AppModel.swift:229`; the policy never touches `UserDefaults`) implementing the Requirements rules (test-signal models filtered out of every candidate set; a category is occupied per the Requirements definition). `SuggestionPolicy.suggestions(states:lastUsed:enabled:) -> [ServiceKind: Service]` returns nothing when `ready` is false (bootstrap not finished or restore not yet run). A pure `SuggestionPolicy.panelListing(states:lastUsed:enabled:) -> [ServiceKind: [PanelEntry]]` returns, per kind, the active services as `.active(Service)` plus the suggestion as `.suggested(Service)`, in catalog order; `ready: false` keeps the `.active` entries and drops only the suggestion (an adopted External server renders during the launch pass while the gate is still false); the view only switches on the tag; `AppModel` maps entries to models. `PanelEntry` lives in `SuggestionPolicy.swift`.
 - `PreferencesDomain` doc comment names the new keys as suite-scoped.
 - Tests: the `ServiceKind × category-occupancy` table (none / A only / B only / both), every `ServicePhase` twice, as the candidate (only a ready `.installed` is suggested) and as a sibling in the idle category (`isActive`, `installing`, `removing` and `checking` occupy it; the rest do not). `ServicePhase` has associated values, so the table is driven by an exhaustive `switch` with no `default` (a new phase then fails to compile) over `SuggestionPolicyTests.allPhases`, a local fixture with one `.failed` per kind (`.crashed(status:)`, `.startup(code:)`, `.portBusy(_, found:)` occupy; `.install`, `.download` do not; the bare names used elsewhere in this plan are shorthand for those cases). Do not extend the shared `ServiceLifecycleTests.phases`: `RestorePolicyTests.swift:34` and `ServiceCountsTests.swift:105` assert `table.count == phases.count`, and `ServiceCountsTests.swift:42`, `WantedTransitionTests.swift:32-33` and `ExternalPresentationTests.swift:69` iterate it, none of them in this phase's filter (Decision (grilled)); `isReadyToStart` for `.installed` with and without a cache refusal; `acceptsStart` for each guard; `panelListing` for ready=false with an active service (the `.active` entries remain, no suggestion) and with none (empty), both categories idle, A active + B suggested, both active, A running + A installed + B installed (A lists only the running model); a variant case: STT active, `phononQ8` `.installed` and last-used, `phonon` `.installing(.converting)` → no row, then `phonon` `.installed` → row names `phononQ8`; the four fallback steps, a deleted last-used, a last-used model refused by the cache check with a ready default (the default is suggested), a wrong-kind or unknown stored value, a test-signal model never suggested (as last-used, default-less fallback, or only-installed model), store round-trip on a throwaway suite `"last-used-tests-\(UUID())"` removed with `removePersistentDomain(forName:)`, as `WantedServiceStoreTests.swift:12,22` do.
 
@@ -75,7 +75,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - `AppModel` builds the `UserDefaultsLastUsedStore` from the same `preferences` it passes to the wanted store and injects it into each `ServiceModel`/driver. It reads the last-used store once into the `lastUsed` snapshot and exposes the entries to list per kind for the active-panel branch (`PanelEntry`: the active ones plus the suggestion).
 - Decision (grilled): one fact, one flag. `restoredThisProcess` (`AppModel.swift:74, 228`) drops `@ObservationIgnored` and becomes the observed gate (`suggestionsEnabled` is a computed alias of it, not a second stored flag). It is set in `restoreWantedServices()` after the restore loop's synchronous `start(origin: .restore)` calls, in the same main-actor turn, so the first render with the gate true already sees the restored services occupying; the write site is named in the code and in a manual check. It stays false after a failed bootstrap (`AppModel.swift:200-204` returns before `:220`), so a retry still runs the restore and no row shows meanwhile. `finishPreviewBootstrap()` (`AppModel.swift:328`) also sets it, so `--snapshot` renders can show the row. `AppModel` passes `ready: suggestionsEnabled` to `SuggestionPolicy.panelListing`.
 - `RunningView`: in the `app.anyActive` branch, list the `PanelEntry` values for each kind and switch on the tag: `.active` renders `RunningRow`, `.suggested` renders `CatalogRow` (no state test in the view). The nothing-running branch is untouched.
-- Reset also clears last-used: extend the existing `.clearWantedServices` handling in `AppModel.send` (no change to the `AppLifecycle` reducer or its effects).
+- Reset also clears last-used: extend the existing `.clearPersistedServiceState` handling in `AppModel.send` (no change to the `AppLifecycle` reducer or its effects).
 - Snapshot scenes `running-suggest-stt` and `running-suggest-tts` (one category running, an installed model in the other), via `ServiceModel.setPreviewState`. `Snapshots.renderIfRequested` builds its `AppModel` over a throwaway `UserDefaults` suite seeded with a fixed last-used value, so a render never reads the operator's `lastUsed.*` and is the same on every machine. The suite is removed with `removePersistentDomain(forName:)` once the render finishes (as `ui_smoke.sh:126-127` deletes its suite), so no plist is left in `~/Library/Preferences`.
 - `ServiceDriverTests`: a user start records once; a restore-style start (origin `.restore`) does not; an `.effect`-origin start never records; a restore start on an `.outdated` environment does not record after the refresh and the `.start` re-entry (`ScriptedEnvironment(.outdated(...))`, pattern at `ServiceDriverTests.swift:607-635`); a user start on an `.outdated` environment records exactly once; a refused start does not; a user start on a busy port that adopts the answering server records (extend `startOnABusyPortAdoptsTheServerThatAnswers`, `ServiceDriverTests.swift:802`); starting a test-signal model does not; occupancy (`isActive` or `isInstalling`) holds right after `start()` on the free-port, busy-port and outdated-environment paths; recording survives Stop and a driver rebuild over the same store; occupancy also holds on the Apple Speech native path (a stub `makeNativeServer`: `launchNative` dispatches `.nativeLaunched` inline, `ServiceDriver.swift:484-503`; a nil server ends `.failed(.startup)` and is still recorded); a user start on a busy port followed by `stop()` before the probe answers keeps the category occupied (`.checking`) until the read lands.
 
@@ -88,7 +88,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - `macos/README.md` Menu bar "Running" bullet (about lines 144-150): the suggestion row and when it appears. Reset bullet (about line 77) and the Restore and Quit section if it lists what Reset clears.
 - `macos/docs/architecture.md` (about lines 545-552 and 335): the Running panel rule, the last-used store, Reset.
 - `AGENTS.md`: the `PIPECAT_TOOLBAR_DEFAULTS_SUITE` row names the keys it scopes; add the last-used keys. Update the `macos/` layout bullet only if the file list there names Core types.
-- `CHANGELOG.md`: one Added bullet in the existing `[0.9.0]` section (0.9.0 is unreleased: no `v0.9.*` tag locally or on `origin`; sentences of 20 words or fewer). Set the section's date to the release day when releasing (it reads 2026-10-29 today). No version bump; the compare links stay as they are.
+- `CHANGELOG.md`: one Added bullet in `[Unreleased]` (0.9.0 was already released, commit `9a7b4e3`; sentences of 20 words or fewer). No version bump; the compare links stay as they are.
 - Operator checks (not CI): the Running panel with each category running and the other idle, a stopped-and-relaunched app, and a deleted last-used model.
 
 ## Technical Specifications
@@ -118,7 +118,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - Acceptance rule (decided 2026-10-30): one pure guard, `ServiceLifecycle.acceptsStart`, shared by the `.startRequested` reducer arm and the driver's recorder. Rejected: keying on a non-empty effect list (couples recording to an effect-list shape), comparing `state.phase` before and after (it couples recording to how far the effects have run inside the dispatch: a free-port start passes through `.installed` until `.launched` lands, so the comparison depends on effect timing even though the phase has moved by the time `start()` returns), carrying the origin on `.startRequested` and `LifecycleState` (a larger reducer change for the same result).
 - Re-entry (decided 2026-10-30): the public `start(origin:)` records only for `.user`; the `.start` effect passes `.effect` (supersedes the earlier private-entry design: an explicit `StartOrigin` with no production default means a new call site cannot record by omission, round 2, 2026-10-30). This keeps a restore on an outdated environment out of last-used and records a user start on that path exactly once, at the user's call.
 - Ready predicate (decided 2026-10-30): one `LifecycleState.isReadyToStart`, shared by `RestorePolicy` and `SuggestionPolicy`. The empty-state list keeps `isStartable`, which also shows `needsModel` and `installing` rows; this plan does not change it (see Decisions, 4).
-- Gate and listing live in Core (decided 2026-10-30): `panelListing(states:lastUsed:ready:)` is pure and table-tested; `AppModel` forwards the observed gate (`restoredThisProcess`) and maps tagged entries to models. Reset's clear stays a manual check.
+- Gate and listing live in Core (decided 2026-10-30): `panelListing(states:lastUsed:enabled:)` is pure and table-tested; `AppModel` forwards the observed gate (`restoredThisProcess`) and maps tagged entries to models. Reset's clear stays a manual check.
 - The row hides because the category becomes occupied, not because of any new suggestion state. No "pending" or "failed" row variant exists.
 - `ServiceInfo.isTestSignal` marks `tone`; the policy and the recorder test the attribute, not the `Service` case.
 - Last-used is stored by `Service` raw value (a variant such as `phononQ8` is its own `Service`, not the family).
@@ -129,10 +129,10 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 
 ### Decisions (operator, 2026-10-30)
 1. `tone` is only for testing: never suggested (not as last-used, default or fallback) and never recorded as last-used.
-2. Reset clears everything, including last-used (via the existing `.clearWantedServices` handling in `AppModel.send`; the `AppLifecycle` reducer is unchanged).
+2. Reset clears everything, including last-used (via the existing `.clearPersistedServiceState` handling in `AppModel.send`; the `AppLifecycle` reducer is unchanged).
 3. Apple Speech is not special: it counts as a started and last-used STT model like any other.
 4. The empty-state list stays as today, including its `needsModel` and `installing` rows; only the new row requires `isReadyToStart`.
-5. No separate release: this ships in the unreleased 0.9.0. The changelog bullet goes in `[0.9.0]` and its date is set at release.
+5. No separate release: the changelog bullet goes in `[Unreleased]` (0.9.0 was already released) and ships with the next release.
 6. Last-used recording uses a pure `acceptsStart` guard plus a non-recording path for the `.start` effect (operator, 2026-10-30, `/review-plan`); round 2 realises that path as `StartOrigin.effect` (Decision 10).
 7. `RestorePolicy` and the suggestion share one `isReadyToStart` predicate (operator, 2026-10-30).
 8. The gate and the combined listing move into Core with table tests; snapshot scenes use a throwaway suite (operator, 2026-10-30).
@@ -151,25 +151,25 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 | restore start | `AppModel.restoreWantedServices()` | `ServiceModel.start(origin:)` | Passes `.restore`; never records, including after a packages refresh |
 | ready predicate | `LifecycleState.isReadyToStart` (Phase 1) | `RestorePolicy`, `SuggestionPolicy` | One definition; restore decisions unchanged |
 | suite scoping | `PreferencesDomain.defaults()` | `UserDefaultsLastUsedStore` | Same `UserDefaults` as `restore.wanted`; tests and `ui_smoke.sh` use a throwaway suite |
-| Reset | `AppModel.send(.clearWantedServices)` | `LastUsedStore.removeAll()` | Cleared alongside the wanted set; the `AppLifecycle` reducer is unchanged |
+| Reset | `AppModel.send(.clearPersistedServiceState)` | `LastUsedStore.removeAll()` | Cleared alongside the wanted set; the `AppLifecycle` reducer is unchanged |
 | row visibility | `SuggestionPolicy.panelListing` | `RunningView` via `AppModel`'s observed gate (`restoredThisProcess`) | Row shown iff the listing includes a suggestion for the idle category; `ready` is false until bootstrap and restore have run; Start makes the category occupied in the same dispatch, which removes it. The last-used read is untracked by `@Observable`; the row refreshes only because each write coincides with an observed change (see the observation invariant under Architecture Decisions) |
 
 ## Testing Notes
 
 ### Test Approach
-- [ ] Unit: `SuggestionPolicy` (occupancy table, every phase, fallback order, deleted last-used, `tone` exclusion).
-- [ ] Unit: `UserDefaultsLastUsedStore` on a throwaway suite (round trip, unknown value, `removeAll`).
-- [ ] Unit: `ServiceDriver` (user start records once; restore start, restore after a packages refresh and refused start do not; busy-port adoption records; synchronous occupancy on three start paths; survives Stop).
-- [ ] Unit: `acceptsStart`, `isReadyToStart`, `panelListing` (Core, table tests).
+- [x] Unit: `SuggestionPolicy` (occupancy table, every phase, fallback order, deleted last-used, `tone` exclusion).
+- [x] Unit: `UserDefaultsLastUsedStore` on a throwaway suite (round trip, unknown value, `removeAll`).
+- [x] Unit: `ServiceDriver` (user start records once; restore start, restore after a packages refresh and refused start do not; busy-port adoption records; synchronous occupancy on three start paths; survives Stop).
+- [x] Unit: `acceptsStart`, `isReadyToStart`, `panelListing` (Core, table tests).
 - [ ] Snapshot: `running-suggest-stt` and `running-suggest-tts` render with the row present (`ui_smoke.sh --snapshot` only checks the PNGs are non-empty, so the row is checked by eye).
 - [ ] Manual (operator): launch with a service in `restore.wanted`: no row before or during the restore (the gate flips after the restore loop in `restoreWantedServices()`).
 - [ ] Manual (operator): Nemotron running → the TTS row appears with the last-used model; start it → the row becomes a running row; stop it → the row returns; both running → no row; relaunch → last-used survives; Reset → falls back to the default (last-used cleared).
 
 ### Test Results
-- [ ] All existing tests pass (`swift test --package-path macos`; the install/cancel/pipe-drain suites flake under load, re-run alone)
-- [ ] New tests added and passing
-- [ ] `swift build --package-path macos` has no warnings
-- [ ] `uv run ruff format --check .` and `uv run ruff check .` clean
+- [x] All existing tests pass (`swift test --package-path macos`; the install/cancel/pipe-drain suites flake under load, re-run alone)
+- [x] New tests added and passing
+- [x] `swift build --package-path macos` has no warnings
+- [x] `uv run ruff format --check .` and `uv run ruff check .` clean
 - [ ] Manual verification complete
 
 ### Edge Cases Tested
@@ -199,7 +199,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - The nothing-running list is unchanged.
 - Tests, `swift build` and ruff clean; documentation updated.
 
-<!-- reviewed: 2026-10-31 @ f2d27ec27f6796c77d10c8333604048182a768b9 -->
+<!-- reviewed: 2026-10-31 @ b1eb69970fade1a331b857818df71a9eb0d58643 -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -213,6 +213,7 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 
 ## Findings
 
+- 2026-10-31 follow-up (operator-authorised edit of the contract text): corrected the status header, the 0.9.0/`[Unreleased]` statements, the `ready:` → `enabled:` parameter name and the `.clearWantedServices` → `.clearPersistedServiceState` effect name above the marker, ticked the automated Testing Notes boxes, and refreshed the marker hash. The snapshot-by-eye, operator-run manual checks and edge-case rows stay unticked until someone runs them. The empty `last-used-tests-*.plist` files come from `cfprefsd` after `removePersistentDomain` (the same as `WantedServiceStoreTests`), so test code cannot remove them.
 - Explore facts (2026-10-30, `main` @ `0fef323`): `RunningView.body` branches on `anyActive` / `anyStartable` / `bootstrapping` (`PanelView.swift:46-83`); `AppModel.active(_:)` `:103`, `startable(_:)` `:118`, `installed(_:)` `:124`; `ServiceKind` is `tts` / `stt` (`Service.swift:4-5`); defaults are `kokoro` (`Service.swift:290`) and `appleSpeech` (`:337`); user Start and restore Start both reach `ServiceModel.start()` (`ServiceModel.swift:149-152`, `AppModel.swift:234`); there are no view or `AppModel` tests, and the test target links Core only (`Package.swift:29-35`).
 - Verified (2026-10-30): `LifecycleState.isInstalled` is true for `needsModel` (`ServiceLifecycle.swift:529-538`), and `.ready` with uncached weights maps to `.needsModel` (`:603`); `isStartable` also admits `installing` (`ServiceCounts.swift:55`). Neither can be the suggestion predicate.
 - Walkthrough (2026-10-30): a Start accepted by the driver can begin as `installing` (packages refresh, `ServiceLifecycle.swift:787-789`), so "active" alone is not enough to hide the row; the Retry button on a runtime failure also calls `start()` (`PanelView.swift:594-599`), so it records last-used. Decisions: installing or removing occupies the category (operator, 2026-10-30); a failed start stays recorded.

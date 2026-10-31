@@ -188,7 +188,7 @@ final class AppModel {
         for effect in AppLifecycle.reduce(&phase, event) {
             switch effect {
             case .runBootstrap: job = Task { await runBootstrap() }
-            case .clearWantedServices:
+            case .clearPersistedServiceState:
                 wantedStore.removeAll()
                 lastUsedStore.removeAll()
             case .runReset:

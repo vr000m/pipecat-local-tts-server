@@ -333,7 +333,7 @@ during the alert.
   Stop, Delete, Get or Install (each External row reads its buttons from
   `ExternalPresentation.Actions`). Reset is app-wide (`AppEvent.reset`), gated by
   `blocksReset`, which is false for `.external`: it deletes only the app's own
-  `envs` directory and layout file, clears `restore.wanted` (`AppEffect.clearWantedServices`,
+  `envs` directory and layout file, clears `restore.wanted` (`AppEffect.clearPersistedServiceState`,
   before `runReset`) and the last-used keys, and never signals or stops an External server. STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
