@@ -209,7 +209,7 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 
 - [x] Phase 1: Core — last-used store and suggestion policy (pure)
 - [x] Phase 2: App wiring — record on user Start, expose, render, Reset
-- [ ] Phase 3: Docs
+- [x] Phase 3: Docs
 
 ## Findings
 
@@ -225,4 +225,4 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 
 ## Final Results
 
-(fill when complete)
+All three phases committed via `/conduct` (`e3533b3`, `6a1818b`, docs). Phase filters, `tests/test_justfile_recipes.py` (287) and `ruff` pass; the full `swift test` run flakes in the install/cancel/pipe-drain suites under load and passes alone. Snapshot scenes `running-suggest-stt` and `running-suggest-tts` checked by eye. Operator manual checks (Testing Notes) remain.

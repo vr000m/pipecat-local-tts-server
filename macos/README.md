@@ -74,7 +74,8 @@ for running both.
   An External service has no per-service Stop, Delete, Get or Install; it offers
   Try it (for STT, the test clip only, never the microphone) and the Copy items.
   Reset is app-wide: it deletes only the app's own `envs` directory and layout
-  file and clears the saved set of services to restore (`restore.wanted`), never
+  file and clears the saved set of services to restore (`restore.wanted`) and the
+  last-used models behind the Running suggestion (`lastUsed.tts`, `lastUsed.stt`), never
   signals or stops an External server, and is not blocked by one.
   **Quit leaves it running**
   (the Quit item reads "Quit" when the app owns nothing, "Stop All & Quit" when it does).
@@ -147,6 +148,11 @@ for running both.
   ones it adopted, grouped into Text to Speech and Speech to Text, each with its
   address and a copy button; Stop only on the app's own (External rows show
   `External · <agent label or address>`).
+  When one category has an active service and the other has nothing active,
+  installing or being removed, the idle category shows one suggestion row with a
+  Start button: the model you last started there, else the category default, else
+  the first downloaded model (never `tone`). It stays hidden until the launch
+  restore has run, and is not shown when both categories are active.
 - **Add Models**: every model, by type, with Get, Start and download progress.
   Python and model weights are fetched on first Get; nothing is bundled.
 - **Right-click** any service: **Copy URL**, **Copy Pipecat Service**,

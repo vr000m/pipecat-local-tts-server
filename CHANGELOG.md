@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `macos/scripts/quit_app.sh` says a quit confirmation may be waiting in the app when it exits 1.
 - macOS app: Reset also clears the saved set of services to restore (`restore.wanted`), so the next
   launch restores none. Quitting never changes the set; a Stop during shutdown still clears that service.
+- macOS app: the Running panel suggests a model for the idle category when the other has one running.
+  It offers the model you last started there, else the default, else the first downloaded one.
+  It never suggests `tone`, and Reset clears the last-used choice (`lastUsed.tts`, `lastUsed.stt`).
 - `just app-smoke` (`macos/scripts/ui_smoke.sh`) relaunches with tone wanted and restore on.
   It checks an External tone server is adopted and no server of the app's own is started.
   Every launch uses a throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` and
