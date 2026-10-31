@@ -139,6 +139,8 @@ public struct ServiceInfo: Sendable, Equatable {
     public var modelArgument: String? = nil
 
     public var family: Service { service.family }
+    /// A test signal (`tone`): never suggested and never recorded as last-used.
+    public var isTestSignal: Bool { service == .tone }
     public var needsModelDownload: Bool { modelRepo != nil }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and

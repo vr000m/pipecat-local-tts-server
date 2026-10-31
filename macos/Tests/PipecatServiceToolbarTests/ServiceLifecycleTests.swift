@@ -37,6 +37,41 @@ import Testing
         return s
     }
 
+    // MARK: - acceptsStart
+
+    /// The pure guard the `.startRequested` arm and the driver's last-used recorder share.
+    @Test func acceptsStartRefusesEachGuard() {
+        let free = Self.state(.installed, server: nil)
+        #expect(ServiceLifecycle.acceptsStart(free, appAvailable: true))
+        #expect(!ServiceLifecycle.acceptsStart(free, appAvailable: false))
+        #expect(!ServiceLifecycle.acceptsStart(Self.state(.installed, server: Self.current), appAvailable: true))
+        var native = free
+        native.native = Self.current
+        #expect(!ServiceLifecycle.acceptsStart(native, appAvailable: true))
+        #expect(!ServiceLifecycle.acceptsStart(Self.state(.installed, server: nil, installing: true), appAvailable: true))
+        var removing = free
+        removing.removal = 1
+        #expect(!ServiceLifecycle.acceptsStart(removing, appAvailable: true))
+        #expect(!ServiceLifecycle.acceptsStart(Self.state(.removing, server: nil), appAvailable: true))
+        #expect(!ServiceLifecycle.acceptsStart(Self.state(Self.external, server: nil), appAvailable: true))
+    }
+
+    /// The reducer and the guard cannot disagree: a refused start changes nothing and emits nothing.
+    @Test func startRequestedFollowsAcceptsStartForEveryPhase() {
+        for phase in Self.phases {
+            for server in [nil, Self.current] as [ServerID?] {
+                var s = Self.state(phase, server: server)
+                let before = s
+                let effects = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+                if !ServiceLifecycle.acceptsStart(before, appAvailable: true) {
+                    #expect(effects.isEmpty && s == before, "\(phase) server=\(String(describing: server))")
+                } else {
+                    #expect(!effects.isEmpty, "\(phase) server=\(String(describing: server))")
+                }
+            }
+        }
+    }
+
     // MARK: - Ported from the app-target ServiceModelTests
 
     /// {phase} x {requested exit, crash} x {the exiting server is current, or
