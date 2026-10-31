@@ -58,7 +58,7 @@ public enum SuggestionPolicy {
         }
     }
 
-    /// The suggestion per category; empty when `enabled` is false (`isEnabled`: restore or bootstrap not done).
+    /// The suggestion per category; empty when `enabled` is false (`isEnabled`: the launch restore has not run or the phase is not `ready`).
     public static func suggestions(
         states: [Service: LifecycleState], lastUsed: [ServiceKind: Service], enabled: Bool
     ) -> [ServiceKind: Service] {
