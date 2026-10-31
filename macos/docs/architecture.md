@@ -559,7 +559,7 @@ installing, removing or checking), the Running panel adds one `.suggested` row f
 category after its `.active` rows. `SuggestionPolicy` (Core, pure over the services' lifecycle
 states and a snapshot of the stored last-used values) picks the model: last-used, else the
 category default, else the first ready one in catalog order. Ready is `isReadyToStart`
-(downloaded); a test-signal model (`tone`) is never suggested. `AppModel.panelEntries` maps
+(downloaded); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
 `SuggestionPolicy.panelListing` to models and drops the suggestion until the launch restore has
 run (`restoredThisProcess`), so a restoring service is not offered first.
 
@@ -567,7 +567,7 @@ run (`restoredThisProcess`), so a restoring service is not offered first.
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`
 writes it only on an accepted start with `StartOrigin.user`; `.restore` and `.effect` starts
 never do, and the call has no default origin. Stop does not clear it; Reset does. The
-last-used read in `panelEntries` is untracked; the row refreshes because each write coincides
+last-used read in `panelListing()` is untracked; the row refreshes because each write coincides
 with an observed lifecycle change.
 
 ## Packaging
