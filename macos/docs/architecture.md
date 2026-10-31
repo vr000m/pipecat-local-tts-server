@@ -248,7 +248,8 @@ does to the flag is only `WantedTransition`. Reset clears the whole set.
 
 **Where the set lives.** `restore.wanted` and `restoreOnLaunch` are read and written in the
 standard `UserDefaults`, or in the suite named by `PIPECAT_TOOLBAR_DEFAULTS_SUITE`
-(`PreferencesDomain`, used by `ui_smoke.sh`); the other preferences (catalog tab, hub-size
+(`PreferencesDomain`, used by `ui_smoke.sh`), as are the last-used keys `lastUsed.tts` and
+`lastUsed.stt` ([Running panel suggestion](#running-panel-suggestion)); the other preferences (catalog tab, hub-size
 cache, Try-it text) are harmless UI state and stay in the standard domain. `AppModel` builds the
 `UserDefaultsWantedServiceStore` from its `preferences` and passes it to each `ServiceModel`
 (no default); the protocol has only per-service `contains` / `setWanted` plus `read` (restore)
@@ -332,8 +333,8 @@ during the alert.
   Stop, Delete, Get or Install (each External row reads its buttons from
   `ExternalPresentation.Actions`). Reset is app-wide (`AppEvent.reset`), gated by
   `blocksReset`, which is false for `.external`: it deletes only the app's own
-  `envs` directory and layout file, clears `restore.wanted` (`AppEffect.clearWantedServices`,
-  before `runReset`), and never signals or stops an External server. STT Try it on an External row offers the test
+  `envs` directory and layout file, clears `restore.wanted` (`AppEffect.clearPersistedServiceState`,
+  before `runReset`) and the last-used keys, and never signals or stops an External server. STT Try it on an External row offers the test
   clip, not the microphone: the server is trusted by its hello alone. Quit leaves it
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
   for the discovery pass it cancels (`SerialPass`), so no probe or owner lookup
@@ -550,6 +551,27 @@ leaves it running).
 The **main menu** lists services that are *active*: starting, running, stopping,
 or failed at runtime. **Add Models** lists the rest by kind, split into
 Installed and Available.
+
+### Running panel suggestion
+
+When one category has an active service and the other is not occupied (nothing active,
+installing, removing or checking), the Running panel adds one `.suggested` row for the idle
+category after its `.active` rows. `SuggestionPolicy` (Core, pure over the services' lifecycle
+states and a snapshot of the stored last-used values) picks the model: last-used, else the
+category default, else the first ready one in catalog order. Ready is `isReadyToStart`
+(installed, and the cache check does not refuse it); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
+`SuggestionPolicy.panelListing` to models and drops the suggestion until the launch restore has
+run (`restoredThisProcess`), so a restoring service is not offered first, and whenever the app
+phase is not `ready` (`SuggestionPolicy.isEnabled`). That phase check is a conservative stand-in
+for `AppPhase.acceptsServiceActions`, not the refusal rule: bootstrap, Reset, a failed setup and
+quit all hide the row, though Apple Speech's Start would still be accepted in some of them.
+
+**Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
+`lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`
+writes it only on an accepted start with `StartOrigin.user` and never for a test-signal model
+(`tone`); `.restore` and `.effect` starts never do, and the call has no default origin. Stop does not clear it; Reset does. The
+last-used read in `panelListing()` is untracked; the row refreshes because each write coincides
+with an observed lifecycle change.
 
 ## Packaging
 

@@ -88,7 +88,7 @@ struct ServiceDetailView: View {
         case .needsModel:
             wideButton("Resume Download", systemImage: "arrow.down.circle.fill", tint: .orange) { model.install() }
         case .installed:
-            wideButton("Start Server", systemImage: "play.fill", tint: .green) { model.start() }
+            wideButton("Start Server", systemImage: "play.fill", tint: .green) { model.start(origin: .user) }
         case .running:
             wideButton("Stop Server", systemImage: "stop.fill", tint: .secondary) { model.stop() }
         case .external:
@@ -320,7 +320,7 @@ struct FailureCard: View {
     private func retry() {
         switch failure.kind {
         case .install, .download: model.install()
-        case .crashed, .portBusy, .startup: model.start()
+        case .crashed, .portBusy, .startup: model.start(origin: .user)
         }
     }
 }

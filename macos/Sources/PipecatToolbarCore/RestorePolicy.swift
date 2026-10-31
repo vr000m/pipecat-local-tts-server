@@ -42,7 +42,7 @@ public enum RestorePolicy {
         case .failed(let failure) where failure.isRuntime: return .skip(.alreadyActive)
         case .needsModel: return .skip(.modelNotCached)
         case .installed:
-            return state.cache?.cached == false ? .skip(.modelNotCached) : .start
+            return state.isReadyToStart ? .start : .skip(.modelNotCached)
         // Not installed, still checking, unavailable, mid-install or removal, or an install failure.
         case .notInstalled, .checking, .unavailable, .installing, .removing, .failed:
             return .skip(.notInstalled)

@@ -64,8 +64,9 @@ public enum AppEffect: Equatable, Sendable {
     case runBootstrap
     /// Swaps out the manager, shuts the old one down, deletes the environments.
     case runReset
-    /// Reset forgets which services were wanted running; emitted before `runReset`.
-    case clearWantedServices
+    /// Reset forgets which services were wanted running and each category's last-used model
+    /// (`AppModel` clears both stores); emitted before `runReset`.
+    case clearPersistedServiceState
     /// Quit: stop every server and subprocess, then wait for the job in flight.
     case shutdown
 }
@@ -126,7 +127,7 @@ public enum AppLifecycle {
             return [.runBootstrap]
         case (_, .reset(let servicesBusy)) where phase.allowsReset(servicesBusy: servicesBusy):
             phase = .resetting
-            return [.clearWantedServices, .runReset]
+            return [.clearPersistedServiceState, .runReset]
         case (.bootstrapping, .bootstrapDone):
             phase = .ready
             return []

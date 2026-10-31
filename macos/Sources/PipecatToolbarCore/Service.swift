@@ -131,6 +131,8 @@ public struct ServiceInfo: Sendable, Equatable {
     public let symbol: String
     /// Shown in the list as a recommended default.
     public var isDefault: Bool = false
+    /// A test signal (`tone`): never suggested and never recorded as last-used.
+    public var isTestSignal: Bool = false
     /// The variant's name within its family ("8-bit", "Small"); nil for a family of one.
     public var variantLabel: String? = nil
     /// How the variant differs from its siblings ("Best quality").
@@ -282,7 +284,7 @@ public enum ServiceCatalog {
             ServiceInfo(
                 service: .tone, kind: .tts, expectedBackendName: "tone", displayName: "Tone", tagline: "Test signal, starts instantly",
                 runtime: .ttsServer(extra: nil), port: 8665, modelRepo: nil, licence: .none,
-                streaming: false, symbol: "tuningfork")
+                streaming: false, symbol: "tuningfork", isTestSignal: true)
         case .kokoro:
             ServiceInfo(
                 service: .kokoro, kind: .tts, expectedBackendName: "kokoro", displayName: "Kokoro", tagline: "Fast, natural, multilingual",

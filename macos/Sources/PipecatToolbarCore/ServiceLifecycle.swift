@@ -538,6 +538,14 @@ extension LifecycleState {
         }
     }
 
+    /// Ready to start right now: phase `.installed` and the cache check does not refuse it. The one
+    /// definition `RestorePolicy` and `SuggestionPolicy` share (`isInstalled` also admits `needsModel`).
+    /// Narrower than `ServiceCounts.isStartable` (the menu's list) and a different question from
+    /// `ServiceLifecycle.acceptsStart` (whether the reducer takes a start event at all).
+    public var isReadyToStart: Bool {
+        phase == .installed && cache?.cached != false
+    }
+
     public var isInstalling: Bool {
         if case .installing = phase { return true }
         return false
@@ -562,6 +570,16 @@ public enum ServiceLifecycle {
     /// 1.2 s for the real agents, with warm file caches; launchd's respawn delay was not
     /// measured and is not in those numbers.
     public static let externalFailureThreshold = 3
+
+    /// Whether `.startRequested` does anything in `s`: the app is available, no server, native
+    /// server, install or removal is live, and the phase is neither `.removing` nor external. The
+    /// reducer's guard and the driver's last-used recorder both call it, so they cannot disagree.
+    /// It checks the accept guard only; "worth offering" is `LifecycleState.isReadyToStart` (suggestion,
+    /// restore) or `ServiceCounts.isStartable` (menu).
+    public static func acceptsStart(_ s: LifecycleState, appAvailable: Bool) -> Bool {
+        appAvailable && s.server == nil && s.native == nil && s.install == nil && s.removal == nil
+            && s.phase != .removing && !s.phase.isExternal
+    }
 
     /// The phases a discovery `externalFound` adopts from; `ExternalDiscoveryPolicy.probes`
     /// probes only these (the others are owned, or not yet readable), and both also exclude
@@ -781,9 +799,7 @@ public enum ServiceLifecycle {
             }
 
         case .startRequested(let appAvailable, let managerAvailable, let portFree):
-            guard appAvailable, s.server == nil, s.native == nil, s.install == nil, s.removal == nil,
-                s.phase != .removing, !s.phase.isExternal
-            else { return [] }
+            guard acceptsStart(s, appAvailable: appAvailable) else { return [] }
             if s.runtime.usesPython, case .outdated = s.environment, managerAvailable {
                 // The app was updated since this env was built: refresh its packages, then start.
                 return beginInstall(&s, mode: .packages, then: .refreshThenStart)
