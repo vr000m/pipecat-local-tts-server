@@ -68,7 +68,7 @@ struct RunningView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 16)
                             .padding(.top, 10)
-                        serviceList { app.startable($0) } row: { CatalogRow(model: $0) }
+                        serviceList({ app.startable($0) }, id: \.id) { CatalogRow(model: $0) }
                     }
                 } else if app.bootstrapping {
                     ProgressView().controlSize(.small)
@@ -84,39 +84,26 @@ struct RunningView: View {
 
     /// `SuggestionPolicy.panelListing` per kind; the view switches only on the entry's tag.
     private var activeList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(ServiceKind.allCases) { kind in
-                    let entries = app.panelEntries(kind)
-                    if !entries.isEmpty {
-                        SectionHeader(kind: kind)
-                        ForEach(entries, id: \.model.id) { item in
-                            switch item.entry {
-                            case .active: RunningRow(model: item.model)
-                            case .suggested: CatalogRow(model: item.model)
-                            }
-                        }
-                    }
-                }
+        let listing = app.panelListing()
+        return serviceList({ listing[$0] ?? [] }, id: \.model.id) { item in
+            switch item.entry {
+            case .active: RunningRow(model: item.model)
+            case .suggested: CatalogRow(model: item.model)
             }
-            .padding(.horizontal, 8)
-            .padding(.top, 4)
-            .padding(.bottom, 8)
         }
-        .scrollIndicators(.never)
     }
 
-    /// Services grouped under Text to Speech / Speech to Text headers.
-    private func serviceList<Row: View>(
-        _ models: @escaping (ServiceKind) -> [ServiceModel], @ViewBuilder row: @escaping (ServiceModel) -> Row
+    /// Items grouped under Text to Speech / Speech to Text headers.
+    private func serviceList<Item, ID: Hashable, Row: View>(
+        _ items: @escaping (ServiceKind) -> [Item], id: KeyPath<Item, ID>, @ViewBuilder row: @escaping (Item) -> Row
     ) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(ServiceKind.allCases) { kind in
-                    let group = models(kind)
+                    let group = items(kind)
                     if !group.isEmpty {
                         SectionHeader(kind: kind)
-                        ForEach(group) { row($0) }
+                        ForEach(group, id: id) { row($0) }
                     }
                 }
             }

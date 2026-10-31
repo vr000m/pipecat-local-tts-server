@@ -123,19 +123,18 @@ final class AppModel {
 
     var anyActive: Bool { counts.active > 0 }
 
-    /// The Running panel's active branch per kind: the active services plus the suggestion for an
-    /// idle category (`SuggestionPolicy.panelListing`), mapped to models. The last-used read is
-    /// untracked; the row refreshes because each write coincides with an observed state change.
-    func panelEntries(_ kind: ServiceKind) -> [(entry: PanelEntry, model: ServiceModel)] {
+    /// The Running panel's active branch, per kind: the active services plus the suggestion for an
+    /// idle category (`SuggestionPolicy.panelListing`), mapped to models. Computed once per
+    /// render. The last-used read is untracked; the row refreshes because each write coincides
+    /// with an observed state change.
+    func panelListing() -> [ServiceKind: [(entry: PanelEntry, model: ServiceModel)]] {
         let lastUsed = Dictionary(
             uniqueKeysWithValues: ServiceKind.allCases.compactMap { k in
                 lastUsedStore.lastUsed(k).map { (k, $0) }
             })
         let listing = SuggestionPolicy.panelListing(states: states, lastUsed: lastUsed, ready: suggestionsEnabled)
-        return (listing[kind] ?? []).map { entry in
-            switch entry {
-            case .active(let service), .suggested(let service): (entry, model(service))
-            }
+        return listing.mapValues { entries in
+            entries.map { (entry: $0, model: model($0.service)) }
         }
     }
 

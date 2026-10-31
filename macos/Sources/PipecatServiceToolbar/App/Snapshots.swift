@@ -3,6 +3,12 @@
     import PipecatToolbarCore
     import SwiftUI
 
+    /// Answers "nothing listens" on every port: opening the panel runs a discovery pass, which would
+    /// otherwise adopt a server the operator has running and change what a scene shows.
+    private struct NoServersProber: HelloProber {
+        func probe(port: Int) async -> ExternalProbe.Outcome { .unreachable }
+    }
+
     /// `PipecatServiceToolbar --snapshot <dir>` (debug builds): renders the panel in a set of
     /// representative states to PNGs, in light and dark, then exits. Used to review
     /// the UI without driving the menu bar.
@@ -14,24 +20,22 @@
             let dir = URL(filePath: args[i + 1])
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             // A throwaway defaults suite with a fixed last-used value, so a render never reads the
-            // operator's `lastUsed.*` and is the same on every machine.
-            let suiteName = "snapshots-\(UUID())"
+            // operator's `lastUsed.*` and is the same on every machine. The name is fixed and the
+            // domain wiped before and after: cfprefsd rewrites the suite's plist after the process
+            // exits, so a per-run name (or deleting the file) left a new empty plist in
+            // ~/Library/Preferences on every run.
+            let suiteName = "pipecat-toolbar-snapshots"
             let suite = UserDefaults(suiteName: suiteName)!
-            defer {
-                suite.removePersistentDomain(forName: suiteName)
-                suite.synchronize()
-                // `removePersistentDomain` leaves an empty plist behind (as `defaults delete` does).
-                let plist = FileManager.default.homeDirectoryForCurrentUser
-                    .appending(path: "Library/Preferences/\(suiteName).plist")
-                try? FileManager.default.removeItem(at: plist)
-            }
+            suite.removePersistentDomain(forName: suiteName)
+            defer { suite.removePersistentDomain(forName: suiteName) }
             let lastUsed = UserDefaultsLastUsedStore(defaults: suite)
             lastUsed.setLastUsed(.pocketTTS)
             lastUsed.setLastUsed(.whisper)
             for (name, configure) in scenes {
                 for dark in [false, true] {
                     let app = AppModel(
-                        paths: AppPaths.standard(supportOverride: dir.appending(path: "support")), preferences: suite)
+                        paths: AppPaths.standard(supportOverride: dir.appending(path: "support")),
+                        prober: NoServersProber(), preferences: suite)
                     configure(app)
                     app.finishPreviewBootstrap()
                     render(app, to: dir.appending(path: "\(name)-\(dark ? "dark" : "light").png"), dark: dark)

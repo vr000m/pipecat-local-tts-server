@@ -247,13 +247,11 @@ public final class ServiceDriver {
         guard !quitting else { return }
         let appAvailable = host != nil
         let accepted = ServiceLifecycle.acceptsStart(state, appAvailable: appAvailable)
-        defer {
-            if accepted, origin == .user, !info.isTestSignal { dependencies.lastUsed.setLastUsed(service) }
-        }
         dispatch(
             .startRequested(
                 appAvailable: appAvailable, managerAvailable: environment != nil,
                 portFree: dependencies.isPortFree(info.port)))
+        if accepted, origin == .user, !info.isTestSignal { dependencies.lastUsed.setLastUsed(service) }
     }
 
     public func stop() { dispatch(.stopRequested) }

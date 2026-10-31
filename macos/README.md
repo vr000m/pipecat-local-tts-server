@@ -149,7 +149,7 @@ for running both.
   address and a copy button; Stop only on the app's own (External rows show
   `External · <agent label or address>`).
   When one category has an active service and the other has nothing active,
-  installing or being removed, the idle category shows one suggestion row with a
+  installing, being removed or being checked, the idle category shows one suggestion row with a
   Start button: the model you last started there, else the category default, else
   the first downloaded model (never `tone`). It stays hidden until the launch
   restore has run, and is not shown when both categories are active.
@@ -181,7 +181,7 @@ for running both.
   started runs, or a service installs or is being deleted; an External server
   does not block it (Reset deletes only the app's own environments and never
   touches that server). Reset also clears the saved set of services to restore,
-  so the next launch restores none. While Reset or the launch check runs, the
+  so the next launch restores none, and the last-used models. While Reset or the launch check runs, the
   Python services' Get, Start and Delete are disabled.
 
 ## Use a service from Pipecat
@@ -278,9 +278,9 @@ quit to finish.
 The smoke runs under your real bundle id, so it must not read or write your wanted set:
 every launch gets `-restoreOnLaunch` and `-restore.wanted` as launch arguments and
 `PIPECAT_TOOLBAR_DEFAULTS_SUITE=<throwaway suite>` (`PreferencesDomain`, which scopes only
-`restore.wanted` and `restoreOnLaunch`). Launch arguments live in the argument domain, which
-heads every `UserDefaults` search list including the suite's: the app's reads of those two
-keys return the arguments (that is how step 6 seeds its wanted set) while its writes go to the
+`restore.wanted`, `restoreOnLaunch`, `lastUsed.tts` and `lastUsed.stt`). Launch arguments live in the argument domain, which
+heads every `UserDefaults` search list including the suite's: the app's reads of `restore.wanted` and
+`restoreOnLaunch` return the arguments (that is how step 6 seeds its wanted set) while its writes go to the
 suite, so a smoke run's own wanted-set writes are not read back. The script seeds and deletes
 the suite, and fails if a hash of `defaults read <bundle id> restore.wanted` differs before and
 after (a read-only isolation check; the value is never printed).

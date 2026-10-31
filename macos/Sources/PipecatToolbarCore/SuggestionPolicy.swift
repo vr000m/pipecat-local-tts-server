@@ -4,6 +4,13 @@ import Foundation
 public enum PanelEntry: Equatable, Sendable {
     case active(Service)
     case suggested(Service)
+
+    /// The service either tag names.
+    public var service: Service {
+        switch self {
+        case .active(let service), .suggested(let service): service
+        }
+    }
 }
 
 /// Which model the Running panel offers for the idle category, as a pure function of the
