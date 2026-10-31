@@ -88,7 +88,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - `macos/README.md` Menu bar "Running" bullet (about lines 144-150): the suggestion row and when it appears. Reset bullet (about line 77) and the Restore and Quit section if it lists what Reset clears.
 - `macos/docs/architecture.md` (about lines 545-552 and 335): the Running panel rule, the last-used store, Reset.
 - `AGENTS.md`: the `PIPECAT_TOOLBAR_DEFAULTS_SUITE` row names the keys it scopes; add the last-used keys. Update the `macos/` layout bullet only if the file list there names Core types.
-- `CHANGELOG.md`: one Added bullet in `[Unreleased]` (0.9.0 was already released, commit `9a7b4e3`; sentences of 20 words or fewer). No version bump; the compare links stay as they are.
+- `CHANGELOG.md`: one Added bullet in the existing `[0.9.0]` section (0.9.0 is prepared but not published: `pyproject.toml` is at 0.9.0 with release commit `9a7b4e3`, but there is no `v0.9.0` tag or GitHub release; sentences of 20 words or fewer). The section's date is 2026-10-31, the day this ships. No version bump; the compare links stay as they are.
 - Operator checks (not CI): the Running panel with each category running and the other idle, a stopped-and-relaunched app, and a deleted last-used model.
 
 ## Technical Specifications
@@ -132,7 +132,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 2. Reset clears everything, including last-used (via the existing `.clearPersistedServiceState` handling in `AppModel.send`; the `AppLifecycle` reducer is unchanged).
 3. Apple Speech is not special: it counts as a started and last-used STT model like any other.
 4. The empty-state list stays as today, including its `needsModel` and `installing` rows; only the new row requires `isReadyToStart`.
-5. No separate release: the changelog bullet goes in `[Unreleased]` (0.9.0 was already released) and ships with the next release.
+5. No separate release: this ships in the unpublished 0.9.0. The changelog bullet goes in `[0.9.0]`, dated 2026-10-31.
 6. Last-used recording uses a pure `acceptsStart` guard plus a non-recording path for the `.start` effect (operator, 2026-10-30, `/review-plan`); round 2 realises that path as `StartOrigin.effect` (Decision 10).
 7. `RestorePolicy` and the suggestion share one `isReadyToStart` predicate (operator, 2026-10-30).
 8. The gate and the combined listing move into Core with table tests; snapshot scenes use a throwaway suite (operator, 2026-10-30).
@@ -199,7 +199,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - The nothing-running list is unchanged.
 - Tests, `swift build` and ruff clean; documentation updated.
 
-<!-- reviewed: 2026-10-31 @ b1eb69970fade1a331b857818df71a9eb0d58643 -->
+<!-- reviewed: 2026-10-31 @ ff723fae25c37c6eda6206e5e5537a799c2a499e -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -213,13 +213,13 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 
 ## Findings
 
-- 2026-10-31 follow-up (operator-authorised edit of the contract text): corrected the status header, the 0.9.0/`[Unreleased]` statements, the `ready:` → `enabled:` parameter name and the `.clearWantedServices` → `.clearPersistedServiceState` effect name above the marker, ticked the automated Testing Notes boxes, and refreshed the marker hash. The snapshot-by-eye, operator-run manual checks and edge-case rows stay unticked until someone runs them. The empty `last-used-tests-*.plist` files come from `cfprefsd` after `removePersistentDomain` (the same as `WantedServiceStoreTests`), so test code cannot remove them.
+- 2026-10-31 follow-up (operator-authorised edit of the contract text): corrected the status header, the 0.9.0 statements (see the correction below), the `ready:` → `enabled:` parameter name and the `.clearWantedServices` → `.clearPersistedServiceState` effect name above the marker, ticked the automated Testing Notes boxes, and refreshed the marker hash. The snapshot-by-eye, operator-run manual checks and edge-case rows stay unticked until someone runs them. The empty `last-used-tests-*.plist` files come from `cfprefsd` after `removePersistentDomain` (the same as `WantedServiceStoreTests`), so test code cannot remove them.
 - Explore facts (2026-10-30, `main` @ `0fef323`): `RunningView.body` branches on `anyActive` / `anyStartable` / `bootstrapping` (`PanelView.swift:46-83`); `AppModel.active(_:)` `:103`, `startable(_:)` `:118`, `installed(_:)` `:124`; `ServiceKind` is `tts` / `stt` (`Service.swift:4-5`); defaults are `kokoro` (`Service.swift:290`) and `appleSpeech` (`:337`); user Start and restore Start both reach `ServiceModel.start()` (`ServiceModel.swift:149-152`, `AppModel.swift:234`); there are no view or `AppModel` tests, and the test target links Core only (`Package.swift:29-35`).
 - Verified (2026-10-30): `LifecycleState.isInstalled` is true for `needsModel` (`ServiceLifecycle.swift:529-538`), and `.ready` with uncached weights maps to `.needsModel` (`:603`); `isStartable` also admits `installing` (`ServiceCounts.swift:55`). Neither can be the suggestion predicate.
 - Walkthrough (2026-10-30): a Start accepted by the driver can begin as `installing` (packages refresh, `ServiceLifecycle.swift:787-789`), so "active" alone is not enough to hide the row; the Retry button on a runtime failure also calls `start()` (`PanelView.swift:594-599`), so it records last-used. Decisions: installing or removing occupies the category (operator, 2026-10-30); a failed start stays recorded.
 - `/review-plan` round 1 (2026-10-30): 27 findings (12 Important, 15 Minor, 0 Critical), 5 of them contradictions; the operator's decisions are Decisions 6-9 above. Verified in that round: `ServiceDriver.start()` (`ServiceDriver.swift:237-243`) only builds the event, the acceptance guard is `ServiceLifecycle.swift:783-786` (refusal returns `[]` with no state change); `dispatch` runs effects inline (`ServiceDriver.swift:142-146`), so every accepted start has moved the phase before `start()` returns (`.installing` `ServiceLifecycle.swift:1046`, busy port `.starting` `ServiceLifecycle.swift:792`, free port `.launched` `ServiceDriver.swift:539`); the reducer's `.start` effect re-enters `start()` (`ServiceLifecycle.swift:718`, `ServiceDriver.swift:364`); `RestorePolicy` also refuses `.installed` with an uncached model (`RestorePolicy.swift:44-45`); `finishPreviewBootstrap()` sets only `phase = .ready` (`AppModel.swift:328`), and `restoredThisProcess` is `@ObservationIgnored` (`:74`); `ExternalDiscovery` reaches the driver through `discovered(_:)` (`macos/Sources/PipecatServiceToolbar/State/ExternalDiscovery.swift:71`), never `start()`.
 - Settled (Phase 2 and `03951fc`): the remaining `Snapshots.swift` scenes needed no change; the two new scenes were made hermetic with a no-servers prober, because opening the panel runs a discovery pass that adopted a real running server.
-- 2026-10-31 correction: the changelog entry lives under `[Unreleased]`, not `[0.9.0]`, because 0.9.0 was already released (release commit `9a7b4e3`); this supersedes the "0.9.0 is unreleased" statements at lines 91 and 135 above the review marker (fixed in `424bfc8`). Gauntlet round 2: the gate parameter of `suggestions`/`panelListing` is now `enabled:` (was `ready:`, which the contract text above still names), and `isEnabled`'s phase check is documented as a conservative stand-in for `AppPhase.acceptsServiceActions`, not the refusal rule.
+- 2026-10-31 correction (supersedes the earlier `[Unreleased]` note): the changelog entry belongs in `[0.9.0]` and that section is dated 2026-10-31. 0.9.0 is prepared but not published (`pyproject.toml` 0.9.0, release commit `9a7b4e3`, no `v0.9.0` tag or GitHub release; latest is v0.8.3), so the original contract text at lines 91 and 135 is right. An earlier review pass wrongly treated the release commit as a release. Gauntlet round 2: the gate parameter of `suggestions`/`panelListing` is now `enabled:` (was `ready:`, which the contract text above still names), and `isEnabled`'s phase check is documented as a conservative stand-in for `AppPhase.acceptsServiceActions`, not the refusal rule.
 
 ## Issues & Solutions
 
