@@ -227,4 +227,4 @@ None blocking. Post-`/code-review` fixes landed in `03951fc`: hermetic snapshot 
 
 ## Final Results
 
-All three phases committed via `/conduct` (`e3533b3`, `6a1818b`, `aa72c96`) plus `03951fc` (code-review fixes). Phase filters, `tests/test_justfile_recipes.py` (287) and `ruff` pass; the full `swift test` run flakes in the install/cancel/pipe-drain suites under load and passes alone. Snapshot scenes `running-suggest-stt` and `running-suggest-tts` checked by eye. Operator manual checks (Testing Notes) remain.
+All three phases committed via `/conduct` (`e3533b3`, `6a1818b`, `aa72c96`) plus `03951fc` (code-review fixes). Phase filters, `tests/test_justfile_recipes.py` and `tests/test_backend_registry.py` (308) and `ruff` pass; the full `swift test` run flakes in the install/cancel/pipe-drain suites under load and passes alone. Snapshot scenes `running-suggest-stt` and `running-suggest-tts` checked by eye. Operator manual checks (Testing Notes) remain.
