@@ -134,7 +134,7 @@ final class AppModel {
             uniqueKeysWithValues: ServiceKind.allCases.compactMap { k in
                 lastUsedStore.lastUsed(k).map { (k, $0) }
             })
-        let listing = SuggestionPolicy.panelListing(states: states, lastUsed: lastUsed, ready: suggestionsEnabled)
+        let listing = SuggestionPolicy.panelListing(states: states, lastUsed: lastUsed, enabled: suggestionsEnabled)
         return listing.mapValues { entries in
             entries.map { (entry: $0, model: model($0.service)) }
         }

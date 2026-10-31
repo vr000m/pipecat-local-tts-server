@@ -562,8 +562,9 @@ category default, else the first ready one in catalog order. Ready is `isReadyTo
 (installed, and the cache check does not refuse it); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
 `SuggestionPolicy.panelListing` to models and drops the suggestion until the launch restore has
 run (`restoredThisProcess`), so a restoring service is not offered first, and whenever the app
-phase is not `ready` (`SuggestionPolicy.isEnabled`): during Reset or a failed bootstrap its Start
-would be refused.
+phase is not `ready` (`SuggestionPolicy.isEnabled`). That phase check is a conservative stand-in
+for `AppPhase.acceptsServiceActions`, not the refusal rule: bootstrap, Reset, a failed setup and
+quit all hide the row, though Apple Speech's Start would still be accepted in some of them.
 
 **Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`

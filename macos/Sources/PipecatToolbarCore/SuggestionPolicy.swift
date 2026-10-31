@@ -17,9 +17,11 @@ public enum PanelEntry: Equatable, Sendable {
 /// services' lifecycle states and the stored last-used values (a snapshot; no `UserDefaults`).
 public enum SuggestionPolicy {
     /// Whether the panel may show a suggestion now: the launch restore has run in this process
-    /// (`restoredThisProcess`, which a Reset does not undo) and the app phase is `ready`. Any other
-    /// phase has no usable manager (Reset, bootstrap) or no services read yet (failed bootstrap,
-    /// where a service's Start is refused), and a suggestion must never name a Start that is refused.
+    /// (`restoredThisProcess`, which a Reset does not undo) and the app phase is `ready`. The phase
+    /// check is a deliberately conservative stand-in for "a Start would be accepted"
+    /// (`AppPhase.acceptsServiceActions`, which also depends on the service and the manager), not
+    /// that rule: it hides the row in every phase but `ready`, including `failed` and `resetting`
+    /// where Apple Speech's Start would still be accepted. It never shows a row for a refused Start.
     public static func isEnabled(restoredThisProcess: Bool, phase: AppPhase) -> Bool {
         restoredThisProcess && phase == .ready
     }
@@ -56,11 +58,11 @@ public enum SuggestionPolicy {
         }
     }
 
-    /// The suggestion per category; empty when `ready` is false (bootstrap or restore not done).
+    /// The suggestion per category; empty when `enabled` is false (`isEnabled`: restore or bootstrap not done).
     public static func suggestions(
-        states: [Service: LifecycleState], lastUsed: [ServiceKind: Service], ready: Bool
+        states: [Service: LifecycleState], lastUsed: [ServiceKind: Service], enabled: Bool
     ) -> [ServiceKind: Service] {
-        guard ready else { return [:] }
+        guard enabled else { return [:] }
         var result: [ServiceKind: Service] = [:]
         for kind in ServiceKind.allCases {
             if let service = suggestion(for: kind, states: states, lastUsed: lastUsed) { result[kind] = service }
@@ -69,11 +71,11 @@ public enum SuggestionPolicy {
     }
 
     /// Per kind, the active services as `.active` then the suggestion as `.suggested`, in catalog
-    /// order. `ready: false` drops only the suggestion. A kind with no entries is absent.
+    /// order. `enabled: false` drops only the suggestion. A kind with no entries is absent.
     public static func panelListing(
-        states: [Service: LifecycleState], lastUsed: [ServiceKind: Service], ready: Bool
+        states: [Service: LifecycleState], lastUsed: [ServiceKind: Service], enabled: Bool
     ) -> [ServiceKind: [PanelEntry]] {
-        let suggested = suggestions(states: states, lastUsed: lastUsed, ready: ready)
+        let suggested = suggestions(states: states, lastUsed: lastUsed, enabled: enabled)
         var result: [ServiceKind: [PanelEntry]] = [:]
         for kind in ServiceKind.allCases {
             var entries: [PanelEntry] = ServiceCatalog.services(of: kind)

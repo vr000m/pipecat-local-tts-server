@@ -80,7 +80,7 @@ import Testing
                 if otherActive { overrides[active] = .running }
                 if idleOccupied { overrides[occupant] = .running }
                 let s = Self.states(overrides)
-                let got = SuggestionPolicy.suggestions(states: s, lastUsed: [:], ready: true)[idle]
+                let got = SuggestionPolicy.suggestions(states: s, lastUsed: [:], enabled: true)[idle]
                 #expect(got == (expectRow ? candidate : nil), "idle=\(idle) otherActive=\(otherActive) idleOccupied=\(idleOccupied)")
             }
         }
@@ -122,7 +122,7 @@ import Testing
 
     @Test func bothCategoriesActiveShowsNoRow() {
         let s = Self.states([.kokoro: .running, .whisper: .running, .pocketTTS: .installed, .whisperTiny: .installed])
-        #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], ready: true).isEmpty)
+        #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], enabled: true).isEmpty)
     }
 
     @Test func anAdoptedExternalServerCountsAsActiveAndTheIdleCategoryStillGetsItsRow() {
@@ -132,8 +132,8 @@ import Testing
 
     @Test func notReadyYieldsNoSuggestions() {
         let s = Self.states([.kokoro: .installed, .whisper: .running])
-        #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], ready: false).isEmpty)
-        #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], ready: true) == [.tts: .kokoro])
+        #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], enabled: false).isEmpty)
+        #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], enabled: true) == [.tts: .kokoro])
     }
 
     // MARK: - isReadyToStart
@@ -279,28 +279,28 @@ import Testing
 
     @Test func panelListingBeforeReadyKeepsActiveEntriesAndDropsTheSuggestion() {
         let s = Self.states([.whisper: .running, .kokoro: .installed])
-        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], ready: false) == [.stt: [.active(.whisper)]])
+        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: false) == [.stt: [.active(.whisper)]])
     }
 
     @Test func panelListingBeforeReadyWithNothingActiveIsEmpty() {
         let s = Self.states([.kokoro: .installed, .whisper: .installed])
-        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], ready: false).isEmpty)
+        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: false).isEmpty)
     }
 
     @Test func panelListingWithBothCategoriesIdleIsEmpty() {
         let s = Self.states([.kokoro: .installed, .whisper: .installed])
-        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], ready: true).isEmpty)
+        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: true).isEmpty)
     }
 
     @Test func panelListingShowsAnActiveServiceAndTheOtherCategorysSuggestion() {
         let s = Self.states([.whisper: .running, .kokoro: .installed, .pocketTTS: .installed])
-        let listing = SuggestionPolicy.panelListing(states: s, lastUsed: [.tts: .pocketTTS], ready: true)
+        let listing = SuggestionPolicy.panelListing(states: s, lastUsed: [.tts: .pocketTTS], enabled: true)
         #expect(listing == [.stt: [.active(.whisper)], .tts: [.suggested(.pocketTTS)]])
     }
 
     @Test func panelListingWithBothCategoriesActiveHasNoSuggestionAndKeepsCatalogOrder() {
         let s = Self.states([.pocketTTS: .running, .kokoro: .running, .whisper: .running, .appleSpeech: .starting])
-        let listing = SuggestionPolicy.panelListing(states: s, lastUsed: [:], ready: true)
+        let listing = SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: true)
         let tts = ServiceCatalog.services(of: .tts).filter { [.pocketTTS, .kokoro].contains($0) }
         let stt = ServiceCatalog.services(of: .stt).filter { [.whisper, .appleSpeech].contains($0) }
         #expect(listing == [.tts: tts.map(PanelEntry.active), .stt: stt.map(PanelEntry.active)])
@@ -308,13 +308,13 @@ import Testing
 
     @Test func panelListingListsOnlyTheRunningModelWhenSiblingsAreInstalled() {
         let s = Self.states([.kokoro: .running, .pocketTTS: .installed, .whisper: .installed])
-        let listing = SuggestionPolicy.panelListing(states: s, lastUsed: [.stt: .whisper], ready: true)
+        let listing = SuggestionPolicy.panelListing(states: s, lastUsed: [.stt: .whisper], enabled: true)
         #expect(listing[.tts] == [.active(.kokoro)])
         #expect(listing[.stt] == [.suggested(.whisper)])
     }
 
     @Test func panelListingActiveEntriesComeBeforeTheSuggestionAndNeverNameTone() {
         let s = Self.states([.tone: .installed, .whisper: .running])
-        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [.tts: .tone], ready: true) == [.stt: [.active(.whisper)]])
+        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [.tts: .tone], enabled: true) == [.stt: [.active(.whisper)]])
     }
 }
