@@ -19,7 +19,7 @@
             guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return false }
             let dir = URL(filePath: args[i + 1])
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            // A throwaway defaults suite with a fixed last-used value, so a render never reads the
+            // A throwaway defaults suite with fixed last-used values, so a render never reads the
             // operator's `lastUsed.*` and is the same on every machine. The name is fixed and the
             // domain wiped before and after: cfprefsd rewrites the suite's plist after the process
             // exits, so a per-run name (or deleting the file) left a new empty plist in
