@@ -39,8 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every launch uses a throwaway `PIPECAT_TOOLBAR_DEFAULTS_SUITE` plus `-restoreOnLaunch` and
   `-restore.wanted` launch arguments.
   The run fails if a read-only hash of the real `restore.wanted` changed.
-- macOS app: the Running panel suggests a model for the idle category when the other has an active service (starting, running, stopping, external, or one that failed at runtime).
-  It offers the model you last started there, else the default, else the first installed one whose cache check does not refuse it.
+- macOS app: the Running panel suggests a model for the idle category.
+  It appears when the other category has an active service: starting, running, stopping, external, or failed at runtime.
+  It offers the model you last started there.
+  Otherwise it offers the default, then the first installed model whose cache check does not refuse it.
   It never suggests `tone`, and Reset clears the last-used choice (`lastUsed.tts`, `lastUsed.stt`).
 
 ## [0.8.3] - 2026-10-28
