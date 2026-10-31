@@ -83,9 +83,16 @@ public struct ServiceDependencies: Sendable {
     public var drainLimit: Duration = .seconds(2)
     /// The persisted "wanted running" set (`WantedTransition`); the default keeps nothing.
     public var wanted: any WantedServiceStore = NoopWantedServiceStore()
+    /// The model last started per category (`SuggestionPolicy`); the default keeps nothing.
+    public var lastUsed: any LastUsedStore = NoopLastUsedStore()
 
     public init() {}
 }
+
+/// Who asked for a start. Only `.user` records last-used; `.restore` is the launch restore and
+/// `.effect` the reducer's continuation after a packages refresh. No default: a new call site
+/// cannot record by omission.
+public enum StartOrigin: Sendable { case user, restore, effect }
 
 @MainActor
 @Observable
@@ -153,7 +160,9 @@ public final class ServiceDriver {
     /// `WantedTransition` from the event, the phase before and after and `quitting` (after quit
     /// began only a Stop moves it: `remove()` and the other intents are refused here, and
     /// `WantedTransition.rule` keeps every other kind), and is written only when it changes, through the
-    /// store's per-service operations (other services' flags are never touched).
+    /// store's per-service operations (other services' flags are never touched). Last-used is the
+    /// one exception: `start(origin:)` records it, because it keys on the call's origin, which is
+    /// not in the event stream.
     private func reduce(_ event: LifecycleEvent) -> [LifecycleEffect] {
         let before = state.phase
         let effects = ServiceLifecycle.reduce(&state, event)
@@ -234,11 +243,16 @@ public final class ServiceDriver {
     }
     public func cancelInstall() { dispatch(.cancelInstallRequested) }
 
-    public func start() {
+    public func start(origin: StartOrigin) {
         guard !quitting else { return }
+        let appAvailable = host != nil
+        let accepted = ServiceLifecycle.acceptsStart(state, appAvailable: appAvailable)
+        defer {
+            if accepted, origin == .user, !info.isTestSignal { dependencies.lastUsed.setLastUsed(service) }
+        }
         dispatch(
             .startRequested(
-                appAvailable: host != nil, managerAvailable: environment != nil,
+                appAvailable: appAvailable, managerAvailable: environment != nil,
                 portFree: dependencies.isPortFree(info.port)))
     }
 
@@ -361,7 +375,7 @@ public final class ServiceDriver {
         case .appendLog(let line): appendLog(line)
         case .startDetail(let text): startDetail = text
         case .clearLog: log = []
-        case .start: start()
+        case .start: start(origin: .effect)
         case .refresh, .familyChanged, .awaitInstall, .stopServer, .resumeRemoval, .shutdown, .removeEnvironment:
             assertionFailure("\(effect) is not immediate")
         }

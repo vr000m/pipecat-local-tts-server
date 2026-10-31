@@ -42,11 +42,14 @@ final class ServiceModel: Identifiable {
     /// The app's one hello prober (`AppModel.prober`), for the Start-path probe.
     private let prober: any HelloProber
 
-    init(info: ServiceInfo, prober: any HelloProber, wanted: any WantedServiceStore) {
+    init(
+        info: ServiceInfo, prober: any HelloProber, wanted: any WantedServiceStore, lastUsed: any LastUsedStore
+    ) {
         self.info = info
         self.prober = prober
         var dependencies = ServiceDependencies()
         dependencies.wanted = wanted
+        dependencies.lastUsed = lastUsed
         dependencies.appleSpeechPhase = {
             switch await AppleSpeech.status() {
             case .installed: .installed
@@ -146,9 +149,9 @@ final class ServiceModel: Identifiable {
         driver.install()
     }
     func cancelInstall() { driver.cancelInstall() }
-    func start() {
+    func start(origin: StartOrigin) {
         guard acceptsActions else { return }
-        driver.start()
+        driver.start(origin: origin)
     }
     func stop() { driver.stop() }
     /// App quit: nothing new starts from here on; stop and wait.

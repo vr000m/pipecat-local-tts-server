@@ -313,7 +313,7 @@ import Testing
         let driver = makeDriver(process, host: host)
         await driver.refresh()
         #expect(driver.state.phase == .installed)
-        driver.start()
+        driver.userStart()
         #expect(driver.state.phase == .starting)
         #expect(driver.startDetail == "Loading model…")
         process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
@@ -334,7 +334,7 @@ import Testing
         let host = FakeHost()
         process.exitsOnStop = false
         let driver = makeDriver(process, host: host)
-        driver.start()
+        driver.userStart()
         driver.stop()
         #expect(driver.state.phase == .stopping)
         process.emit(#"{"event":"ready","port":8665}"#)
@@ -351,7 +351,7 @@ import Testing
         let process = FakeProcess()
         let host = FakeHost()  // the driver holds its host weakly
         let driver = makeDriver(process, host: host) { $0.readyTimeout = .milliseconds(50) }
-        driver.start()
+        driver.userStart()
         await until { driver.state.server == nil }
         #expect(process.stops == 1)
         guard case .failed(let failure) = driver.state.phase else {
@@ -371,7 +371,7 @@ import Testing
         let driver = makeDriver(process, host: host)
         let refresh = Task { await driver.refresh() }
         await until { driver.state.environment != .missing }
-        driver.start()
+        driver.userStart()
         process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
         await until { driver.state.phase == .running }
         slow.release()
@@ -398,7 +398,7 @@ import Testing
             }
         }
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         #expect(driver.state.phase == .starting)
         await until { began.value }  // the hello probe answered; the owner lookup is the one stopped
         #expect(began.value)
@@ -433,7 +433,7 @@ import Testing
             $0.portOwner = { _, _ in await probe.run() }
         }
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { probe.started }
         #expect(probe.started)
         driver.stop()
@@ -453,7 +453,7 @@ import Testing
             $0.portOwner = { _, _ in await probe.run() }
         }
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { probe.started }
         #expect(probe.started)
         await driver.shutdown()
@@ -491,7 +491,7 @@ import Testing
             $0.portOwner = { _, _ in await probe.run() }
         }
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { probe.started }
         #expect(probe.started)
         environment.arm()
@@ -559,7 +559,7 @@ import Testing
         let process = FakeProcess()
         let host = FakeHost()
         let driver = makeDriver(process, host: host)
-        driver.start()
+        driver.userStart()
         process.emit(#"{"event":"error","code":"ConfigError","message":"bad voice"}"#)
         process.exit(1)
         await until { driver.state.server == nil }
@@ -581,7 +581,7 @@ import Testing
         deps.makeProcess = { _ in processes.next() }
         let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
         driver.host = host
-        driver.start()
+        driver.userStart()
         old.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
         await until { driver.state.phase == .running }
         old.exit(1)
@@ -590,7 +590,7 @@ import Testing
             Issue.record("\(driver.state.phase)")
             return
         }
-        driver.start()
+        driver.userStart()
         #expect(processes.launches == 2 && driver.state.phase == .starting)
         let late = "2026-10-23 09:31:34,650 INFO tts_server: late line from the old server"
         old.emitError(late)
@@ -618,7 +618,7 @@ import Testing
         driver.host = host
         await driver.refresh()
         #expect(driver.state.phase == .installed)
-        driver.start()
+        driver.userStart()
         await until { env.probing }
         #expect(env.probing, "the package refresh's read never reached the cache probe")
         #expect(driver.state.startAfterRead)
@@ -766,7 +766,7 @@ import Testing
         let processes = Processes([])
         let driver = busyDriver(host, processes: processes)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { !host.externalProbes.isEmpty }
         await driver.quit()
         let before = driver.state
@@ -805,7 +805,7 @@ import Testing
         let processes = Processes([])
         let driver = busyDriver(host, processes: processes)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         #expect(driver.state.phase == .starting)
         await until { driver.state.phase.isExternal }
         #expect(driver.state.phase == .external(8665, Self.toneInfo))
@@ -821,7 +821,7 @@ import Testing
         let processes = Processes([process])
         let driver = busyDriver(host, processes: processes)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { driver.state.server != nil }
         #expect(processes.launches == 1 && driver.state.phase == .starting)
     }
@@ -831,7 +831,7 @@ import Testing
         let processes = Processes([])
         let driver = busyDriver(host, processes: processes)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { if case .failed = driver.state.phase { true } else { false } }
         guard case .failed(let failure) = driver.state.phase, case .portBusy(let owner, let found) = failure.kind else {
             Issue.record("\(driver.state.phase)")
@@ -860,7 +860,7 @@ import Testing
             }
         }
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { asked.value }
         #expect(asked.value, "the owner lookup never started")
         environment.arm()
@@ -895,7 +895,7 @@ import Testing
         environment.arm()
         let inFlight = Task { await driver.refresh() }  // blocks in the cache probe
         await until { driver.state.reading != nil }
-        driver.start()
+        driver.userStart()
         #expect(driver.state.phase == .starting && driver.state.reading == nil, "the probe kept the read")
         answer.value = true
         await until { driver.state.phase.isExternal }
@@ -912,7 +912,7 @@ import Testing
         host.externalHandler = { _ in await hello.run() }
         let driver = busyDriver(host)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { hello.started }
         #expect(hello.started)
         driver.stop()
@@ -933,7 +933,7 @@ import Testing
         host.externalHandler = { _ in await hello.run() }
         let driver = busyDriver(host)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { hello.started }
         driver.remove(deleteModel: false)
         await until { hello.ended }
@@ -950,7 +950,7 @@ import Testing
         host.externalHandler = { _ in await hello.run() }
         let driver = busyDriver(host)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { hello.started }
         await driver.shutdown()
         #expect(hello.ended && hello.cancelled, "shutdown returned with the hello probe still running")
@@ -971,7 +971,7 @@ import Testing
         let processes = Processes([])
         let driver = busyDriver(host, processes: processes)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { started.value }
         #expect(started.value && driver.state.phase == .starting)
         driver.beginQuit()
@@ -999,7 +999,7 @@ import Testing
         let owned = ServiceDriver(info: Service.kokoro.info, dependencies: deps)
         owned.host = ownedHost
         await owned.refresh()
-        owned.start()
+        owned.userStart()
         process.emit(#"{"event":"ready","port":9265,"rate":24000,"pid":77}"#)
         await until { owned.state.phase == .running }
         #expect(owned.state.phase == .running)
@@ -1081,7 +1081,7 @@ import Testing
 
     func startToRunning(_ driver: ServiceDriver, _ process: FakeProcess, port: Int = 8665) async {
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         process.emit(#"{"event":"ready","port":\#(port),"rate":24000,"pid":77}"#)
         await until { driver.state.phase == .running }
     }
@@ -1092,7 +1092,7 @@ import Testing
         let process = FakeProcess()
         let driver = wantedDriver(store, host: host, process: process)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         #expect(store.current.isEmpty, "Start alone (not yet ready) must not set the flag")
         process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
         await until { driver.state.phase == .running }
@@ -1124,7 +1124,7 @@ import Testing
         process.exitsOnStop = false
         let driver = wantedDriver(store, host: host, process: process)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { driver.state.server != nil }
         await driver.quit()
         #expect(process.stops == 1)
@@ -1173,7 +1173,7 @@ import Testing
         process.exitsOnStop = false
         let driver = wantedDriver(store, host: host, process: process)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { driver.state.server != nil }
         process.emit(#"{"event":"ready","port":8665,"rate":24000,"pid":77}"#)
         #expect(driver.state.phase == .starting, "the ready line was applied before this turn ended")
@@ -1225,7 +1225,7 @@ import Testing
         let process = FakeProcess()
         process.exitsOnStop = false
         let driver = wantedDriver(store, host: host, process: process)
-        driver.start()
+        driver.userStart()
         driver.stop()
         process.emit(#"{"event":"ready","port":8665}"#)
         try? await Task.sleep(for: .milliseconds(50))
@@ -1251,7 +1251,7 @@ import Testing
         let host = FakeHost(environment: NoServeEnvironment())
         let driver = wantedDriver(store, host: host)
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { if case .failed = driver.state.phase { true } else { false } }
         guard case .failed = driver.state.phase else {
             Issue.record("\(driver.state.phase)")
@@ -1271,7 +1271,7 @@ import Testing
         let driver = ServiceDriver(info: Service.tone.info, dependencies: deps)
         driver.host = host
         await driver.refresh()
-        driver.start()
+        driver.userStart()
         await until { if case .failed = driver.state.phase { true } else { false } }
         guard case .failed = driver.state.phase else {
             Issue.record("\(driver.state.phase)")
@@ -1337,4 +1337,250 @@ import Testing
         #expect(spy.current == [.kokoro])
         #expect(spy.wholeSetReads == 0, "the driver did a whole-set read")
     }
+
+    // MARK: - Last-used recording (suggested-model row)
+
+    /// A ready environment whose model cache reports downloaded (kokoro needs one to be `.installed`).
+    struct CachedEnvironment: ServiceEnvironment {
+        func environmentStatus(_ backend: Service) -> EnvironmentStatus { FakeEnvironment().environmentStatus(backend) }
+        func isRequested(_ service: Service) -> Bool { true }
+        func modelCacheStatus(_ backend: Service, includeOutdated: Bool) async -> ModelCacheStatus? {
+            ModelCacheStatus(cached: true, sizeBytes: 1, repoFolders: [])
+        }
+        func install(_ backend: Service, mode: InstallMode) -> AsyncThrowingStream<InstallEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+        func remove(_ backend: Service, deleteModel: Bool, known: ModelCacheStatus?) async throws {}
+        func serveArguments(for info: ServiceInfo, port: Int) -> [String]? { ["serve"] }
+    }
+
+    /// A native Apple Speech server stub: binds at once, or never (nil from `makeNativeServer`).
+    final class StubNative: NativeSpeechServer, @unchecked Sendable {
+        var onLog: (@Sendable (String) -> Void)?
+        func start(port: Int) async throws -> Int { port }
+        func stop() {}
+    }
+
+    /// A non-test-signal driver (kokoro; `tone` is never recorded) over the shared last-used store.
+    func recordingDriver(
+        _ store: MemoryLastUsedStore, host: FakeHost, service: Service = .kokoro, portFree: Bool = true,
+        process: FakeProcess = FakeProcess(), configure: (inout ServiceDependencies) -> Void = { _ in }
+    ) -> ServiceDriver {
+        var deps = ServiceDependencies()
+        deps.isPortFree = { _ in portFree }
+        deps.portOwner = { _, _ in PortProbe.Owner(pid: 1, command: "other") }
+        deps.makeProcess = { _ in process }
+        deps.lastUsed = store
+        configure(&deps)
+        let driver = ServiceDriver(info: service.info, dependencies: deps)
+        driver.host = host
+        return driver
+    }
+
+    @Test func aUserStartRecordsOnceAndOccupiesAtOnce() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let process = FakeProcess()
+        let driver = recordingDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.userStart()
+        #expect(driver.state.isActive, "the category was free right after Start: \(driver.state.phase)")
+        #expect(store.writes == [.kokoro])
+        // A second start while the first is under way is refused and records nothing more.
+        driver.userStart()
+        #expect(store.writes == [.kokoro], "a refused start recorded")
+        process.emit(#"{"event":"ready","port":8765,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        driver.userStart()
+        #expect(store.writes == [.kokoro], "a start on a running service recorded")
+    }
+
+    @Test func aRestoreStartDoesNotRecord() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host)
+        await driver.refresh()
+        driver.start(origin: .restore)
+        #expect(driver.state.isActive)
+        #expect(store.writes.isEmpty && store.snapshot.isEmpty)
+    }
+
+    @Test func anEffectOriginStartNeverRecords() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host)
+        await driver.refresh()
+        driver.start(origin: .effect)
+        #expect(driver.state.isActive)
+        #expect(store.writes.isEmpty)
+    }
+
+    @Test func aTestSignalModelIsNeverRecorded() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host, service: .tone)
+        await driver.refresh()
+        driver.userStart()
+        #expect(driver.state.isActive)
+        #expect(store.writes.isEmpty, "tone was recorded")
+    }
+
+    @Test func aRefusedStartDoesNotRecord() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host)
+        await driver.refresh()
+        driver.host = nil  // the app is unavailable: `acceptsStart` refuses
+        driver.userStart()
+        #expect(!driver.state.isActive && store.writes.isEmpty, "a refused start recorded: \(driver.state.phase)")
+    }
+
+    @Test func aRestoreOnAnOutdatedEnvironmentNeverRecordsAfterTheRefresh() async {
+        let env = ScriptedEnvironment(.outdated(ScriptedEnvironment.marker))
+        let store = MemoryLastUsedStore()
+        let processes = Processes([])
+        let host = FakeHost(environment: env)
+        let driver = recordingDriver(store, host: host) { $0.makeProcess = { _ in processes.next() } }
+        await driver.refresh()
+        driver.start(origin: .restore)
+        #expect(driver.state.isActive || driver.state.isInstalling, "\(driver.state.phase)")
+        await until { env.probing }
+        env.release()
+        await until { processes.launches == 1 }
+        #expect(processes.launches == 1, "the re-entered .start never launched")
+        #expect(store.writes.isEmpty, "the .start re-entry recorded a restore")
+    }
+
+    @Test func aUserStartOnAnOutdatedEnvironmentRecordsExactlyOnce() async {
+        let env = ScriptedEnvironment(.outdated(ScriptedEnvironment.marker))
+        let store = MemoryLastUsedStore()
+        let processes = Processes([])
+        let host = FakeHost(environment: env)
+        let driver = recordingDriver(store, host: host) { $0.makeProcess = { _ in processes.next() } }
+        await driver.refresh()
+        driver.userStart()
+        #expect(driver.state.isActive || driver.state.isInstalling, "\(driver.state.phase)")
+        #expect(store.writes == [.kokoro], "recorded at the user's call, before the refresh")
+        await until { env.probing }
+        env.release()
+        await until { processes.launches == 1 }
+        #expect(processes.launches == 1)
+        #expect(store.writes == [.kokoro], "the .start re-entry recorded again")
+    }
+
+    @Test func aUserStartOnABusyPortThatAdoptsTheAnsweringServerRecords() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        host.externalOutcome = .adopt(
+            Service.kokoro.info, try! HelloFixtures.frame(HelloFixtures.json(for: .kokoro)))
+        let processes = Processes([])
+        let driver = recordingDriver(store, host: host, portFree: false) { $0.makeProcess = { _ in processes.next() } }
+        await driver.refresh()
+        driver.userStart()
+        #expect(driver.state.isActive, "the category was free while the port was probed: \(driver.state.phase)")
+        await until { driver.state.phase.isExternal }
+        #expect(driver.state.phase.isExternal && processes.launches == 0)
+        #expect(store.writes == [.kokoro])
+    }
+
+    @Test func aRestoreOnABusyPortThatAdoptsDoesNotRecord() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        host.externalOutcome = .adopt(
+            Service.kokoro.info, try! HelloFixtures.frame(HelloFixtures.json(for: .kokoro)))
+        let driver = recordingDriver(store, host: host, portFree: false)
+        await driver.refresh()
+        driver.start(origin: .restore)
+        await until { driver.state.phase.isExternal }
+        #expect(driver.state.phase.isExternal)
+        #expect(store.writes.isEmpty)
+    }
+
+    @Test func aBusyPortFailureStillRecordsTheAcceptedStart() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host, portFree: false)  // answers another backend: busy
+        await driver.refresh()
+        driver.userStart()
+        #expect(driver.state.isActive, "\(driver.state.phase)")
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        #expect(store.writes == [.kokoro], "recording is decided at acceptance, not outcome")
+    }
+
+    @Test func recordingSurvivesStopAndADriverRebuildOverTheSameStore() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let process = FakeProcess()
+        let driver = recordingDriver(store, host: host, process: process)
+        await driver.refresh()
+        driver.userStart()
+        process.emit(#"{"event":"ready","port":8765,"rate":24000,"pid":77}"#)
+        await until { driver.state.phase == .running }
+        driver.stop()
+        await until { driver.state.phase == .installed }
+        #expect(driver.state.phase == .installed)
+        #expect(store.lastUsed(.tts) == .kokoro && store.writes == [.kokoro], "Stop cleared or rewrote last-used")
+        let rebuilt = recordingDriver(store, host: host)
+        await rebuilt.refresh()
+        #expect(store.lastUsed(.tts) == .kokoro && store.writes == [.kokoro], "a rebuild disturbed last-used")
+    }
+
+    @Test func aUserStopBeforeTheBusyPortProbeAnswersKeepsTheCategoryOccupied() async {
+        let store = MemoryLastUsedStore()
+        let environment = ArmableEnvironment()
+        let host = FakeHost(environment: environment)
+        host.externalHandler = { _ in
+            try? await Task.sleep(for: .seconds(30))  // cancelled by Stop
+            return .unreachable
+        }
+        let driver = recordingDriver(store, host: host, portFree: false)
+        await driver.refresh()
+        driver.userStart()
+        await until { !host.externalProbes.isEmpty }
+        #expect(driver.state.isActive && store.writes == [.kokoro])
+        environment.arm()  // the re-read Stop issues now blocks in its cache probe
+        driver.stop()
+        #expect(driver.state.phase == .checking, "\(driver.state.phase)")
+        #expect(driver.state.isBusy, "the category flipped to idle before the read landed")
+        environment.slow.release()
+        await until { driver.state.phase == .installed }
+        #expect(driver.state.phase == .installed)
+        #expect(store.writes == [.kokoro], "Stop recorded or cleared")
+    }
+
+    @Test func aUserStartOnTheAppleSpeechNativePathOccupiesAndRecords() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host, service: .appleSpeech) {
+            $0.appleSpeechPhase = { .installed }
+            $0.makeNativeServer = { StubNative() }
+        }
+        await driver.refresh()
+        driver.userStart()
+        #expect(driver.state.isActive, "\(driver.state.phase)")
+        #expect(store.writes == [.appleSpeech])
+        #expect(store.lastUsed(.stt) == .appleSpeech)
+    }
+
+    @Test func aNativeLaunchThatCannotBuildItsServerFailsAndIsStillRecorded() async {
+        let store = MemoryLastUsedStore()
+        let host = FakeHost(environment: CachedEnvironment())
+        let driver = recordingDriver(store, host: host, service: .appleSpeech) {
+            $0.appleSpeechPhase = { .installed }
+            $0.makeNativeServer = { nil }
+        }
+        await driver.refresh()
+        driver.userStart()
+        await until { if case .failed = driver.state.phase { true } else { false } }
+        guard case .failed(let failure) = driver.state.phase, case .startup = failure.kind else {
+            Issue.record("\(driver.state.phase)")
+            return
+        }
+        #expect(store.writes == [.appleSpeech])
+    }
+}
+
+extension ServiceDriver {
+    /// The tests' Start: a user press, the only origin that records last-used.
+    @MainActor func userStart() { start(origin: .user) }
 }

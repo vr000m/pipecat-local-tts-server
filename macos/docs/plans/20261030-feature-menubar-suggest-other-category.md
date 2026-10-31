@@ -208,7 +208,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 Per-phase completion tracked here so ticking a box during a run does not bust the review marker. Format: `- [ ] Phase <label>: <title>`.
 
 - [x] Phase 1: Core — last-used store and suggestion policy (pure)
-- [ ] Phase 2: App wiring — record on user Start, expose, render, Reset
+- [x] Phase 2: App wiring — record on user Start, expose, render, Reset
 - [ ] Phase 3: Docs
 
 ## Findings

@@ -57,8 +57,8 @@ struct RunningView: View {
             Divider().opacity(0.5)
             Group {
                 if app.anyActive {
-                    // Something started: running services only.
-                    serviceList { app.active($0) } row: { RunningRow(model: $0) }
+                    // Something started: the running services, plus the other category's suggestion.
+                    activeList
                 } else if app.anyStartable {
                     // Nothing running yet: the installed models, ready to start.
                     VStack(spacing: 0) {
@@ -80,6 +80,30 @@ struct RunningView: View {
             Divider().opacity(0.5)
             FooterBar()
         }
+    }
+
+    /// `SuggestionPolicy.panelListing` per kind; the view switches only on the entry's tag.
+    private var activeList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(ServiceKind.allCases) { kind in
+                    let entries = app.panelEntries(kind)
+                    if !entries.isEmpty {
+                        SectionHeader(kind: kind)
+                        ForEach(entries, id: \.model.id) { item in
+                            switch item.entry {
+                            case .active: RunningRow(model: item.model)
+                            case .suggested: CatalogRow(model: item.model)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+        }
+        .scrollIndicators(.never)
     }
 
     /// Services grouped under Text to Speech / Speech to Text headers.
@@ -256,7 +280,7 @@ struct RunningRow: View {
         case .starting, .stopping:
             ProgressView().controlSize(.small).frame(width: 44)
         case .failed:
-            Button("Retry") { model.start() }.buttonStyle(PillButtonStyle(tint: .red))
+            Button("Retry") { model.start(origin: .user) }.buttonStyle(PillButtonStyle(tint: .red))
                 .disabled(!model.acceptsActions)
         default:
             EmptyView()
@@ -583,7 +607,7 @@ struct CatalogAction: View {
             ProgressRing(fraction: stage == .model ? model.installFraction : nil) { model.cancelInstall() }
                 .frame(width: 54)
         case .installed:
-            Button("Start") { model.start() }.buttonStyle(PillButtonStyle(tint: .green, prominent: true))
+            Button("Start") { model.start(origin: .user) }.buttonStyle(PillButtonStyle(tint: .green, prominent: true))
         case .running:
             Button("Stop") { model.stop() }.buttonStyle(PillButtonStyle(tint: .secondary))
         case .external:
@@ -596,7 +620,7 @@ struct CatalogAction: View {
             case .install, .download:
                 Button("Retry") { model.install() }.buttonStyle(PillButtonStyle(tint: .red))
             case .crashed, .startup, .portBusy:
-                Button("Retry") { model.start() }.buttonStyle(PillButtonStyle(tint: .orange))
+                Button("Retry") { model.start(origin: .user) }.buttonStyle(PillButtonStyle(tint: .orange))
             }
         }
     }
@@ -648,12 +672,12 @@ struct ServiceMenuItems: View {
         case .external:
             if model.externalActions?.stop == true { Button("Stop") { model.stop() } }
         case .installed:
-            Button("Start") { model.start() }
+            Button("Start") { model.start(origin: .user) }
         case .notInstalled, .needsModel:
             Button("Download") { model.install() }
         case .failed(let failure):
             Button(failure.isRuntime ? "Start" : "Retry Download") {
-                failure.isRuntime ? model.start() : model.install()
+                failure.isRuntime ? model.start(origin: .user) : model.install()
             }
         default:
             EmptyView()
