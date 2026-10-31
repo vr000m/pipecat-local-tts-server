@@ -65,8 +65,8 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 
 ### Phase 2: App wiring — record on user Start, expose, render, Reset
 
-**Impl files:** `macos/Sources/PipecatToolbarCore/ServiceDriver.swift, macos/Sources/PipecatServiceToolbar/State/ServiceModel.swift, macos/Sources/PipecatServiceToolbar/State/AppModel.swift, macos/Sources/PipecatServiceToolbar/Views/PanelView.swift, macos/Sources/PipecatServiceToolbar/App/Snapshots.swift`
-**Test files:** `macos/Tests/PipecatServiceToolbarTests/ServiceDriverTests.swift, macos/Tests/PipecatServiceToolbarTests/MemoryLastUsedStore.swift`
+**Impl files:** `macos/Sources/PipecatToolbarCore/ServiceDriver.swift, macos/Sources/PipecatToolbarCore/AppLifecycle.swift, macos/Sources/PipecatServiceToolbar/State/ServiceModel.swift, macos/Sources/PipecatServiceToolbar/State/AppModel.swift, macos/Sources/PipecatServiceToolbar/Views/PanelView.swift, macos/Sources/PipecatServiceToolbar/App/Snapshots.swift`
+**Test files:** `macos/Tests/PipecatServiceToolbarTests/ServiceDriverTests.swift, macos/Tests/PipecatServiceToolbarTests/AppLifecycleTests.swift, macos/Tests/PipecatServiceToolbarTests/MemoryLastUsedStore.swift`
 **Test command:** `swift test --package-path macos --filter "ServiceDriverTests|SuggestionPolicyTests|LastUsedStoreTests"`
 **Goal:** Last-used changes only on an accepted user Start, once; the panel shows the row exactly when `SuggestionPolicy.panelListing` says so.
 
@@ -75,7 +75,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - `AppModel` builds the `UserDefaultsLastUsedStore` from the same `preferences` it passes to the wanted store and injects it into each `ServiceModel`/driver. It reads the last-used store once into the `lastUsed` snapshot and exposes the entries to list per kind for the active-panel branch (`PanelEntry`: the active ones plus the suggestion).
 - Decision (grilled): one fact, one flag. `restoredThisProcess` (`AppModel.swift:74, 228`) drops `@ObservationIgnored` and becomes the observed gate (`suggestionsEnabled` is computed from it and the app phase, `SuggestionPolicy.isEnabled(restoredThisProcess:phase:)`, not a second stored flag). It is set in `restoreWantedServices()` after the restore loop's synchronous `start(origin: .restore)` calls, in the same main-actor turn, so the first render with the gate true already sees the restored services occupying; the write site is named in the code and in a manual check. It stays false after a failed bootstrap (`AppModel.swift:200-204` returns before `:220`), so a retry still runs the restore and no row shows meanwhile. `finishPreviewBootstrap()` (`AppModel.swift:328`) also sets it, so `--snapshot` renders can show the row. `AppModel` passes `enabled: suggestionsEnabled` to `SuggestionPolicy.panelListing`.
 - `RunningView`: in the `app.anyActive` branch, list the `PanelEntry` values for each kind and switch on the tag: `.active` renders `RunningRow`, `.suggested` renders `CatalogRow` (no state test in the view). The nothing-running branch is untouched.
-- Reset also clears last-used: extend the existing `.clearPersistedServiceState` handling in `AppModel.send` (no change to the `AppLifecycle` reducer or its effects).
+- Reset also clears last-used: extend the `.clearPersistedServiceState` handling in `AppModel.send` (the effect was `.clearWantedServices`; it is renamed in `AppLifecycle.swift` because it now clears both stores, and the reducer's logic is otherwise unchanged).
 - Snapshot scenes `running-suggest-stt` and `running-suggest-tts` (one category running, an installed model in the other), via `ServiceModel.setPreviewState`. `Snapshots.renderIfRequested` builds its `AppModel` over a throwaway `UserDefaults` suite seeded with a fixed last-used value, so a render never reads the operator's `lastUsed.*` and is the same on every machine. The suite is removed with `removePersistentDomain(forName:)` once the render finishes (as `ui_smoke.sh:126-127` deletes its suite), so no plist is left in `~/Library/Preferences`.
 - `ServiceDriverTests`: a user start records once; a restore-style start (origin `.restore`) does not; an `.effect`-origin start never records; a restore start on an `.outdated` environment does not record after the refresh and the `.start` re-entry (`ScriptedEnvironment(.outdated(...))`, pattern at `ServiceDriverTests.swift:607-635`); a user start on an `.outdated` environment records exactly once; a refused start does not; a user start on a busy port that adopts the answering server records (extend `startOnABusyPortAdoptsTheServerThatAnswers`, `ServiceDriverTests.swift:802`); starting a test-signal model does not; occupancy (`isActive` or `isInstalling`) holds right after `start()` on the free-port, busy-port and outdated-environment paths; recording survives Stop and a driver rebuild over the same store; occupancy also holds on the Apple Speech native path (a stub `makeNativeServer`: `launchNative` dispatches `.nativeLaunched` inline, `ServiceDriver.swift:484-503`; a nil server ends `.failed(.startup)` and is still recorded); a user start on a busy port followed by `stop()` before the probe answers keeps the category occupied (`.checking`) until the read lands.
 
@@ -97,6 +97,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - `macos/Sources/PipecatToolbarCore/ServiceDriver.swift` — `lastUsed` on `ServiceDependencies`; `StartOrigin` (`user`, `restore`, `effect`) and `start(origin:)` recording on acceptance for `.user` only; the `reduce()` doc comment names the exception.
 - `macos/Sources/PipecatToolbarCore/ServiceLifecycle.swift` — `LifecycleState.isReadyToStart`, `ServiceLifecycle.acceptsStart(...)` (extracted from the `.startRequested` guard).
 - `macos/Sources/PipecatToolbarCore/RestorePolicy.swift` — `.installed` arm calls `isReadyToStart`.
+- `macos/Sources/PipecatToolbarCore/AppLifecycle.swift` — rename the effect `.clearWantedServices` to `.clearPersistedServiceState` (it clears the wanted set and the last-used choices); `AppLifecycleTests.swift` follows.
 - `macos/Sources/PipecatToolbarCore/Service.swift` — `ServiceInfo.isTestSignal`.
 - `macos/Sources/PipecatToolbarCore/PreferencesDomain.swift` — doc comment: the new keys are suite-scoped.
 - `macos/Sources/PipecatServiceToolbar/State/ServiceModel.swift` — pass the store and the `StartOrigin` through `start()` (`ServiceModel.swift:149-152`).
@@ -129,7 +130,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 
 ### Decisions (operator, 2026-10-30)
 1. `tone` is only for testing: never suggested (not as last-used, default or fallback) and never recorded as last-used.
-2. Reset clears everything, including last-used (via the existing `.clearPersistedServiceState` handling in `AppModel.send`; the `AppLifecycle` reducer is unchanged).
+2. Reset clears everything, including last-used (via the `.clearPersistedServiceState` handling in `AppModel.send`, the renamed `.clearWantedServices`; the `AppLifecycle` reducer's logic is unchanged).
 3. Apple Speech is not special: it counts as a started and last-used STT model like any other.
 4. The empty-state list stays as today, including its `needsModel` and `installing` rows; only the new row requires `isReadyToStart`.
 5. No separate release: this ships in the unpublished 0.9.0. The changelog bullet goes in `[0.9.0]`, dated 2026-10-31.
@@ -151,7 +152,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 | restore start | `AppModel.restoreWantedServices()` | `ServiceModel.start(origin:)` | Passes `.restore`; never records, including after a packages refresh |
 | ready predicate | `LifecycleState.isReadyToStart` (Phase 1) | `RestorePolicy`, `SuggestionPolicy` | One definition; restore decisions unchanged |
 | suite scoping | `PreferencesDomain.defaults()` | `UserDefaultsLastUsedStore` | Same `UserDefaults` as `restore.wanted`; tests and `ui_smoke.sh` use a throwaway suite |
-| Reset | `AppModel.send(.clearPersistedServiceState)` | `LastUsedStore.removeAll()` | Cleared alongside the wanted set; the `AppLifecycle` reducer is unchanged |
+| Reset | `AppModel.send(.clearPersistedServiceState)` | `LastUsedStore.removeAll()` | Cleared alongside the wanted set; the `AppLifecycle` reducer's logic is unchanged (only the effect name changed) |
 | row visibility | `SuggestionPolicy.panelListing` | `RunningView` via `AppModel`'s observed gate (`restoredThisProcess`) | Row shown iff the listing includes a suggestion for the idle category; `enabled` is false until the restore has run and the app phase is `ready`; Start makes the category occupied in the same dispatch, which removes it. The last-used read is untracked by `@Observable`; the row refreshes only because each write coincides with an observed change (see the observation invariant under Architecture Decisions) |
 
 ## Testing Notes
@@ -199,7 +200,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - The nothing-running list is unchanged.
 - Tests, `swift build` and ruff clean; documentation updated.
 
-<!-- reviewed: 2026-10-31 @ 3ebf0076a8d1ada11748d6283a11248f726c70f5 -->
+<!-- reviewed: 2026-10-31 @ f4c40cf42933f98a8494cde28cbd2949544c3ca1 -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -222,6 +223,7 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 - 2026-10-31 correction (supersedes the earlier `[Unreleased]` note): the changelog entry belongs in `[0.9.0]` and that section is dated 2026-10-31. 0.9.0 is prepared but not published (`pyproject.toml` 0.9.0, release commit `9a7b4e3`, no `v0.9.0` tag or GitHub release; latest is v0.8.3), so the original contract text at lines 91 and 135 is right. An earlier review pass wrongly treated the release commit as a release. Gauntlet round 2: the gate parameter of `suggestions`/`panelListing` is now `enabled:` (was `ready:`, which the contract text above still names), and `isEnabled`'s phase check is documented as a conservative stand-in for `AppPhase.acceptsServiceActions`, not the refusal rule.
 - 2026-10-31 gauntlet (fresh run, round 1): the plan's contract text cites code by line number (for example `ServiceLifecycle.swift:783-786`, `AppModel.swift:74, 228`, `PanelView:259`) and by call-site count. Those anchors and counts were right when the plan was reviewed and drift with every later edit, so they are not maintained: the code is the source of truth and the plan names the symbol next to each anchor. Fixed instead: the two remaining `ready:` mentions (now `enabled:`). Left as is, on purpose: `AppModel.panelListing()` reads the last-used store outside the Observation graph, which holds because both writers (`ServiceDriver.start(origin:)` after an accepted user Start, and Reset's `.clearPersistedServiceState`) change observed state in the same dispatch; a future writer with no matching state change must keep an observed copy.
 - 2026-10-31 gauntlet (round 2): fixed the remaining live mentions of the old gate (`ready` → `enabled`, and `suggestionsEnabled` is `SuggestionPolicy.isEnabled(restoredThisProcess:phase:)`, not an alias of `restoredThisProcess`). Lines recorded as `Decision (grilled, 2026-10-30)` keep their original wording on purpose, including `ready` and the single-flag gate, because they record what was decided then; the live contract is the text outside those records. Left as is, on purpose: `StartOrigin.effect` is public because `ServiceModel.start(origin:)` lives in the app target and passes the origin through; passing `.effect` from app code only skips recording, so it cannot corrupt last-used.
+- 2026-10-31 gauntlet (round 3): the contract text said the reset effect was `existing` and the `AppLifecycle` reducer `unchanged`. That was wrong once the effect was renamed (`529b80c`); the three mentions now say the effect was renamed and the reducer's logic is unchanged, and `AppLifecycle.swift` / `AppLifecycleTests.swift` are in the Phase 2 and Files to Modify lists.
 
 ## Issues & Solutions
 
