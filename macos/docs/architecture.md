@@ -568,8 +568,8 @@ quit all hide the row, though Apple Speech's Start would still be accepted in so
 
 **Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`
-writes it only on an accepted start with `StartOrigin.user`; `.restore` and `.effect` starts
-never do, and the call has no default origin. Stop does not clear it; Reset does. The
+writes it only on an accepted start with `StartOrigin.user` and never for a test-signal model
+(`tone`); `.restore` and `.effect` starts never do, and the call has no default origin. Stop does not clear it; Reset does. The
 last-used read in `panelListing()` is untracked; the row refreshes because each write coincides
 with an observed lifecycle change.
 

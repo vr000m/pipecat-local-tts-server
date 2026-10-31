@@ -4,7 +4,7 @@ import Foundation
 /// by `PIPECAT_TOOLBAR_DEFAULTS_SUITE` (a trusted environment variable; `ui_smoke.sh` sets it so a
 /// smoke run's reads and writes never touch the operator's real wanted set).
 ///
-/// This scopes only the restore state: `restore.wanted` (`WantedServiceStore`) and
+/// This scopes only the restore state and the last-used choices: `restore.wanted` (`WantedServiceStore`) and
 /// `restoreOnLaunch` (`RestorePreference`), both in `WantedServiceStore.swift`, and the
 /// suite-scoped last-used keys `lastUsed.tts` and `lastUsed.stt` (`LastUsedStore`).
 /// The other preferences (the catalog's TTS / STT tab, the hub-size
