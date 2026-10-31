@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- macOS app: the Running panel suggests a model for the idle category when the other has an active service (starting, running, stopping, external or crashed).
+- macOS app: the Running panel suggests a model for the idle category when the other has an active service (starting, running, stopping, external, or one that failed at runtime).
   It offers the model you last started there, else the default, else the first installed one whose cache check does not refuse it.
   It never suggests `tone`, and Reset clears the last-used choice (`lastUsed.tts`, `lastUsed.stt`).
 
