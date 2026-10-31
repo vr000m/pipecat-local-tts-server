@@ -76,12 +76,14 @@ final class AppModel {
     /// The model last started per category, shared by every service's driver (Reset clears it).
     @ObservationIgnored private let lastUsedStore: any LastUsedStore
     @ObservationIgnored private let preferences: UserDefaults
-    /// The one restore this process may run, and the one gate for the Running panel's suggestion
-    /// row (`suggestionsEnabled`). Observed, so the first render with it true already sees the
+    /// The one restore this process may run, and half of the gate for the Running panel's suggestion
+    /// row (`suggestionsEnabled`, which also needs phase `ready`). Observed, so the first render with it true already sees the
     /// restored services occupying their categories. Written in `restoreWantedServices()` after
     /// its start loop, and by `finishPreviewBootstrap()`; it stays false after a failed bootstrap.
     private var restoredThisProcess = false
-    var suggestionsEnabled: Bool { restoredThisProcess }
+    var suggestionsEnabled: Bool {
+        SuggestionPolicy.isEnabled(restoredThisProcess: restoredThisProcess, phase: phase)
+    }
 
     func model(_ service: Service) -> ServiceModel {
         services.first { $0.service == service }!

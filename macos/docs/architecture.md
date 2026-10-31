@@ -559,9 +559,11 @@ installing, removing or checking), the Running panel adds one `.suggested` row f
 category after its `.active` rows. `SuggestionPolicy` (Core, pure over the services' lifecycle
 states and a snapshot of the stored last-used values) picks the model: last-used, else the
 category default, else the first ready one in catalog order. Ready is `isReadyToStart`
-(downloaded); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
+(installed, and the cache check does not refuse it); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
 `SuggestionPolicy.panelListing` to models and drops the suggestion until the launch restore has
-run (`restoredThisProcess`), so a restoring service is not offered first.
+run (`restoredThisProcess`), so a restoring service is not offered first, and whenever the app
+phase is not `ready` (`SuggestionPolicy.isEnabled`): during Reset or a failed bootstrap its Start
+would be refused.
 
 **Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`

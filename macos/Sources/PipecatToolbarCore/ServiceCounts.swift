@@ -51,7 +51,9 @@ public struct ServiceCounts: Equatable, Sendable {
         }
     }
 
-    /// Installed (or downloading) and not active: what the menu offers to start.
+    /// Installed (or downloading) and not active: what the menu offers to start. Wider than
+    /// `LifecycleState.isReadyToStart` (it admits a model still installing or needing a download)
+    /// and unrelated to `ServiceLifecycle.acceptsStart`, the reducer's accept guard.
     public static func isStartable(_ s: LifecycleState) -> Bool {
         !s.isActive && (s.isInstalled || s.isInstalling)
     }

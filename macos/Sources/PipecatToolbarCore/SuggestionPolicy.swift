@@ -16,6 +16,14 @@ public enum PanelEntry: Equatable, Sendable {
 /// Which model the Running panel offers for the idle category, as a pure function of the
 /// services' lifecycle states and the stored last-used values (a snapshot; no `UserDefaults`).
 public enum SuggestionPolicy {
+    /// Whether the panel may show a suggestion now: the launch restore has run in this process
+    /// (`restoredThisProcess`, which a Reset does not undo) and the app phase is `ready`. Any other
+    /// phase has no usable manager (Reset, bootstrap) or no services read yet (failed bootstrap,
+    /// where a service's Start is refused), and a suggestion must never name a Start that is refused.
+    public static func isEnabled(restoredThisProcess: Bool, phase: AppPhase) -> Bool {
+        restoredThisProcess && phase == .ready
+    }
+
     /// The suggestion for `kind`, or nil. Only when another category has an active service and
     /// `kind` is not occupied (nothing active, installing, removing or checking in it).
     /// Order: last-used, the category default, the first ready model; all must be

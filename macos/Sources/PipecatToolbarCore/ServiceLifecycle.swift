@@ -540,6 +540,8 @@ extension LifecycleState {
 
     /// Ready to start right now: phase `.installed` and the cache check does not refuse it. The one
     /// definition `RestorePolicy` and `SuggestionPolicy` share (`isInstalled` also admits `needsModel`).
+    /// Narrower than `ServiceCounts.isStartable` (the menu's list) and a different question from
+    /// `ServiceLifecycle.acceptsStart` (whether the reducer takes a start event at all).
     public var isReadyToStart: Bool {
         phase == .installed && cache?.cached != false
     }
@@ -572,6 +574,8 @@ public enum ServiceLifecycle {
     /// Whether `.startRequested` does anything in `s`: the app is available, no server, native
     /// server, install or removal is live, and the phase is neither `.removing` nor external. The
     /// reducer's guard and the driver's last-used recorder both call it, so they cannot disagree.
+    /// It checks the accept guard only; "worth offering" is `LifecycleState.isReadyToStart` (suggestion,
+    /// restore) or `ServiceCounts.isStartable` (menu).
     public static func acceptsStart(_ s: LifecycleState, appAvailable: Bool) -> Bool {
         appAvailable && s.server == nil && s.native == nil && s.install == nil && s.removal == nil
             && s.phase != .removing && !s.phase.isExternal

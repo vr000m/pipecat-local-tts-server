@@ -246,6 +246,35 @@ import Testing
         #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: last) == .phononQ8)
     }
 
+    // MARK: - isEnabled
+
+    /// The gate over the whole state space: every `AppPhase` case x the restore flag. Written with
+    /// an exhaustive switch (no `default`): a new phase fails to compile here until it is named.
+    @Test func isEnabledNeedsTheRestoreAndPhaseReady() {
+        let phases: [AppPhase] = [.idle, .bootstrapping, .resetting, .ready, .failed("x"), .shuttingDown]
+        for phase in phases {
+            let phaseAllows: Bool =
+                switch phase {
+                case .ready: true
+                case .idle, .bootstrapping, .resetting, .failed, .shuttingDown: false
+                }
+            for restored in [false, true] {
+                #expect(
+                    SuggestionPolicy.isEnabled(restoredThisProcess: restored, phase: phase) == (restored && phaseAllows),
+                    "\(phase) restored=\(restored)")
+            }
+        }
+    }
+
+    /// A Reset while an External server is active keeps the restore flag set: the row must go
+    /// with the phase, not stay for a model whose Start is refused.
+    @Test func isEnabledIsFalseDuringResetAndAfterAFailedReBootstrap() {
+        #expect(!SuggestionPolicy.isEnabled(restoredThisProcess: true, phase: .resetting))
+        #expect(!SuggestionPolicy.isEnabled(restoredThisProcess: true, phase: .bootstrapping))
+        #expect(!SuggestionPolicy.isEnabled(restoredThisProcess: true, phase: .failed("x")))
+        #expect(SuggestionPolicy.isEnabled(restoredThisProcess: true, phase: .ready))
+    }
+
     // MARK: - panelListing
 
     @Test func panelListingBeforeReadyKeepsActiveEntriesAndDropsTheSuggestion() {

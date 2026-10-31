@@ -131,6 +131,8 @@ public struct ServiceInfo: Sendable, Equatable {
     public let symbol: String
     /// Shown in the list as a recommended default.
     public var isDefault: Bool = false
+    /// A test signal (`tone`): never suggested and never recorded as last-used.
+    public var isTestSignal: Bool = false
     /// The variant's name within its family ("8-bit", "Small"); nil for a family of one.
     public var variantLabel: String? = nil
     /// How the variant differs from its siblings ("Best quality").
@@ -139,8 +141,6 @@ public struct ServiceInfo: Sendable, Equatable {
     public var modelArgument: String? = nil
 
     public var family: Service { service.family }
-    /// A test signal (`tone`): never suggested and never recorded as last-used.
-    public var isTestSignal: Bool { service == .tone }
     public var needsModelDownload: Bool { modelRepo != nil }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and
@@ -284,7 +284,7 @@ public enum ServiceCatalog {
             ServiceInfo(
                 service: .tone, kind: .tts, expectedBackendName: "tone", displayName: "Tone", tagline: "Test signal, starts instantly",
                 runtime: .ttsServer(extra: nil), port: 8665, modelRepo: nil, licence: .none,
-                streaming: false, symbol: "tuningfork")
+                streaming: false, symbol: "tuningfork", isTestSignal: true)
         case .kokoro:
             ServiceInfo(
                 service: .kokoro, kind: .tts, expectedBackendName: "kokoro", displayName: "Kokoro", tagline: "Fast, natural, multilingual",
