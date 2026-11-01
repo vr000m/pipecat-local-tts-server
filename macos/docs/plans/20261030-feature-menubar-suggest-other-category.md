@@ -162,7 +162,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - [x] Unit: `UserDefaultsLastUsedStore` on a throwaway suite (round trip, unknown value, `removeAll`).
 - [x] Unit: `ServiceDriver` (user start records once; restore start, restore after a packages refresh and refused start do not; busy-port adoption records; synchronous occupancy on three start paths; survives Stop).
 - [x] Unit: `acceptsStart`, `isReadyToStart`, `panelListing` (Core, table tests).
-- [ ] Snapshot: `running-suggest-stt` and `running-suggest-tts` render with the row present (`ui_smoke.sh --snapshot` only checks the PNGs are non-empty, so the row is checked by eye).
+- [x] Snapshot: `running-suggest-stt` and `running-suggest-tts` render with the row present (`ui_smoke.sh --snapshot` only checks the PNGs are non-empty, so the row is checked by eye). Eyeballed on 2026-11-01 (light STT and dark TTS): the idle category shows its last-used or ready model with a Start button.
 - [x] Manual (operator): launch with a service in `restore.wanted`: no row before or during the restore (the gate flips after the restore loop in `restoreWantedServices()`). Confirmed by the operator, 2026-10-31.
 - [x] Manual (operator): Nemotron running → the TTS row appears with the last-used model; start it → the row becomes a running row; stop it → the row returns; both running → no row; relaunch → last-used survives; Reset → falls back to the default (last-used cleared). Confirmed by the operator, 2026-10-31.
 
@@ -200,7 +200,7 @@ Phase task descriptions are plain bullets; completion lives in `## Progress` bel
 - The nothing-running list is unchanged.
 - Tests, `swift build` and ruff clean; documentation updated.
 
-<!-- reviewed: 2026-10-31 @ 57ccc0aff3dc0794898e2a2166680d52bcbc634b -->
+<!-- reviewed: 2026-10-31 @ ebb27a16279d6bfb708b2032ecace1dff422cc7e -->
 
 <!-- /review-plan writes the marker line above. Everything below is the workspace: edits here do NOT invalidate the marker. -->
 
@@ -224,7 +224,7 @@ Per-phase completion tracked here so ticking a box during a run does not bust th
 - 2026-10-31 gauntlet (fresh run, round 1): the plan's contract text cites code by line number (for example `ServiceLifecycle.swift:783-786`, `AppModel.swift:74, 228`, `PanelView:259`) and by call-site count. Those anchors and counts were right when the plan was reviewed and drift with every later edit, so they are not maintained: the code is the source of truth and the plan names the symbol next to each anchor. Fixed instead: the two remaining `ready:` mentions (now `enabled:`). Left as is, on purpose: `AppModel.panelListing()` reads the last-used store outside the Observation graph, which holds because both writers (`ServiceDriver.start(origin:)` after an accepted user Start, and Reset's `.clearPersistedServiceState`) change observed state in the same dispatch; a future writer with no matching state change must keep an observed copy.
 - 2026-10-31 gauntlet (round 2): fixed the remaining live mentions of the old gate (`ready` → `enabled`, and `suggestionsEnabled` is `SuggestionPolicy.isEnabled(restoredThisProcess:phase:)`, not an alias of `restoredThisProcess`). Lines recorded as `Decision (grilled, 2026-10-30)` keep their original wording on purpose, including `ready` and the single-flag gate, because they record what was decided then; the live contract is the text outside those records. Left as is, on purpose: `StartOrigin.effect` is public because `ServiceModel.start(origin:)` lives in the app target and passes the origin through; passing `.effect` from app code only skips recording, so it cannot corrupt last-used.
 - 2026-10-31 gauntlet (round 3): the contract text said the reset effect was `existing` and the `AppLifecycle` reducer `unchanged`. That was wrong once the effect was renamed (`529b80c`); the three mentions now say the effect was renamed and the reducer's logic is unchanged, and `AppLifecycle.swift` / `AppLifecycleTests.swift` are in the Phase 2 and Files to Modify lists.
-- 2026-10-31 operator confirmation: the operator ran the manual checks (each category running with the other idle, relaunch keeps last-used, a deleted last-used model, Reset falls back to the default, no row before or during the launch restore) and reported them as passing. The matching Testing Notes boxes above the marker are ticked and the marker hash is refreshed. Still open: the eye check of the `running-suggest-stt` / `running-suggest-tts` snapshot scenes, and the remaining edge-case rows, which the unit tests cover but the operator did not run by hand.
+- 2026-10-31 operator confirmation: the operator ran the manual checks (each category running with the other idle, relaunch keeps last-used, a deleted last-used model, Reset falls back to the default, no row before or during the launch restore) and reported them as passing. The matching Testing Notes boxes above the marker are ticked and the marker hash is refreshed. The snapshot scenes `running-suggest-stt` / `running-suggest-tts` were eyeballed on 2026-11-01 and show the row. Still open: the remaining edge-case rows, which the unit tests cover but the operator did not run by hand.
 
 ## Issues & Solutions
 
