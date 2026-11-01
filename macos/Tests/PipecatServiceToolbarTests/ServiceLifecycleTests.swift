@@ -779,6 +779,45 @@ import Testing
         #expect(ServiceLifecycle.reduce(&outdated, .refreshed(.installed, epoch: outdated.epoch)) == [.start])
     }
 
+    /// `isRefreshingToStart` is true from the Start that runs the package refresh until the read
+    /// after it lands, and for no install the user asked for.
+    @Test func refreshingToStartCoversTheRefreshAndTheReadAfterIt() {
+        var s = Self.state(.installed, server: nil)
+        s.environment = .outdated(Self.marker)
+        #expect(!s.isRefreshingToStart)
+        _ = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        #expect(s.isRefreshingToStart)
+        let install = s.install!
+        _ = ServiceLifecycle.reduce(&s, .installStage(.packages, install: install))
+        #expect(s.isRefreshingToStart)
+        _ = ServiceLifecycle.reduce(&s, .installEnded(.finished, then: .refreshThenStart, install: install))
+        #expect(s.install == nil && s.phase == .installing(.packages))
+        #expect(s.isRefreshingToStart, "the read after the refresh still carries the start")
+        s.environment = .ready(Self.marker)
+        _ = ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch))
+        #expect(!s.isRefreshingToStart)
+    }
+
+    @Test func refreshingToStartEndsWhenTheRefreshIsCancelledOrFails() {
+        for outcome in [InstallOutcome.cancelled, .failed(stage: .packages, message: "m", logTail: [])] {
+            var s = Self.state(.installed, server: nil)
+            s.environment = .outdated(Self.marker)
+            _ = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+            _ = ServiceLifecycle.reduce(&s, .installEnded(outcome, then: .refreshThenStart, install: s.install!))
+            #expect(!s.isRefreshingToStart, "outcome=\(outcome)")
+        }
+    }
+
+    @Test func anInstallTheUserAskedForIsNotRefreshingToStart() {
+        var s = Self.state(.notInstalled, server: nil)
+        s.environment = .missing
+        _ = ServiceLifecycle.reduce(&s, .installRequested(managerAvailable: true))
+        #expect(s.isInstalling)
+        #expect(!s.isRefreshingToStart)
+        _ = ServiceLifecycle.reduce(&s, .installEnded(.finished, then: .refresh, install: s.install!))
+        #expect(!s.isRefreshingToStart)
+    }
+
     // MARK: - External: discovery events and the ownership invariant
 
     static let toneHello = try! HelloFixtures.frame(HelloFixtures.json(for: .tone))

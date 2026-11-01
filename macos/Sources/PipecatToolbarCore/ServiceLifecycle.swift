@@ -438,6 +438,10 @@ public struct LifecycleState: Equatable, Sendable {
     public var reading: Int?
     /// The read in flight starts the service when it lands current (refreshThenStart).
     public var startAfterRead = false
+    /// The install in flight is the package refresh `.startRequested` ran for an outdated
+    /// environment (`refreshThenStart`); cleared when that install ends (`startAfterRead` carries
+    /// the start from there). Read through `isRefreshingToStart`.
+    public var startsAfterInstall = false
     /// The user cancelled an Apple Speech download: a refresh that still sees
     /// the system downloading does not attach to it again.
     public var declinedSystemDownload = false
@@ -461,6 +465,14 @@ public struct LifecycleState: Equatable, Sendable {
 extension LifecycleState {
     /// An install is in flight.
     public var installing: Bool { install != nil }
+
+    /// Start was accepted on an outdated environment and the package refresh, or the read after it,
+    /// is still under way: the phase is `.installing` and the next one is `.starting`. False for an
+    /// install the user asked for (Get, Resume, Retry).
+    public var isRefreshingToStart: Bool {
+        guard case .installing = phase else { return false }
+        return (install != nil && startsAfterInstall) || startAfterRead
+    }
 
     /// Ends the Start-path probe chain: `probe`, `busyFound` and `probeAfterBind` describe one
     /// probe in flight and are only ever cleared together, here.
@@ -767,6 +779,7 @@ public enum ServiceLifecycle {
 
         case .installEnded(let outcome, let then, _):
             s.install = nil
+            s.startsAfterInstall = false
             switch outcome {
             case _ where s.phase == .removing:
                 // remove() cancelled this install and owns the phase from here.
@@ -1059,6 +1072,7 @@ public enum ServiceLifecycle {
         -> [LifecycleEffect]
     {
         s.install = s.epoch
+        s.startsAfterInstall = then == .refreshThenStart
         s.phase = .installing(firstStage(mode: mode, environment: s.environment))
         return [.runInstall(mode, then: then, install: s.epoch)]
     }

@@ -152,6 +152,15 @@
                 app.model(.pocketTTS).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 244_700_000)
                 app.model(.kokoro).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 327_000_000)
             }),
+            // Start pressed on the suggested model, which refreshes its packages first: the row stays with the progress.
+            ("running-suggest-refreshing", { app in
+                for model in app.services { model.setPreviewState(phase: .notInstalled) }
+                app.model(.appleSpeech).setPreviewState(
+                    phase: .running, running: .init(pid: 4242, port: 9465, rate: 16000, model: ServiceInfo.appleSpeechModel, since: .now),
+                    log: ["listening on 127.0.0.1:9465"])
+                app.model(.kokoro).setPreviewState(
+                    phase: .installing(.packages), environment: .outdated(marker), diskBytes: 327_000_000, refreshingToStart: true)
+            }),
             ("detail-variant", { app in
                 busyState(app)
                 app.model(.phononQ8).setPreviewState(

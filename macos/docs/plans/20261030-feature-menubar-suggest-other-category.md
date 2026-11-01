@@ -233,3 +233,7 @@ None blocking. Post-`/code-review` fixes landed in `03951fc`: hermetic snapshot 
 ## Final Results
 
 All three phases committed via `/conduct` (`e3533b3`, `6a1818b`, `aa72c96`) plus `03951fc` (code-review fixes). Phase filters, `tests/test_justfile_recipes.py` and `tests/test_backend_registry.py` (308) and `ruff` pass; the full `swift test` run flakes in the install/cancel/pipe-drain suites under load and passes alone. Snapshot scenes `running-suggest-stt` and `running-suggest-tts` checked by eye. Operator manual checks (Testing Notes) remain.
+
+## Follow-up (2026-11-01)
+
+Branch `feature/menubar-suggest-start-progress`: the contract lines above that say the row is gone the moment Start is accepted, including the packages-refresh path, are superseded for that path only. A Start that runs the package refresh keeps its row (`LifecycleState.isRefreshingToStart`, `SuggestionPolicy.suggestion`) showing the install progress and Cancel until the model is `.starting`; every other Start still removes it at once. Cause: the refresh phase is `.installing`, which occupies the category, so the section vanished with no progress. An install failure still drops the row (not an `.active` runtime failure).

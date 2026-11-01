@@ -221,10 +221,14 @@ extension ServiceModel: ServiceHost {
         func setPreviewState(
             phase: Phase, download: DownloadProgress? = nil, running: RunningInfo? = nil,
             environment: EnvironmentStatus = .missing, requested: Bool? = nil, diskBytes: Int64? = nil,
-            log: [String] = [], startDetail: String = "", installDetail: String = ""
+            log: [String] = [], startDetail: String = "", installDetail: String = "", refreshingToStart: Bool = false
         ) {
             var state = LifecycleState(info: info)
             state.phase = phase
+            if refreshingToStart {
+                state.install = 1
+                state.startsAfterInstall = true
+            }
             state.running = running
             state.environment = environment
             state.requested = requested ?? (environment != .missing)

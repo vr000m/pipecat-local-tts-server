@@ -566,6 +566,17 @@ phase is not `ready` (`SuggestionPolicy.isEnabled`). That phase check is a conse
 for `AppPhase.acceptsServiceActions`, not the refusal rule: bootstrap, Reset, a failed setup and
 quit all hide the row, though Apple Speech's Start would still be accepted in some of them.
 
+**Start that refreshes packages.** Start on a model whose environment is outdated runs the package
+refresh first (`refreshThenStart`), and `.installing` occupies the category. So that the row does not
+vanish for the length of the install, the reducer records the continuation
+(`LifecycleState.startsAfterInstall`, cleared when the install ends; `startAfterRead` carries the start
+through the read after it) and `LifecycleState.isRefreshingToStart` reads it. While it is true, and
+nothing in the category is active, `SuggestionPolicy.suggestion` returns that model before the occupancy
+check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends at `.starting`
+(an active `.active` row), on Cancel (back to a ready row) or on failure (the row goes: an install failure is not
+a runtime one, so it is not an `.active` row; Add Models shows it with Retry). An install the user asked for (Get,
+Resume, Retry) never sets it.
+
 **Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`
 writes it only on an accepted start with `StartOrigin.user` and never for a test-signal model

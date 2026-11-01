@@ -120,6 +120,48 @@ import Testing
         }
     }
 
+    /// A suggested model whose Start is running its package refresh stays the suggestion (the row
+    /// shows the install progress); the same phase from an install the user asked for does not.
+    @Test func aModelRefreshingToStartKeepsItsRowUntilItIsStarting() {
+        for idle in ServiceKind.allCases {
+            let candidate = Self.defaultService(idle)
+            let active = Self.activeService(in: Self.other(idle))
+            var s = Self.states([candidate: .installing(.packages), active: .running])
+            #expect(SuggestionPolicy.suggestion(for: idle, states: s, lastUsed: [:]) == nil)
+            s[candidate]!.install = 1
+            s[candidate]!.startsAfterInstall = true
+            #expect(SuggestionPolicy.suggestion(for: idle, states: s, lastUsed: [:]) == candidate)
+            // The read after the refresh carries the start in place of the install.
+            s[candidate]!.install = nil
+            s[candidate]!.startsAfterInstall = false
+            s[candidate]!.startAfterRead = true
+            #expect(SuggestionPolicy.suggestion(for: idle, states: s, lastUsed: [:]) == candidate)
+            // Starting is active: the row becomes the running one.
+            s[candidate]!.phase = .starting
+            s[candidate]!.startAfterRead = false
+            #expect(SuggestionPolicy.suggestion(for: idle, states: s, lastUsed: [:]) == nil)
+            #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: true)[idle] == [.active(candidate)])
+        }
+    }
+
+    @Test func aRefreshingModelIsListedAsTheSuggestionAndStillNeedsAnActiveServiceElsewhere() {
+        var s = Self.states([.kokoro: .installing(.packages), .whisper: .running])
+        s[.kokoro]!.install = 1
+        s[.kokoro]!.startsAfterInstall = true
+        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: true)[.tts] == [.suggested(.kokoro)])
+        #expect(SuggestionPolicy.panelListing(states: s, lastUsed: [:], enabled: false)[.tts] == nil)
+        // Nothing active elsewhere: the menu's startable list shows the install, not this row.
+        s[.whisper]!.phase = .installed
+        #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == nil)
+    }
+
+    @Test func aRefreshingSiblingBlocksNothingWhenAnotherModelIsActiveInTheCategory() {
+        var s = Self.states([.kokoro: .installing(.packages), .pocketTTS: .running, .whisper: .running])
+        s[.kokoro]!.install = 1
+        s[.kokoro]!.startsAfterInstall = true
+        #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == nil)
+    }
+
     @Test func bothCategoriesActiveShowsNoRow() {
         let s = Self.states([.kokoro: .running, .whisper: .running, .pocketTTS: .installed, .whisperTiny: .installed])
         #expect(SuggestionPolicy.suggestions(states: s, lastUsed: [:], enabled: true).isEmpty)
