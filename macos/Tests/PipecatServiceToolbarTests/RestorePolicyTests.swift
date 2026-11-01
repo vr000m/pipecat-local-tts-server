@@ -68,6 +68,19 @@ import Testing
         #expect(Self.decision(Self.state(.failed(crash)), wanted: true, preferenceOn: true) == .skip(.alreadyActive))
     }
 
+    /// `RestorePolicy`'s `.installed` arm is `isReadyToStart`: one definition for restore and suggestion.
+    @Test func restoreStartsExactlyWhenTheStateIsReadyToStart() {
+        let refused = ModelCacheStatus(cached: false, sizeBytes: 0, repoFolders: [], derivedFolders: [], repoIDs: [])
+        for phase in ServiceLifecycleTests.phases {
+            for cache in [nil, refused] {
+                var s = Self.state(phase)
+                s.cache = cache
+                let got = Self.decision(s, wanted: true, preferenceOn: true)
+                if s.isReadyToStart { #expect(got == .start, "\(phase)") } else { #expect(got != .start, "\(phase)") }
+            }
+        }
+    }
+
     @Test func anInstalledServiceWithoutItsWeightsIsSkippedAndWithThemStarted() {
         func cache(_ cached: Bool) -> ModelCacheStatus {
             ModelCacheStatus(cached: cached, sizeBytes: 0, repoFolders: [], derivedFolders: [], repoIDs: [])

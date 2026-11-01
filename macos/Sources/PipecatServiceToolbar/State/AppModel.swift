@@ -63,15 +63,27 @@ final class AppModel {
         restoreOnLaunch = RestorePreference.isOn(preferences)
         let wantedStore = UserDefaultsWantedServiceStore(defaults: preferences)
         self.wantedStore = wantedStore
-        services = Service.allCases.map { ServiceModel(info: $0.info, prober: prober, wanted: wantedStore) }
+        let lastUsedStore = UserDefaultsLastUsedStore(defaults: preferences)
+        self.lastUsedStore = lastUsedStore
+        services = Service.allCases.map {
+            ServiceModel(info: $0.info, prober: prober, wanted: wantedStore, lastUsed: lastUsedStore)
+        }
         for model in services { model.app = self }
     }
 
     /// The persisted "wanted running" set, shared by every service's driver.
     @ObservationIgnored private let wantedStore: any WantedServiceStore
+    /// The model last started per category, shared by every service's driver (Reset clears it).
+    @ObservationIgnored private let lastUsedStore: any LastUsedStore
     @ObservationIgnored private let preferences: UserDefaults
-    /// The one restore this process may run.
-    @ObservationIgnored private var restoredThisProcess = false
+    /// The one restore this process may run, and half of the gate for the Running panel's suggestion
+    /// row (`suggestionsEnabled`, which also needs phase `ready`). Observed, so the first render with it true already sees the
+    /// restored services occupying their categories. Written in `restoreWantedServices()` after
+    /// its start loop, and by `finishPreviewBootstrap()`; it stays false after a failed bootstrap.
+    private var restoredThisProcess = false
+    var suggestionsEnabled: Bool {
+        SuggestionPolicy.isEnabled(restoredThisProcess: restoredThisProcess, phase: phase)
+    }
 
     func model(_ service: Service) -> ServiceModel {
         services.first { $0.service == service }!
@@ -112,6 +124,21 @@ final class AppModel {
     }
 
     var anyActive: Bool { counts.active > 0 }
+
+    /// The Running panel's active branch, per kind: the active services plus the suggestion for an
+    /// idle category (`SuggestionPolicy.panelListing`), mapped to models. Computed once per
+    /// render. The last-used read is untracked; the row refreshes because each write coincides
+    /// with an observed state change.
+    func panelListing() -> [ServiceKind: [(entry: PanelEntry, model: ServiceModel)]] {
+        let lastUsed = Dictionary(
+            uniqueKeysWithValues: ServiceKind.allCases.compactMap { k in
+                lastUsedStore.lastUsed(k).map { (k, $0) }
+            })
+        let listing = SuggestionPolicy.panelListing(states: states, lastUsed: lastUsed, enabled: suggestionsEnabled)
+        return listing.mapValues { entries in
+            entries.map { (entry: $0, model: model($0.service)) }
+        }
+    }
 
     /// Installed (or downloading) services that aren't running: what the main
     /// menu offers to start when nothing is running (`ServiceCounts.isStartable`, Core).
@@ -161,7 +188,9 @@ final class AppModel {
         for effect in AppLifecycle.reduce(&phase, event) {
             switch effect {
             case .runBootstrap: job = Task { await runBootstrap() }
-            case .clearWantedServices: wantedStore.removeAll()
+            case .clearPersistedServiceState:
+                wantedStore.removeAll()
+                lastUsedStore.removeAll()
             case .runReset:
                 staleLayout = false
                 let old = manager
@@ -225,19 +254,21 @@ final class AppModel {
     /// Starts the services the last session left running (`RestorePolicy`), once per process.
     private func restoreWantedServices() {
         guard RestorePolicy.shouldRun(alreadyRan: restoredThisProcess, phase: phase) else { return }
-        restoredThisProcess = true
         let plan = RestorePolicy.plan(wanted: wantedStore.read(), states: states, preferenceOn: restoreOnLaunch)
         for model in services {
             switch plan[model.service] {
             case .start:
                 Log.app.info("restore: starting \(model.service.rawValue, privacy: .public)")
-                model.start()
+                model.start(origin: .restore)
             case .skip(let reason) where reason != .notWanted:
                 Log.app.info("restore: skipping \(model.service.rawValue, privacy: .public): \(String(describing: reason), privacy: .public)")
             default:
                 break
             }
         }
+        // After the loop, in the same main-actor turn: the first render with the gate true
+        // already sees the restored services occupying their categories.
+        restoredThisProcess = true
     }
 
     /// Approximate sizes for providers that aren't installed, cached for a week.
@@ -325,7 +356,10 @@ final class AppModel {
     }
 
     #if DEBUG
-        func finishPreviewBootstrap() { phase = .ready }
+        func finishPreviewBootstrap() {
+            phase = .ready
+            restoredThisProcess = true
+        }
     #endif
 
     // MARK: - Settings

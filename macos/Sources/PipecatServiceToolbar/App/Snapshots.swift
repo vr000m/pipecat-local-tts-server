@@ -3,6 +3,12 @@
     import PipecatToolbarCore
     import SwiftUI
 
+    /// Answers "nothing listens" on every port: opening the panel runs a discovery pass, which would
+    /// otherwise adopt a server the operator has running and change what a scene shows.
+    private struct NoServersProber: HelloProber {
+        func probe(port: Int) async -> ExternalProbe.Outcome { .unreachable }
+    }
+
     /// `PipecatServiceToolbar --snapshot <dir>` (debug builds): renders the panel in a set of
     /// representative states to PNGs, in light and dark, then exits. Used to review
     /// the UI without driving the menu bar.
@@ -13,9 +19,23 @@
             guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return false }
             let dir = URL(filePath: args[i + 1])
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // A throwaway defaults suite with fixed last-used values, so a render never reads the
+            // operator's `lastUsed.*` and is the same on every machine. The name is fixed and the
+            // domain wiped before and after: cfprefsd rewrites the suite's plist after the process
+            // exits, so a per-run name (or deleting the file) left a new empty plist in
+            // ~/Library/Preferences on every run.
+            let suiteName = "pipecat-toolbar-snapshots"
+            let suite = UserDefaults(suiteName: suiteName)!
+            suite.removePersistentDomain(forName: suiteName)
+            defer { suite.removePersistentDomain(forName: suiteName) }
+            let lastUsed = UserDefaultsLastUsedStore(defaults: suite)
+            lastUsed.setLastUsed(.pocketTTS)
+            lastUsed.setLastUsed(.whisper)
             for (name, configure) in scenes {
                 for dark in [false, true] {
-                    let app = AppModel(paths: AppPaths.standard(supportOverride: dir.appending(path: "support")))
+                    let app = AppModel(
+                        paths: AppPaths.standard(supportOverride: dir.appending(path: "support")),
+                        prober: NoServersProber(), preferences: suite)
                     configure(app)
                     app.finishPreviewBootstrap()
                     render(app, to: dir.appending(path: "\(name)-\(dark ? "dark" : "light").png"), dark: dark)
@@ -114,6 +134,23 @@
                 app.model(.phononQ8).setPreviewState(
                     phase: .running, running: .init(pid: 4244, port: 9366, rate: 24000, model: "phonon-q8", since: .now),
                     environment: .ready(marker))
+            }),
+            // One category running, an installed model in the other: the other's last-used row.
+            ("running-suggest-stt", { app in
+                for model in app.services { model.setPreviewState(phase: .notInstalled) }
+                app.model(.kokoro).setPreviewState(
+                    phase: .running, running: .init(pid: 4242, port: 8765, rate: 24000, model: nil, since: .now),
+                    environment: .ready(marker), diskBytes: 327_000_000, log: logLines)
+                app.model(.whisper).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 1_530_000_000)
+                app.model(.appleSpeech).setPreviewState(phase: .installed)
+            }),
+            ("running-suggest-tts", { app in
+                for model in app.services { model.setPreviewState(phase: .notInstalled) }
+                app.model(.appleSpeech).setPreviewState(
+                    phase: .running, running: .init(pid: 4242, port: 9465, rate: 16000, model: ServiceInfo.appleSpeechModel, since: .now),
+                    log: ["listening on 127.0.0.1:9465"])
+                app.model(.pocketTTS).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 244_700_000)
+                app.model(.kokoro).setPreviewState(phase: .installed, environment: .ready(marker), diskBytes: 327_000_000)
             }),
             ("detail-variant", { app in
                 busyState(app)
