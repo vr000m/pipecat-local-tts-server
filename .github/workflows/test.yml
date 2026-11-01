@@ -107,7 +107,7 @@ jobs:
         run: uv run pytest -x tests/test_pipecat_adapter.py
 
   # macOS / Apple-Silicon smoke: the mlx-audio (Kokoro) wheels are
-  # Apple-Silicon-only, so this job verifies — on macos-14 (arm64) — that the
+  # Apple-Silicon-only, so this job verifies — on macos-15 (arm64) — that the
   # `kokoro` extra RESOLVES and IMPORTS. It deliberately does NOT run pytest:
   #
   #   - The lean-import-invariant tests (test_import_safety / test_kokoro_lazy_import
