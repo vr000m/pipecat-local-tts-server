@@ -124,7 +124,7 @@ jobs:
   # monkeypatch target (SineGen._f02sine, see backends/kokoro.py) still exists
   # upstream, so an mlx-audio restructure can't silently disable the shim.
   test-macos-smoke:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
