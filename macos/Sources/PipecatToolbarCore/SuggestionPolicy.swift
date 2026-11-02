@@ -34,6 +34,9 @@ public enum SuggestionPolicy {
     /// One exception to "occupied": a model whose Start is waiting on its package refresh
     /// (`LifecycleState.isRefreshingToStart`) stays the suggestion until it reaches `.starting`, so
     /// its row keeps showing the progress instead of the category vanishing for the length of the install.
+    /// The exception holds while no model in the category is active, even when another model in the
+    /// category is installing, removing or checking (hiding the row would drop the progress the user
+    /// just asked for); an active sibling (starting, running, stopping, external, runtime-failed) hides it.
     public static func suggestion(
         for kind: ServiceKind, states: [Service: LifecycleState], lastUsed: [ServiceKind: Service]
     ) -> Service? {

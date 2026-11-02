@@ -556,7 +556,7 @@ Installed and Available.
 
 When one category has an active service and the other is not occupied (nothing active,
 installing, removing or checking), the Running panel adds one `.suggested` row for the idle
-category after its `.active` rows. `SuggestionPolicy` (Core, pure over the services' lifecycle
+category after its `.active` rows (a Start that refreshes packages is the one exception, below). `SuggestionPolicy` (Core, pure over the services' lifecycle
 states and a snapshot of the stored last-used values) picks the model: last-used, else the
 category default, else the first ready one in catalog order. Ready is `isReadyToStart`
 (installed, and the cache check does not refuse it); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
@@ -571,8 +571,8 @@ refresh first (`refreshThenStart`), and `.installing` occupies the category. So 
 vanish for the length of the install, the reducer records the continuation
 (`LifecycleState.startsAfterInstall`, cleared when the install ends; `startAfterRead` carries the start
 through the read after it) and `LifecycleState.isRefreshingToStart` reads it. While it is true, and
-nothing in the category is active, `SuggestionPolicy.suggestion` returns that model before the occupancy
-check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends at `.starting`
+nothing in the category is active (a sibling that is installing, removing or checking does not hide the
+refreshing row), `SuggestionPolicy.suggestion` returns that model before the occupancy check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends at `.starting`
 (an active `.active` row), on Cancel (the ready row returns once the read after the cancel lands; the phase is
 `.installing` until then, so the category is occupied for that read) or on failure (the row goes: an install
 failure is not a runtime one, so it is not an `.active` row; Add Models shows it with Retry). Cancel also works

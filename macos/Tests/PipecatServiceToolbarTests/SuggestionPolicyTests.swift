@@ -162,6 +162,15 @@ import Testing
         #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == nil)
     }
 
+    @Test func aRefreshingModelKeepsItsRowWhileASiblingInstallsRemovesOrChecks() {
+        for busy in [ServicePhase.installing(.model), .removing, .checking] {
+            var s = Self.states([.kokoro: .installing(.packages), .pocketTTS: busy, .whisper: .running])
+            s[.kokoro]!.install = 1
+            s[.kokoro]!.startsAfterInstall = true
+            #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == .kokoro)
+        }
+    }
+
     /// Cancel ends `isRefreshingToStart` at once, but the phase stays `.installing` until the read
     /// after the cancel lands, so the category is occupied (no row) for that read; then the ready row returns.
     @Test func aCancelledRefreshHidesTheRowOnlyUntilTheReadAfterItLands() {
