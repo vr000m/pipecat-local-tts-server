@@ -573,9 +573,11 @@ vanish for the length of the install, the reducer records the continuation
 through the read after it) and `LifecycleState.isRefreshingToStart` reads it. While it is true, and
 nothing in the category is active, `SuggestionPolicy.suggestion` returns that model before the occupancy
 check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends at `.starting`
-(an active `.active` row), on Cancel (back to a ready row) or on failure (the row goes: an install failure is not
-a runtime one, so it is not an `.active` row; Add Models shows it with Retry). An install the user asked for (Get,
-Resume, Retry) never sets it.
+(an active `.active` row), on Cancel (the ready row returns once the read after the cancel lands; the phase is
+`.installing` until then, so the category is occupied for that read) or on failure (the row goes: an install
+failure is not a runtime one, so it is not an `.active` row; Add Models shows it with Retry). Cancel also works
+in the gap between the refresh and the read after it, where no install is left to stop: the reducer drops the start
+that read carries. An install the user asked for (Get, Resume, Retry) never sets it.
 
 **Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`

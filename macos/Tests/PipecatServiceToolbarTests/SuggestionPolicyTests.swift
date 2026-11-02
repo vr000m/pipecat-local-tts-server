@@ -155,11 +155,29 @@ import Testing
         #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == nil)
     }
 
-    @Test func aRefreshingSiblingBlocksNothingWhenAnotherModelIsActiveInTheCategory() {
+    @Test func aRefreshingModelGivesWayWhenAnotherModelIsActiveInTheCategory() {
         var s = Self.states([.kokoro: .installing(.packages), .pocketTTS: .running, .whisper: .running])
         s[.kokoro]!.install = 1
         s[.kokoro]!.startsAfterInstall = true
         #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == nil)
+    }
+
+    /// Cancel ends `isRefreshingToStart` at once, but the phase stays `.installing` until the read
+    /// after the cancel lands, so the category is occupied (no row) for that read; then the ready row returns.
+    @Test func aCancelledRefreshHidesTheRowOnlyUntilTheReadAfterItLands() {
+        var k = Self.state(.kokoro, .installed)
+        k.environment = .outdated(ServiceLifecycleTests.marker)
+        _ = ServiceLifecycle.reduce(&k, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        var s = Self.states([.whisper: .running])
+        s[.kokoro] = k
+        #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == .kokoro)
+        _ = ServiceLifecycle.reduce(&k, .installEnded(.cancelled, then: .refreshThenStart, install: k.install!))
+        s[.kokoro] = k
+        #expect(k.phase == .installing(.packages))
+        #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == nil)
+        _ = ServiceLifecycle.reduce(&k, .refreshed(.installed, epoch: k.epoch))
+        s[.kokoro] = k
+        #expect(SuggestionPolicy.suggestion(for: .tts, states: s, lastUsed: [:]) == .kokoro)
     }
 
     @Test func bothCategoriesActiveShowsNoRow() {

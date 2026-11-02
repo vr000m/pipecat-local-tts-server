@@ -808,6 +808,21 @@ import Testing
         }
     }
 
+    /// Between the refresh and the read after it no install is left for Cancel to stop, so the reducer
+    /// drops the start that read carries: the model is no longer refreshing to start and lands `.installed`.
+    @Test func cancelDuringTheReadAfterTheRefreshDropsTheStart() {
+        var s = Self.state(.installed, server: nil)
+        s.environment = .outdated(Self.marker)
+        _ = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        _ = ServiceLifecycle.reduce(&s, .installEnded(.finished, then: .refreshThenStart, install: s.install!))
+        #expect(s.isRefreshingToStart)
+        _ = ServiceLifecycle.reduce(&s, .cancelInstallRequested)
+        #expect(!s.isRefreshingToStart && !s.startAfterRead)
+        s.environment = .ready(Self.marker)
+        #expect(ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch)) == [])
+        #expect(s.phase == .installed)
+    }
+
     @Test func anInstallTheUserAskedForIsNotRefreshingToStart() {
         var s = Self.state(.notInstalled, server: nil)
         s.environment = .missing
