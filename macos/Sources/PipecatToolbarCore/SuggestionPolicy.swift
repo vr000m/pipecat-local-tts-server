@@ -33,7 +33,8 @@ public enum SuggestionPolicy {
     ///
     /// One exception to "occupied": a model whose Start is waiting on its package refresh
     /// (`LifecycleState.isRefreshingToStart`) stays the suggestion until it reaches `.starting`, is
-    /// cancelled (the ready row returns once the read after the cancel lands) or its install fails (the
+    /// cancelled (the ready row returns once the read after the cancel lands, unless a sibling is still
+    /// installing, removing or checking, which occupies the category again) or its install fails (the
     /// row goes), so its row keeps showing the progress instead of the category vanishing for the install.
     /// The exception holds while no model in the category is active, even when another model in the
     /// category is installing, removing or checking (hiding the row would drop the progress the user

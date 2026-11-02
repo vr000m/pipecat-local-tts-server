@@ -576,7 +576,8 @@ true, and nothing in the category is active (a sibling that is installing, remov
 does not hide the refreshing row), `SuggestionPolicy.suggestion` returns that model before the
 occupancy check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends
 at `.starting` (an active `.active` row), on Cancel (the ready row returns once the read after the
-cancel lands; the phase is `.installing` until then, so the category is occupied for that read) or
+cancel lands and no sibling is installing, removing or checking; the phase is `.installing` until
+then, so the category is occupied for that read, and a busy sibling keeps it occupied) or
 on failure (the row goes: an install failure is not a runtime one, so it is not an `.active` row;
 Add Models shows it with Retry). Cancel also works in the gap between the refresh and the read
 after it, where no install is left to stop: the reducer drops the start that read carries. An
