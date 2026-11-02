@@ -149,14 +149,14 @@ for running both.
   address and a copy button; Stop only on the app's own (External rows show
   `External · <agent label or address>`).
   When one category has an active service and the other has nothing active,
-  installing, being removed or being checked (a Start that refreshes packages keeps its row,
-  see below), the idle category shows one suggestion row with a
+  installing, being removed or being checked, the idle category shows one suggestion row with a
   Start button: the model you last started there, else the category default, else
   the first installed model whose cache check does not refuse it (never `tone`). It is
   shown only once the launch restore has run and the app is ready (not while it is checking services,
   resetting, quitting or showing a failed setup), and not when both categories are active.
   If Start has to refresh that model's packages first, its row stays and shows the install
-  progress (with Cancel) until the model is starting.
+  progress (with Cancel) until the model is starting, while nothing else in that category is
+  active (an exception to the rule above).
 - **Add Models**: every model, by type, with Get, Start and download progress.
   Python and model weights are fetched on first Get; nothing is bundled.
 - **Right-click** any service: **Copy URL**, **Copy Pipecat Service**,

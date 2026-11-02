@@ -556,10 +556,11 @@ Installed and Available.
 
 When one category has an active service and the other is not occupied (nothing active,
 installing, removing or checking), the Running panel adds one `.suggested` row for the idle
-category after its `.active` rows (a Start that refreshes packages is the one exception, below). `SuggestionPolicy` (Core, pure over the services' lifecycle
-states and a snapshot of the stored last-used values) picks the model: last-used, else the
-category default, else the first ready one in catalog order. Ready is `isReadyToStart`
-(installed, and the cache check does not refuse it); a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
+category after its `.active` rows (a Start that refreshes packages is the one exception, below).
+`SuggestionPolicy` (Core, pure over the services' lifecycle states and a snapshot of the stored
+last-used values) picks the model: last-used, else the category default, else the first ready one
+in catalog order. Ready is `isReadyToStart` (installed, and the cache check does not refuse it);
+a test-signal model (`tone`) is never suggested. `AppModel.panelListing()` maps
 `SuggestionPolicy.panelListing` to models and drops the suggestion until the launch restore has
 run (`restoredThisProcess`), so a restoring service is not offered first, and whenever the app
 phase is not `ready` (`SuggestionPolicy.isEnabled`). That phase check is a conservative stand-in
@@ -567,17 +568,19 @@ for `AppPhase.acceptsServiceActions`, not the refusal rule: bootstrap, Reset, a 
 quit all hide the row, though Apple Speech's Start would still be accepted in some of them.
 
 **Start that refreshes packages.** Start on a model whose environment is outdated runs the package
-refresh first (`refreshThenStart`), and `.installing` occupies the category. So that the row does not
-vanish for the length of the install, the reducer records the continuation
-(`LifecycleState.startsAfterInstall`, cleared when the install ends; `startAfterRead` carries the start
-through the read after it) and `LifecycleState.isRefreshingToStart` reads it. While it is true, and
-nothing in the category is active (a sibling that is installing, removing or checking does not hide the
-refreshing row), `SuggestionPolicy.suggestion` returns that model before the occupancy check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends at `.starting`
-(an active `.active` row), on Cancel (the ready row returns once the read after the cancel lands; the phase is
-`.installing` until then, so the category is occupied for that read) or on failure (the row goes: an install
-failure is not a runtime one, so it is not an `.active` row; Add Models shows it with Retry). Cancel also works
-in the gap between the refresh and the read after it, where no install is left to stop: the reducer drops the start
-that read carries. An install the user asked for (Get, Resume, Retry) never sets it.
+refresh first (`refreshThenStart`), and `.installing` occupies the category. So that the row does
+not vanish for the length of the install, the reducer records the continuation
+(`LifecycleState.startsAfterInstall`, cleared when the install ends; `startAfterRead` carries the
+start through the read after it) and `LifecycleState.isRefreshingToStart` reads it. While it is
+true, and nothing in the category is active (a sibling that is installing, removing or checking
+does not hide the refreshing row), `SuggestionPolicy.suggestion` returns that model before the
+occupancy check, and the `.suggested` `CatalogRow` shows its install progress and Cancel. It ends
+at `.starting` (an active `.active` row), on Cancel (the ready row returns once the read after the
+cancel lands; the phase is `.installing` until then, so the category is occupied for that read) or
+on failure (the row goes: an install failure is not a runtime one, so it is not an `.active` row;
+Add Models shows it with Retry). Cancel also works in the gap between the refresh and the read
+after it, where no install is left to stop: the reducer drops the start that read carries. An
+install the user asked for (Get, Resume, Retry) never sets it.
 
 **Last-used store.** `LastUsedStore` keeps one `Service` per category under `lastUsed.tts` and
 `lastUsed.stt` (same `UserDefaults` domain as the wanted set). `ServiceDriver.start(origin:)`
