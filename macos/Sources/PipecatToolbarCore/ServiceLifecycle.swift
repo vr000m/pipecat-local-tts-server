@@ -771,7 +771,7 @@ public enum ServiceLifecycle {
             // An External service has no install to cancel.
             if s.phase.isExternal { return [] }
             // Between the refresh and the read after it no install is left to cancel (the effect finds
-            // none), so Cancel drops the start that read carries; the row shows Cancel until then.
+            // none), so Cancel drops the start that read carries; the row shows Cancel up to that press.
             if s.install == nil { s.startAfterRead = false }
             return [.cancelInstall]
 

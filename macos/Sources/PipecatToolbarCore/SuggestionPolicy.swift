@@ -32,8 +32,9 @@ public enum SuggestionPolicy {
     /// `isReadyToStart`, and a test-signal model is never suggested.
     ///
     /// One exception to "occupied": a model whose Start is waiting on its package refresh
-    /// (`LifecycleState.isRefreshingToStart`) stays the suggestion until it reaches `.starting`, so
-    /// its row keeps showing the progress instead of the category vanishing for the length of the install.
+    /// (`LifecycleState.isRefreshingToStart`) stays the suggestion until it reaches `.starting`, is
+    /// cancelled (the ready row returns once the read after the cancel lands) or its install fails (the
+    /// row goes), so its row keeps showing the progress instead of the category vanishing for the install.
     /// The exception holds while no model in the category is active, even when another model in the
     /// category is installing, removing or checking (hiding the row would drop the progress the user
     /// just asked for); an active sibling (starting, running, stopping, external, runtime-failed) hides it.
