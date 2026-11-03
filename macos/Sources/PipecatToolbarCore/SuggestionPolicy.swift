@@ -30,18 +30,32 @@ public enum SuggestionPolicy {
     /// `kind` is not occupied (nothing active, installing, removing or checking in it).
     /// Order: last-used, the category default, the first ready model; all must be
     /// `isReadyToStart`, and a test-signal model is never suggested.
+    ///
+    /// One exception to "occupied": a model whose Start is waiting on its package refresh
+    /// (`LifecycleState.isRefreshingToStart`) stays the suggestion until it reaches `.starting`, is
+    /// cancelled (the ready row returns once the read after the cancel lands, unless a sibling is still
+    /// installing, removing or checking, which occupies the category again) or its install fails (the
+    /// row goes), so its row keeps showing the progress instead of the category vanishing for the install.
+    /// The exception holds while no model in the category is active, even when another model in the
+    /// category is installing, removing or checking (hiding the row would drop the progress the user
+    /// just asked for); an active sibling (starting, running, stopping, external, runtime-failed) hides it.
     public static func suggestion(
         for kind: ServiceKind, states: [Service: LifecycleState], lastUsed: [ServiceKind: Service]
     ) -> Service? {
         let others = states.filter { $0.key.kind != kind }
         guard others.values.contains(where: { $0.isActive }) else { return nil }
         let mine = states.filter { $0.key.kind == kind }
+        let candidates = ServiceCatalog.services(of: kind)
+        if !mine.values.contains(where: { $0.isActive }),
+            let refreshing = candidates.first(where: { !$0.info.isTestSignal && mine[$0]?.isRefreshingToStart == true })
+        {
+            return refreshing
+        }
         if mine.values.contains(where: occupies) { return nil }
 
         func ready(_ service: Service) -> Bool {
             !service.info.isTestSignal && mine[service]?.isReadyToStart == true
         }
-        let candidates = ServiceCatalog.services(of: kind)
         if let last = lastUsed[kind], last.kind == kind, ready(last) { return last }
         if let fallback = candidates.first(where: { $0.info.isDefault && ready($0) }) { return fallback }
         return candidates.first(where: ready)

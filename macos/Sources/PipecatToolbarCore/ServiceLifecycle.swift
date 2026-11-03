@@ -438,6 +438,10 @@ public struct LifecycleState: Equatable, Sendable {
     public var reading: Int?
     /// The read in flight starts the service when it lands current (refreshThenStart).
     public var startAfterRead = false
+    /// The install in flight is the package refresh `.startRequested` ran for an outdated
+    /// environment (`refreshThenStart`); cleared when that install ends (`startAfterRead` carries
+    /// the start from there). Read through `isRefreshingToStart`.
+    public var startsAfterInstall = false
     /// The user cancelled an Apple Speech download: a refresh that still sees
     /// the system downloading does not attach to it again.
     public var declinedSystemDownload = false
@@ -461,6 +465,14 @@ public struct LifecycleState: Equatable, Sendable {
 extension LifecycleState {
     /// An install is in flight.
     public var installing: Bool { install != nil }
+
+    /// Start was accepted on an outdated environment and the package refresh, or the read after it,
+    /// is still under way: the phase is `.installing` and the next one is `.starting`. False for an
+    /// install the user asked for (Get, Resume, Retry).
+    public var isRefreshingToStart: Bool {
+        guard case .installing = phase else { return false }
+        return (install != nil && startsAfterInstall) || startAfterRead
+    }
 
     /// Ends the Start-path probe chain: `probe`, `busyFound` and `probeAfterBind` describe one
     /// probe in flight and are only ever cleared together, here.
@@ -654,8 +666,10 @@ public enum ServiceLifecycle {
     ///    probe that ends any other way than its own answer is cancelled, by
     ///    the first effect (so no other effect's wait delays it).
     /// 4. A read the advance orphaned is issued again unless `dropsOrphanedRead(after:)`
-    ///    (the one rule, see there), in which case it is dropped. It never carries a start
-    ///    with it, and only a read already in flight is re-issued.
+    ///    (the one rule, see there), in which case it is dropped. It carries a start only
+    ///    when `.environmentChanged` orphaned it (a sibling's change, which says nothing about
+    ///    that Start); any other event ends the start with the read. Only a read already in
+    ///    flight is re-issued.
     ///    Invariant: once a transition into `.external` has run, a read issued under
     ///    the current epoch is in flight or has landed since (`adopt` issues it).
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
@@ -686,11 +700,13 @@ public enum ServiceLifecycle {
             effects.insert(.cancelProbe(probe: probe), at: 0)
         }
         if let reading = s.reading, reading != s.epoch {
+            // A sibling's environment change says nothing about the Start the read carries.
+            let keepsStart = s.startAfterRead && event.kind == .environmentChanged
             s.startAfterRead = false
             if s.dropsOrphanedRead(after: before) {
                 s.reading = nil
             } else {
-                effects.append(read(&s))
+                effects.append(read(&s, thenStart: keepsStart))
             }
         }
         return effects
@@ -757,7 +773,11 @@ public enum ServiceLifecycle {
 
         case .cancelInstallRequested:
             // An External service has no install to cancel.
-            return s.phase.isExternal ? [] : [.cancelInstall]
+            if s.phase.isExternal { return [] }
+            // Between the refresh and the read after it no install is left to cancel (the effect finds
+            // none), so Cancel drops the start that read carries; the row shows Cancel up to that press.
+            if s.install == nil { s.startAfterRead = false }
+            return [.cancelInstall]
 
         case .installStage(let stage, _):
             // Never over a removal.
@@ -767,6 +787,7 @@ public enum ServiceLifecycle {
 
         case .installEnded(let outcome, let then, _):
             s.install = nil
+            s.startsAfterInstall = false
             switch outcome {
             case _ where s.phase == .removing:
                 // remove() cancelled this install and owns the phase from here.
@@ -1059,6 +1080,7 @@ public enum ServiceLifecycle {
         -> [LifecycleEffect]
     {
         s.install = s.epoch
+        s.startsAfterInstall = then == .refreshThenStart
         s.phase = .installing(firstStage(mode: mode, environment: s.environment))
         return [.runInstall(mode, then: then, install: s.epoch)]
     }
