@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- macOS app: a suggested model whose Start needs a package refresh now keeps its Running-panel row, showing the install progress and Cancel, until it is starting; Cancel in that window, including between the refresh and the read after it, stops the start. Before, the category disappeared for the length of the install.
+- macOS app: a suggested model whose Start needs a package refresh now keeps its Running-panel row, showing the install progress and Cancel, until it is starting; Cancel in that window, including between the refresh and the read after it, stops the start. Before, the category disappeared for the length of the install. A sibling variant's environment change during the read after the refresh no longer drops that Start.
 
 ## [0.9.0] - 2026-10-31
 

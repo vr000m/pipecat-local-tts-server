@@ -666,8 +666,10 @@ public enum ServiceLifecycle {
     ///    probe that ends any other way than its own answer is cancelled, by
     ///    the first effect (so no other effect's wait delays it).
     /// 4. A read the advance orphaned is issued again unless `dropsOrphanedRead(after:)`
-    ///    (the one rule, see there), in which case it is dropped. It never carries a start
-    ///    with it, and only a read already in flight is re-issued.
+    ///    (the one rule, see there), in which case it is dropped. It carries a start only
+    ///    when `.environmentChanged` orphaned it (a sibling's change, which says nothing about
+    ///    that Start); any other event ends the start with the read. Only a read already in
+    ///    flight is re-issued.
     ///    Invariant: once a transition into `.external` has run, a read issued under
     ///    the current epoch is in flight or has landed since (`adopt` issues it).
     /// 5. `externalEpoch` advances after the event ran, only when it was applied: on every
@@ -698,11 +700,13 @@ public enum ServiceLifecycle {
             effects.insert(.cancelProbe(probe: probe), at: 0)
         }
         if let reading = s.reading, reading != s.epoch {
+            // A sibling's environment change says nothing about the Start the read carries.
+            let keepsStart = s.startAfterRead && event.kind == .environmentChanged
             s.startAfterRead = false
             if s.dropsOrphanedRead(after: before) {
                 s.reading = nil
             } else {
-                effects.append(read(&s))
+                effects.append(read(&s, thenStart: keepsStart))
             }
         }
         return effects

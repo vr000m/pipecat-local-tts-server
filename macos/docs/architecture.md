@@ -179,7 +179,8 @@ and its cache probe never delay it): the driver keeps each probe task until it
 ends, its `lsof` is stopped on cancel (`PortProbe.collect`), and the driver's
 `shutdown()` cancels and waits for every probe, so none outlives Stop or quit. The package refresh before a start
 (`refreshThenStart`) is a flag on its read: if the read is orphaned (Delete
-during it) the start is dropped with it, so a stale read never starts a service.
+during it) the start is dropped with it, so a stale read never starts a service. The one exception is a sibling's
+`environmentChanged`, which says nothing about that Start: the re-issued read keeps it.
 An Apple Speech refresh that finds the system already downloading the model
 attaches an install task to that download, so its progress and Cancel work; a
 Cancel sticks (`declinedSystemDownload`): while the system still reports

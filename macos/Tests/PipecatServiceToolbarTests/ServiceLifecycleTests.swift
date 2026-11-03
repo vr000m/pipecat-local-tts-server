@@ -823,6 +823,29 @@ import Testing
         #expect(s.phase == .installed)
     }
 
+    /// A sibling variant's `environmentChanged` orphans the read after the refresh; the re-issued read
+    /// keeps the start, so the accepted Start still runs. Any other owning event ends it with the read.
+    @Test func aSiblingsEnvironmentChangeDuringTheReadAfterTheRefreshKeepsTheStart() {
+        var s = Self.state(.installed, server: nil)
+        s.environment = .outdated(Self.marker)
+        _ = ServiceLifecycle.reduce(&s, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        _ = ServiceLifecycle.reduce(&s, .installEnded(.finished, then: .refreshThenStart, install: s.install!))
+        let orphaned = s.epoch
+        let effects = ServiceLifecycle.reduce(&s, .environmentChanged(.ready(Self.marker)))
+        #expect(effects == [.refresh(epoch: s.epoch)])
+        #expect(s.epoch != orphaned && s.reading == s.epoch)
+        #expect(s.isRefreshingToStart && s.startAfterRead)
+        #expect(ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: orphaned)) == [], "the orphaned read is stale")
+        #expect(ServiceLifecycle.reduce(&s, .refreshed(.installed, epoch: s.epoch)) == [.start])
+
+        var other = Self.state(.installed, server: nil)
+        other.environment = .outdated(Self.marker)
+        _ = ServiceLifecycle.reduce(&other, .startRequested(appAvailable: true, managerAvailable: true, portFree: true))
+        _ = ServiceLifecycle.reduce(&other, .installEnded(.finished, then: .refreshThenStart, install: other.install!))
+        _ = ServiceLifecycle.reduce(&other, .cancelInstallRequested)
+        #expect(!other.isRefreshingToStart && !other.startAfterRead)
+    }
+
     @Test func anInstallTheUserAskedForIsNotRefreshingToStart() {
         var s = Self.state(.notInstalled, server: nil)
         s.environment = .missing
