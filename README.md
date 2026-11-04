@@ -1,158 +1,145 @@
 # pipecat-local-tts-server
 
-Standalone, local WebSocket **text-to-speech (TTS) server** — text in, audio
-out — for the Pipecat ecosystem. It mirrors the sibling
-[`pipecat-local-stt-server`](https://github.com/vr000m/pipecat-local-stt-server):
-same websocket transport, an OpenAI-Realtime-inspired protocol subset, a
-pluggable backend abstraction, and lazy-imported per-model backends behind
-optional extras so a client-only consumer never pulls the heavy TTS runtime.
+Standalone local WebSocket **text-to-speech (TTS) server** for the Pipecat
+ecosystem: text in, int16-LE mono PCM out over a Unix domain socket or loopback
+TCP. It mirrors
+[`pipecat-local-stt-server`](https://github.com/vr000m/pipecat-local-stt-server)
+with an OpenAI-Realtime-inspired protocol, pluggable backends, and lazy model
+imports behind optional extras.
 
-Distributed as `pipecat-local-tts-server`; the import name is `tts_server`
-(every `import tts_server` / `python -m tts_server` invocation works).
-**Kokoro-first** (mlx-audio, Apple Silicon); more backends land later.
+The package is distributed as `pipecat-local-tts-server`; its import name and
+module entry point are `tts_server`. The lean base installs only `websockets`,
+so a client does not pull an ML runtime.
 
-The server owes its client exactly two things (the contracts everything else is
-built around):
+The server owes every client two contracts:
 
-1. **An exact, stable advertised rate.** `server.hello.audio.rate` is the true
-   model rate (Kokoro = 24000 Hz). Every audio frame is int16-LE mono PCM at
-   *exactly* that rate, with no per-utterance drift. The client resamples
-   model-rate → device-rate off this single value.
-2. **A steady in-response stream.** Once a response starts, audio arrives
-   continuously (each model segment is emitted as it completes) so the client's
-   playback buffer never starves.
+1. **An exact advertised rate.** `server.hello.audio.rate` is the model's true
+   rate. Every audio frame is int16-LE mono PCM at that rate.
+2. **A steady response stream.** Once a response starts, each completed model
+   segment is emitted immediately so playback can continue without whole-result
+   buffering.
 
 ## Install
 
-The base package is lean — `websockets` only. Backends live behind extras.
-
-From [PyPI](https://pypi.org/project/pipecat-local-tts-server/) (consumers):
+Install a real backend on Apple Silicon:
 
 ```sh
-# client-only lean base (websockets) — for a bot that just talks to a server
-uv add pipecat-local-tts-server            # or: pip install pipecat-local-tts-server
-
-# Kokoro backend (Apple Silicon; pulls mlx-audio==0.6.1 + misaki[en])
-uv add "pipecat-local-tts-server[kokoro]"  # or: pip install "pipecat-local-tts-server[kokoro]"
-
-# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.6.1 +
-# mistral-common[audio]). NOTE: model weights are CC-BY-NC (non-commercial).
-uv add "pipecat-local-tts-server[voxtral_tts]"
-
-# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.6.1).
-# Weights are CC-BY-4.0 (commercial OK with attribution).
-uv add "pipecat-local-tts-server[pocket_tts]"
-
-# dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
-# tags (Apple Silicon; mlx-audio==0.6.1). Weights are Apache-2.0 (commercial-safe).
-uv add "pipecat-local-tts-server[dia]"
-
-# Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
-# Silicon; mlx-audio==0.6.1). Weights carry the HF card tag apache-2.0.
-uv add "pipecat-local-tts-server[qwen3_tts]"
-
-# Fish (S2 Pro) backend — streaming:false, instruct + inline [tag]/
-# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.6.1). Weights are
-# under the Fish Audio Research License — free for research/non-commercial
-# use, commercial use requires a separate agreement (business@fish.audio).
-uv add "pipecat-local-tts-server[fish_tts]"
-
-# Phonon backend — streaming:true, fast, English (Apple Silicon;
-# mlx-audio==0.6.1). The 31M weights, tokenizer and voices are Apache-2.0.
-uv add "pipecat-local-tts-server[phonon]"
+uv add "pipecat-local-tts-server[kokoro]"
+# or: pip install "pipecat-local-tts-server[kokoro]"
 ```
 
-From source (development):
+For a client-only environment:
 
 ```sh
-# client-only (lean base: websockets) — for a bot that just talks to a server
-uv sync --extra client
-
-# Kokoro backend (Apple Silicon; pulls mlx-audio==0.6.1 + misaki[en], which
-# drags in spacy/num2words/torch — heavy by design, kept out of lean base)
-uv sync --extra kokoro
-
-# Voxtral TTS backend — streaming:true (Apple Silicon; mlx-audio==0.6.1 +
-# mistral-common[audio]). Weights are CC-BY-NC; see "Backends & licenses".
-uv sync --extra voxtral_tts
-
-# Pocket TTS backend — streaming:true, fast (Apple Silicon; mlx-audio==0.6.1).
-# Weights are CC-BY-4.0 (commercial OK with attribution).
-uv sync --extra pocket_tts
-
-# dia DIALOGUE backend — streaming:false, multi-speaker via in-text [S1]/[S2]
-# tags (Apple Silicon; mlx-audio==0.6.1). Weights are Apache-2.0 (commercial-safe).
-uv sync --extra dia
-
-# Qwen3-TTS backend — streaming:true, multilingual, 9 named speakers (Apple
-# Silicon; mlx-audio==0.6.1). Weights carry the HF card tag apache-2.0.
-uv sync --extra qwen3_tts
-
-# Fish (S2 Pro) backend — streaming:false, instruct + inline [tag]/
-# <|speaker:N|> style control (Apple Silicon; mlx-audio==0.6.1). Weights are
-# under the Fish Audio Research License; see "Backends & licenses".
-uv sync --extra fish_tts
-
-# Phonon backend — streaming:true, fast, English (Apple Silicon; mlx-audio==0.6.1).
-# Apache-2.0 31M weights/tokenizer/voices; see "Backends & licenses".
-uv sync --extra phonon
-
-# the reference Pipecat adapter example (pulls the Pipecat framework)
-uv sync --extra examples
+uv add pipecat-local-tts-server
 ```
 
-> Run every command through `uv run` (or activate the venv once per shell). A
-> bare `python -m tts_server …` uses the system interpreter and fails with
-> `ModuleNotFoundError: No module named 'websockets'`. Installing the package
-> also puts a `pipecat-tts` console script on the environment's `PATH`, the same
-> CLI as `python -m tts_server` (`pipecat-tts status`, `pipecat-tts serve …`).
+When working from this checkout, use `uv sync --extra kokoro` instead. Run
+commands through `uv run`, or activate the environment first; bare system
+Python will not see the installed dependencies. Installation also provides the
+equivalent `pipecat-tts` console script.
+
+See the
+[backend guide](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
+for every extra, model, voice and platform requirement.
+
+## Quickstart
+
+Download Kokoro before the first start, then serve it over a local Unix socket:
+
+```sh
+uv run python -m tts_server prefetch --backend kokoro
+
+uv run python -m tts_server serve --backend kokoro \
+    --socket-path ~/Library/Caches/pipecat-tts/tts.sock
+```
+
+In another shell, probe the server and synthesize a WAV:
+
+```sh
+uv run python -m tts_server status \
+    --socket-path ~/Library/Caches/pipecat-tts/tts.sock
+
+uv run python examples/reference_client.py \
+    --socket-path ~/Library/Caches/pipecat-tts/tts.sock \
+    --text "Hello from the local TTS server." \
+    --out hello.wav
+```
+
+Use `--backend tone` for a dependency-free protocol test with no model weights.
+For TCP, authentication, model cache checks, launchd agents, keepalive settings,
+and process supervision, see
+[Server operations](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md).
+
+## Backends & licenses
+
+The package ships runtime code, not model weights. Weights download on first
+`serve` or through `prefetch`, and operators are responsible for their terms.
+
+| Backend | Extra | Streaming | Default model | Weights license |
+|---|---|---:|---|---|
+| `tone` | base | no | synthetic sine | — |
+| `kokoro` | `kokoro` | no | `mlx-community/Kokoro-82M-bf16` | Apache-2.0 |
+| `voxtral_tts` | `voxtral_tts` | yes | `mlx-community/Voxtral-4B-TTS-2603-mlx-bf16` | **CC-BY-NC; non-commercial** |
+| `pocket_tts` | `pocket_tts` | yes | `mlx-community/pocket-tts` | CC-BY-4.0; attribution required |
+| `dia` | `dia` | no | `mlx-community/Dia-1.6B-fp16` | Apache-2.0 |
+| `qwen3_tts` | `qwen3_tts` | yes | `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | `apache-2.0` model-card tag; no LICENSE file in the repo |
+| `fish_tts` | `fish_tts` | no | `mlx-community/fish-audio-s2-pro` | **Fish Audio Research License; non-commercial, separate commercial agreement required** |
+| `phonon` | `phonon` | yes | `gradium/phonon-31m-en` | Apache-2.0 for 31M weights, tokenizer and voices |
+
+Kokoro is the default commercial-safe backend. Voxtral TTS and Fish S2 Pro have
+restrictive non-commercial terms. Phonon's supported 31M model is Apache-2.0;
+the gated 40M siblings are CC-BY-NC-4.0 and are not supported here. These are
+documentation snapshots, not legal advice; re-check upstream terms before use.
+
+The
+[backend reference](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
+is canonical for rates, languages, voices, sampling controls, text/tag dialects,
+character limits, truncation guards, quantized aliases, and cancellation caveats.
 
 ## macOS menu bar app
 
-[`macos/`](macos/) holds **Pipecat Service Toolbar**, a native SwiftUI menu bar
-app. It downloads speech models and serves them on fixed loopback ports. TTS
-covers every backend here. STT covers Apple Speech (SpeechAnalyzer), Whisper,
-Kyutai, Parakeet and Nemotron, using the [pipecat-local-stt-server](https://github.com/vr000m/pipecat-local-stt-server)
-protocol. It ships a pinned `uv` and this repo's wheel, and installs Python and
-the weights on demand. Python is never bundled.
+[`macos/`](https://github.com/vr000m/pipecat-local-tts-server/tree/main/macos)
+contains **Pipecat Service Toolbar**, a native SwiftUI menu bar app that installs
+and runs every TTS backend plus local STT services on fixed loopback ports.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/vr000m/pipecat-local-tts-server/main/docs/images/service-toolbar-panel.png" alt="Pipecat Service Toolbar showing running Phonon TTS and Nemotron STT services" width="350">
+  <img src="https://raw.githubusercontent.com/vr000m/pipecat-local-tts-server/main/docs/images/service-toolbar-settings.png" alt="Pipecat Service Toolbar settings and quit menu" width="300">
+</p>
 
 ```sh
-just app-open    # build macos/build/Pipecat Service Toolbar.app and launch it (replaces a running copy)
-just app-install # build it signed with a stable identity and install into ~/Applications
-                 # (fails before building when the keychain lacks the `Code Signing` identity)
+just app-open
+just app-install
 ```
 
-The app restores the services you had running when it launches, and asks before quitting
-while a client is connected to one of its servers.
-
-See [`macos/README.md`](macos/README.md). The app drives the
-[`prefetch`](#prefetching-models) and [`serve --supervised`](#supervised-mode)
-commands below.
+The app restores wanted services, adopts matching external servers without
+owning them, and asks before quitting while a client is connected to a server
+it started. See the
+[macOS guide](https://github.com/vr000m/pipecat-local-tts-server/blob/main/macos/README.md).
 
 ## Running the server
 
-```sh
-# Kokoro over a Unix domain socket (recommended for local use)
-uv run python -m tts_server serve --backend kokoro \
-    --socket-path ~/Library/Caches/pipecat-tts/tts.sock
+`serve` accepts `--backend`, optional `--model`, `--socket-path` or
+`--host`/`--port`, `--auth-token-file`, `--log-level`, and `--supervised`.
+Unix sockets are recommended for one ad-hoc local server; loopback TCP is useful
+for several backends and the macOS app.
 
-# pick a specific model (any compatible mlx-community Kokoro repo id)
+```sh
+# Explicit model on a Unix socket
 uv run python -m tts_server serve --backend kokoro \
     --model mlx-community/Kokoro-82M-bf16 \
     --socket-path ~/Library/Caches/pipecat-tts/tts.sock
 
-# loopback TCP instead of a socket (choose any free port)
-uv run python -m tts_server serve --backend kokoro --host 127.0.0.1 --port 8765
+# Loopback TCP
+uv run python -m tts_server serve --backend kokoro \
+    --host 127.0.0.1 --port 8765
 ```
 
 ### Per-backend port convention
 
-A single ad-hoc server uses the **Unix socket** quick-start above
-(`pipecat.tts-server` → `~/Library/Caches/pipecat-tts/tts.sock`) — that stays
-the default. Running several backends side by side as **launchd agents** uses one
-loopback **TCP port** per backend instead (one backend = one process = one
-port). The `just tts-*` recipes (install/uninstall/enable/disable/start/stop)
-and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
+The `just tts-*` recipes, plist renderer, tests, and macOS catalog share this
+canonical loopback map:
 
 | backend | label | port (on `127.0.0.1`) |
 |---|---|---|
@@ -166,587 +153,82 @@ and `scripts/install_tts_agent.sh` resolve each backend to this canonical map:
 | phonon | `pipecat.tts-server.phonon` | 9365 |
 
 ```sh
-# install + start the kokoro agent on 127.0.0.1:8765 (runs at login, KeepAlive)
 just tts-install kokoro
-just tts-list            # every pipecat.tts-server* agent + live backend probe
-just tts-status kokoro   # probe one backend's canonical host:port
+just tts-list
+just tts-status kokoro
 ```
 
-> `kokoro=8765` is assumed free and is **not** collision-checked — it matches
-> this repo's own kokoro examples. A launchd tts agent binds a loopback port, so
-> two installed agents never collide; the only risk is an ad-hoc process you run
-> by hand on the same port.
-
-> **launchd does not inherit your shell environment.** Server-runtime env you set
-> for an ad-hoc `serve` is *not* carried into an installed agent, so it is handled
-> explicitly at install time: `PIPECAT_TTS_KOKORO_EXTRA_LANGS` is baked into the
-> agent's plist, and **auth must use a token file** —
-> `PIPECAT_TTS_AUTH_TOKEN_FILE=/path/to/token just tts-install kokoro`. Running
-> `PIPECAT_TTS_AUTH_TOKEN=… just tts-install` is **rejected** (the secret must not
-> be written into a plaintext plist, and it would otherwise be silently dropped,
-> leaving the agent with auth disabled).
-
-The server logs the resolved backend + model at startup, *before* the
-(potentially slow) model load, so you can see what is being loaded. The rate is
-read from the loaded model, so model load completes before the first
-`server.hello` is sent.
-
-`--log-level` (default `INFO`) sets the server's logging verbosity (any standard
-Python level name, e.g. `DEBUG`/`WARNING`).
-
-On startup over a Unix socket, the server **auto-clears a stale socket** left by
-a previous crash (`SIGKILL` / power loss), so the documented restart works
-without manual `rm`. It refuses to start — surfacing a diagnostic instead of
-clobbering — if a **non-socket file** exists at the path, or if a **live server**
-is already listening there (the socket is genuinely in use).
-
-### Environment variables
-
-Endpoint precedence (server and client both): **URI > socket > host+port**. The
-`TTS_WS_*` vars mirror `STT_WS_*`.
-
-| Variable | Side | Purpose |
-|---|---|---|
-| `TTS_WS_URI` | client | Full `ws://`/`wss://` URI; highest endpoint precedence. |
-| `TTS_WS_SOCKET` | client | Unix-socket path (used when no URI). |
-| `TTS_WS_HOST` | client | TCP host (used when no URI/socket). |
-| `TTS_WS_PORT` | client | TCP port (paired with host). |
-| `TTS_WS_TOKEN` | client | Bearer token the client/probe sends. Never falls back to the server var. |
-| `TTS_WS_DEFAULT_SOCKET` | client | Explicit fallback socket for `status` when nothing else is set. |
-| `PIPECAT_TTS_AUTH_TOKEN` | server | Bearer token the server requires (optional auth). Unset or empty = no auth; a set-but-blank value or one that is not visible ASCII exits 1 at startup. |
-| `PIPECAT_TTS_KOKORO_EXTRA_LANGS` | server | Comma-separated ISO codes (e.g. `ja,zh`) to advertise after installing their extra G2P package. See [Kokoro language support](#kokoro-language-support-advertised--synthesizable). |
-| `PIPECAT_TTS_PHONON_VOICES` | server | Comma-separated Phonon catalog slugs (e.g. `zoey,juniper`) to advertise + download; `default` is always advertised. Unknown/unfetchable slugs are warned and skipped. Baked into the plist for the `phonon` backend only. |
-| `TTS_WS_PING_INTERVAL` | server | Keepalive ping period in seconds (default `20`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables pings. |
-| `TTS_WS_PING_TIMEOUT` | server | Seconds to wait for a pong before closing (default `120`). A disable token (`none`/`off`/`disable`/`disabled` or any zero) disables the timeout (keeps pings, never closes on a slow pong — reintroduces the idle-leak below). |
-| `HF_HOME` / `HF_HUB_CACHE` | server | Standard Hugging Face cache location, honoured by both `serve` and `prefetch` (default `~/.cache/huggingface/hub`). |
-
-Keepalive notes: the `websockets` library default (`ping_interval=20`,
-`ping_timeout=20`) closes a live connection with `1011 keepalive ping timeout`
-if a pong is late by 20s. During a heavy or cold-start generation, GIL-holding
-Metal compute can starve the asyncio loop past that window and truncate the
-in-flight utterance. So the server (and `TTSClient`) keep the periodic ping but
-use a **large finite pong timeout (120s) by default** — long enough that a
-briefly-starved loop never drops a live connection, yet bounded so a dead *idle*
-peer is still reaped within `interval + timeout` (~140s). (Disabling the timeout
-entirely with `none` would leak such peers: an idle session has no application
-send, so the per-send timeout can't catch it, and TCP only gives up after ~2h.)
-`TTSClient(ping_interval=…, ping_timeout=…)` exposes the same knobs so a starved
-*server* loop can't trip the *client's* keepalive either.
-
-Auth notes: the server reads `PIPECAT_TTS_AUTH_TOKEN`; the client/probe reads
-`TTS_WS_TOKEN` (the two are deliberately separate so a probe can never mask a
-client 401 or leak the server secret to a remote host). A plaintext
-`--auth-token` flag is intentionally unsupported (`ps` exposure) — use
-`--auth-token-file`. `serve` refuses a token file that is empty, holds anything but one
-visible-ASCII token, or is not UTF-8 (it would otherwise run with auth silently off) and exits 1;
-the installer also requires an owner-only regular file (no symlink) in directories owned by you or
-root that nobody else can write (group write only on root-owned ones). A token-less server bound to a non-loopback TCP address logs
-a cleartext-remote warning; a Unix socket does not. Sending a bearer over
-cleartext `ws://` to a remote host also warns client-side — use `wss://` or a
-Unix socket.
-
-## Checking server health
-
-```sh
-uv run python -m tts_server status \
-    --socket-path ~/Library/Caches/pipecat-tts/tts.sock
-```
-
-`status` connects, performs the handshake, requests a `server.status` snapshot,
-and prints the backend, model, audio format/rate, capabilities
-(streaming / binary_audio / voice_count), session id, synthesis **queue depth**,
-the **voice list**, buffered chars, uptime, and pid. It exits non-zero if no
-server is reachable.
-
-`status` resolves its endpoint with the same **URI > socket > host+port**
-precedence as the client and additionally accepts `--uri ws://…`/`wss://…` (the
-serve path has no `--uri`, since it builds its listener from socket-path/host+port).
-Two probe-only flags: `--timeout` (overall probe budget in seconds, default `3.0`)
-and `--json` (emit the raw `hello`+`status` JSON instead of the text summary).
-
-For day-to-day operation on macOS the [`justfile`](justfile) carries operator
-recipes mirroring the sibling stt server. Read-only probes: `just tts-list` lists every
-`pipecat.tts-server*` launchd agent with state, pid, and live backend, and
-`just tts-status` runs the wire `status` probe against the canonical socket by
-default; pass a backend name to probe its canonical port (`just tts-status
-kokoro`) or a socket path to probe a specific socket (`just tts-status
-/path/to/tts.sock`). Lifecycle recipes: `just tts-install <backend>`,
-`just tts-uninstall <backend>`, `just tts-enable <backend>`,
-`just tts-disable <backend>`, `just tts-start <backend>`, `just tts-restart <backend>`,
-`just tts-stop <backend>`, `just tts-logs <backend>` (all operator-manual; not CI-verified).
-
-## Prefetching models
-
-`serve` downloads weights inside the backend's startup, silently, before it binds.
-`prefetch` does the same Hugging Face downloads up front so the first start is
-fast, and `--check` answers "is it cached?" without touching the network:
-
-```sh
-uv run python -m tts_server prefetch --backend kokoro            # download
-uv run python -m tts_server prefetch --backend kokoro --check    # offline probe
-uv run python -m tts_server prefetch --backend phonon --model phonon-q8 --json
-```
-
-It fetches exactly what `serve` would: the model repo with mlx-audio's file
-patterns, plus dia's DAC codec repo, pocket_tts's predefined voice embeddings,
-and phonon's pinned revision and `PIPECAT_TTS_PHONON_VOICES` files. For the
-`phonon-q8`/`phonon-q4` aliases it also runs the one-time quantization. Weights go
-to the standard Hugging Face cache (`HF_HOME` / `HF_HUB_CACHE`), shared with
-`serve`. `--check` exits 0 whenever the probe ran; the answer is the `cached`
-field. It needs `huggingface_hub`, which every model extra installs.
-
-`--json` prints one JSON object per stdout line:
-
-| Event | Fields |
-|---|---|
-| `start` | `repo`, `revision`, `kind` (`model` / `codec` / `voice`) |
-| `progress` | `repo`, `downloaded_bytes`, `total_bytes`, `files_done`, `files_total`. `total_bytes` counts only files still downloading and grows as they are found. |
-| `done` | `repo`, `path`, `size_bytes` |
-| `convert` | `repo`, `bits`, `state` (`start` / `done`), `path` (phonon aliases only) |
-| `warning` | `repo`, `message` (an optional voice snapshot failed; serve skips it too) |
-| `complete` | `backend`, `model`, `cached`, `size_bytes` |
-| `check` | `repo`, `revision`, `kind`, `required`, `cached`, `path`, `size_bytes` (with `--check`) |
-| `summary` | `backend`, `model`, `cached`, `size_bytes`, plus `quantized` for phonon aliases (with `--check`) |
-| `error` | `code`, `message`, `repo`; exit status 1 |
-
-Prefetch does not cover Metal kernel warmup, which `serve` still runs before it
-reports ready.
-
-## Supervised mode
-
-`serve --supervised` is for a parent process that manages the server, such as the
-[macOS menu bar app](#macos-menu-bar-app). Logging on stderr is unchanged. In
-addition:
-
-- **stdout carries only JSON lines.** Once the listener is bound and the model is
-  warm, the server prints one
-  `{"event":"ready","backend","model","host","port","socket_path","rate","pid"}`
-  line. With `--port 0` the `port` field is the real port.
-- **A fatal error prints `{"event":"error","code","message","exc_type"}`** and
-  exits 1. Codes: `EADDRINUSE` (reported before the model loads), `EACCES`,
-  `SocketPathConflict`, `ModuleNotFoundError` (backend extra missing),
-  `ModelDownloadError`, `ConfigError`, `BackendStartError`.
-- **stdin EOF stops the server** exactly like SIGTERM. The parent keeps a pipe
-  open and the server exits when the parent closes it or dies. If that happens
-  during the model load, the process exits at once; interrupted downloads resume.
-
-```sh
-# stdin is the subshell's pipe: it closes after 5 s, so the server exits then.
-( sleep 5 ) | uv run python -m tts_server serve --backend tone \
-    --host 127.0.0.1 --port 0 --supervised
-```
-
-Skip any stdout line that does not parse as JSON: native code writing straight to
-file descriptor 1 can bypass the redirect.
+The detailed lifecycle, endpoint precedence, environment variables, security
+rules and troubleshooting notes live in
+[Server operations](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md).
 
 ## Protocol
 
-The full wire contract is in [`docs/protocol.md`](docs/protocol.md). In brief:
-every message is a JSON text frame with a `type` field. The client drives the
-session — `session.update` → `input_text.append`* → `input_text.commit` — and
-the server streams `response.audio.delta` frames (base64 pcm16, `seq` from 0, no
-gaps) ending in `response.audio.done`. `response.cancel` is barge-in. Audio is
-base64-in-JSON for v1 (`binary_audio: false`); binary frames are a later
-optimization.
+The client drives `session.update` → `input_text.append`* →
+`input_text.commit`. The server emits gapless `response.audio.delta` frames and
+finishes with `response.audio.done`; `response.cancel` provides barge-in.
+The commit is the unit of work, and clients must consult advertised backend
+capabilities before selecting languages, voices, extras, or chunk sizes.
 
-**The client segments the text; the commit is the unit of work.** Using
-`capabilities.streaming` and `capabilities.ideal_words`, the client splits long
-text into commits, rounding `ideal_words` up to the next **sentence boundary**
-— never splitting mid-sentence (a half-sentence commit makes the model apply
-sentence-final prosody mid-phrase). `max_text_chars` is the hard server cap.
-
-### Backends & licenses
-
-Each backend is its own extra; weights have their own licenses — **the package
-ships only runtime code, never weights** (they download on first `serve`).
-Operators are responsible for honouring each model's license.
-
-| Backend | Extra | `streaming` | Model | Weights license |
-|---|---|---|---|---|
-| `tone` | (base) | `false` | none (synthetic sine) | — |
-| `kokoro` | `kokoro` | `false` | mlx-community/Kokoro-82M-bf16 | Apache-2.0 (commercial-safe) |
-| `voxtral_tts` | `voxtral_tts` | `true` | mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 | **CC-BY-NC (non-commercial)** |
-| `pocket_tts` | `pocket_tts` | `true` | mlx-community/pocket-tts | CC-BY-4.0 (commercial OK w/ attribution) |
-| `dia` | `dia` | `false` | mlx-community/Dia-1.6B-fp16 | Apache-2.0 (commercial-safe) |
-| `qwen3_tts` | `qwen3_tts` | `true` | mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 | apache-2.0 (HF card tag; no LICENSE file in the repo) |
-| `fish_tts` | `fish_tts` | `false` | mlx-community/fish-audio-s2-pro | **Fish Audio Research License (non-commercial; commercial requires separate agreement)** |
-| `phonon` | `phonon` | `true` | gradium/phonon-31m-en | Apache-2.0 (weights, tokenizer and voices; commercial use allowed) |
-
-> **Kokoro is the default commercial-safe backend.** `voxtral_tts` weights are
-> **CC-BY-NC** — do not use them in a commercial deployment. `pocket_tts`
-> (CC-BY-4.0), `dia` (Apache-2.0), and Kokoro (Apache-2.0) are commercial-safe
-> (pocket needs attribution). The choice of backend (and thus of model license)
-> is the operator's. `fish_tts` is the **second** backend under restrictive
-> terms (`voxtral_tts`'s CC-BY-NC being the first) and the first under a
-> *research-only* license: free for research and non-commercial use, royalty-
-> free, worldwide, non-exclusive, non-transferable, non-sublicensable, and
-> revocable — **no commercial rights are granted** without a separate written
-> license agreement from Fish Audio (contact: `business@fish.audio`). See
-> *fish_tts capabilities* below.
-
-> **Phonon**: the model card for `gradium/phonon-31m-en` states the weights,
-> tokenizer and voices are released under Apache-2.0, which allows commercial
-> use. The larger `gradium/phonon-40m-*` siblings are **CC-BY-NC-4.0 and gated**
-> (their Hugging Face card metadata as of 2026-10-21, recorded in the Phonon dev plan's
-> Phase 0 findings; re-check the cards before relying on it); they are not supported
-> here (the backend targets the 31M English model only).
-
-### Phonon capabilities and voice selection
-
-`phonon` is `streaming:true`, 24 kHz, `languages: ["en"]`, `max_text_chars: 2000`,
-with `default` (the model's own shipped voice) always advertised; `voice_count` is
-`default` plus the enabled voices that resolved (1 when `PIPECAT_TTS_PHONON_VOICES` is
-unset). Latency/RTF: see the Phonon section of `scripts/profiling/README.md`.
-
-**Keep sentences short.** mlx-audio generates per sentence and never splits inside
-one, and the model ends a sentence chunk at about 45 s of audio. Rather than return a
-clipped response as a clean completion, the server fails it: a run-on sentence of ~200+
-words ends in `response.failed` (`BACKEND_ERROR`, with the generic client message
-"backend synthesis failed"; the "a sentence chunk hit the model's ~45 s limit" detail is
-in the server log only), after the first ~45 s of audio has already streamed. Measured 2026-10-22 on the
-full-precision weights (default voice), one-sentence run-ons of 100 / 160 / 200 / 400 words
-returned 24.8 / 36.6 / 45.1 / 45.1 s of audio, so roughly 160 words fit (approximate; it
-depends on the words). Punctuated text is unaffected: in the Phase 0 gate
-(`tests/smoke/phonon_phase0_gate.py`, recorded in the Phonon dev plan's findings) a
-2008-character, 376-word commit returned the full 112.4 s.
-`max_text_chars` does not guard this, so chunk text at sentence boundaries. The guard is
-on only for the pinned model revision (the default repo id and the `phonon` / `phonon-q8` /
-`phonon-q4` aliases). It starts OFF, with a warning, for an unpinned `--model` (another
-repo id or a local path), for a pinned repo or revision without a measured ceiling, and
-when the installed mlx-audio lacks the chunk method; the ~45 s ceiling was measured only
-on the pinned weights, so such a model can still return a clipped sentence as a clean
-completion.
-
-**Quantized weights.** `--model` also accepts three aliases: `phonon` (the pinned
-`gradium/phonon-31m-en`, full precision, same as the default), `phonon-q8` and
-`phonon-q4`. The quantized aliases convert the same pinned snapshot once (about a
-second) and load the result. This lowers memory, disk and load time only; TTFB and RTF
-are unchanged. The quality of `phonon-q4` has not been judged by ear; full precision
-stays the default. The converted weights are cached under
-`$XDG_CACHE_HOME/pipecat-tts-server/phonon/` (default `~/.cache/...`), keyed by pin,
-bit width and mlx-audio version, so a pin or mlx-audio change re-converts. A convert
-killed mid-run (`kill -9`, power loss) strands a `.<name>.tmp-<pid>-<tid>` sibling
-directory; the next start of a quantized alias removes such directories once they are
-more than ten minutes old. The server reports the alias you passed as its `model`.
-
-```sh
-uv run python -m tts_server serve --backend phonon --model phonon-q8
-```
-
-Extra voices are chosen **ahead of time by the operator** with the server env var
-`PIPECAT_TTS_PHONON_VOICES` (comma-separated catalog slugs, e.g.
-`zoey,juniper`; no CLI flag). Only listed voices are downloaded (one file
-each) and advertised; an unknown or unfetchable slug is warned about and skipped,
-and a client asking for a skipped voice gets `invalid_config`. A resolved voice file
-must be an absolute, existing `.safetensors` path (no `@`) or it is skipped the same
-way. For a launchd agent,
-export it when running `just tts-install phonon` (it is validated and baked into
-the plist). The catalog is 102 voices (en/fr/de/es/pt; the model is English, so
-non-English voices log a warning):
-
-```sh
-uv run python -m tts_server voices                  # slug, lang, enabled, cached (? = unknown, no huggingface_hub)
-uv run python -m tts_server voices --language en
-uv run python -m tts_server voices --refresh        # diff live voices.jsonl (added/removed/changed, duplicate/invalid slugs); changes nothing
-PIPECAT_TTS_PHONON_VOICES=zoey,juniper just smoke-phonon
-```
-
-### Voxtral TTS capabilities (as shipped)
-
-> Capability/latency figures in the per-backend sections below were measured on
-> mlx-audio 0.4.4; the pin is now 0.6.1 and an A/B re-run showed no steady-state
-> TTFB/RTF change (see `scripts/profiling/README.md`).
-
-`streaming:true` sub-segment streamer (native `stream`/`streaming_interval`,
-locked to 0.3 s — measured TTFB 0.395 s, see the dev-plan Findings). Verified
-against mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 (mlx-audio 0.4.4):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **24000** | from `server.hello.audio.rate`, read from `model.sample_rate` |
-| `streaming` | `true` | genuine sub-segment streaming; client MAY pass larger text |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | ssml/ipa not supported |
-| `languages` | `["en","fr","es","de","it","pt","nl","ar","hi"]` | from the 20 voice presets; language is selected by the voice preset (no `lang_code` kwarg) |
-| `voice_count` | `20` | full list via `status` (e.g. `casual_male`, `fr_female`) |
-| `extras` | `["temperature","top_k","top_p"]` | Voxtral's effective sampling kwargs (`ref_audio` is absent → no cloning; `streaming_interval` is backend config, not advertised) |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | `2000` | hard server cap |
-
-### Pocket TTS capabilities (as shipped)
-
-`streaming:true` sub-segment streamer and **fast** (RTF ≈ 0.05–0.13× on-host).
-The voice-cloning channel (`ref_audio`) and undocumented `frames_after_eos` are
-**deliberately unwired** (decision #2 — no cloning in v1). Verified against
-mlx-community/pocket-tts (mlx-audio 0.4.4):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **24000** | from `server.hello.audio.rate`, read from `model.sample_rate` |
-| `streaming` | `true` | genuine sub-segment streaming |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | ssml/ipa not supported |
-| `languages` | `["en"]` | English verified on-host (Pocket has no `lang_code` kwarg) |
-| `voice_count` | `8` | `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma` (via `status`) |
-| `extras` | `["temperature"]` | Pocket's only effective sampling kwarg (`ref_audio`/`frames_after_eos` never advertised; `streaming_interval` is backend config) |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | `2000` | hard server cap |
-
-### dia capabilities (as shipped)
-
-A multi-speaker **dialogue** backend, `streaming:false` and segment-level
-(`split_pattern='\n'`, like Kokoro). Speakers are addressed **purely in-text** via
-`[S1]`/`[S2]` tags inside an ordinary `plain` payload — the server forwards the
-buffer untouched and never parses the tags. There is **no voice concept**
-(`voice_count: 0`): a supplied `voice` is accepted by the server and structurally
-ignored by the backend. No voice cloning (`ref_audio`/`ref_text` left unwired,
-decision #2). Verified against mlx-community/Dia-1.6B-fp16 (mlx-audio 0.4.4):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **44100** | from `server.hello.audio.rate`, read from `model.sample_rate` (NOT 24000) |
-| `streaming` | `false` | no sub-segment streaming; each `\n`-separated turn streams as it completes |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | dialogue `[S1]`/`[S2]` tags ride **inside** plain text (undocumented on the wire — see `docs/protocol.md` §6, Option A/B) |
-| `languages` | `["en"]` | English verified on-host |
-| `voice_count` | `0` | no enumerable voices; speakers are in-text `[S1]`/`[S2]` tags |
-| `extras` | `["temperature","top_p"]` | dia's effective sampling kwargs (`ref_audio`/`ref_text` never advertised — no cloning) |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | `2000` | hard server cap |
-
-> **A commit is the unit of coherence.** dia is autoregressive *within* a single
-> commit (every turn conditions on the others) but **stateless across commits**
-> (context resets at the boundary). Committing the whole dialogue at once maximises
-> cross-turn coherence; incremental commits lower latency at the cost of a coherence
-> reset per commit (both are supported). Never split a single `[S1]…` turn across
-> two commits. See the dev plan's *Resolved design decisions* #3.
-
-### dia cancellation caveat
-
-dia (like Kokoro) yields one segment per `\n` boundary and the cancel flag is
-only checked at a segment boundary. The **client-visible** cancel is prompt
-regardless: a `response.cancel` is acknowledged with `response.cancelled` in
-~1 ms and no audio follows it. What runs to the segment boundary is the backend
-worker / Metal lock: because dia decodes at **RTF ≈ 2.0** (≈ 2× slower than real
-time — a model floor, not server overhead), a **long single-segment** commit
-holds the lock until its `generate()` reaches the yield (which can be tens of
-seconds for a full turn, bounded by `drain_timeout_seconds`), so the *next*
-commit can't start synthesizing until then. To free the lock sooner for
-back-to-back commits, **chunk at sentence/newline boundaries** — incremental
-commits also shorten the first-segment generate that dominates TTFB. The
-server's hard guarantee is "no more audio after `response.cancelled`". (See
-`scripts/profiling/README.md` for the measured RTF / per-segment latency.)
-
-### Qwen3-TTS capabilities (as shipped)
-
-A genuine sub-segment streamer (native `stream=True`, ~0.4 s of audio per chunk).
-The default model is the **CustomVoice** variant, which REQUIRES a speaker: when
-the client sends no `voice`, the backend injects **`ryan`**. The `Base` variant
-(`--model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`) has no speakers
-(`voice_count: 0`); any supplied `voice` is accepted by the server and discarded
-by the backend (speaker-unconditioned output, dia-style). No voice cloning or
-`instruct` styling (never wired). Verified against
-mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 (mlx-audio 0.4.4):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **24000** | from `server.hello.audio.rate`, read from `model.sample_rate` |
-| `streaming` | `true` | native sub-segment streaming (~5 codec tokens ≈ 0.4 s per chunk; TTFB ~0.13 s) |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | |
-| `languages` | dynamic | model-native FULL-WORD codes (`"english"`, `"chinese"`, …, plus `"auto"`) — NOT ISO 639-1; consult `capabilities.languages` before sending `language` |
-| `voice_count` | `9` | CustomVoice speakers, all-lowercase (`ryan`, `aiden`, `serena`, …); `0` on Base |
-| `extras` | `["temperature","top_k","top_p"]` | cloning/style/control kwargs are actively filtered, never advertised |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | **`800`** | hard server cap — LOWER than the siblings' 2000 (see below) |
-
-> **A whole commit renders as ONE generation** — `generate_custom_voice()` has no
-> `\n` splitting, and mlx-audio's `max_tokens=4096` single-generation ceiling
-> (≈328 s of audio) truncates SILENTLY when hit. Degenerate/repetitive text can
-> pace as badly as ~0.19 s of audio per character, so the 800-char cap keeps the
-> worst case at ~2x margin under the ceiling; the backend also counts codec
-> tokens per generation segment and, if the ceiling is ever reached, FAILS the
-> response (`response.failed` with `BACKEND_ERROR`) rather than completing with
-> silently missing audio. Commit shorter chunks for long content.
-
-### fish_tts capabilities (as shipped)
-
-A `streaming:false`, segment-level backend (mirrors the `dia` template —
-`generate(stream=True)` raises `NotImplementedError` upstream, so every commit's
-batches drain through the same non-streaming bridge). There is **no voice
-concept** (`voice_count: 0`): Fish's `generate()` deletes its `voice` parameter
-unconditionally, so a supplied `voice` is accepted by the server and structurally
-discarded by the backend — even more absolute than `dia`'s discard, since Fish
-never even inspects the value. No voice cloning (`ref_audio`/`ref_text` left
-unwired, decision #2 — the **"Option A accepted cost"**: the WS protocol has no
-reference-audio transport, so this is out of scope, not merely unwired by
-convenience). Verified against mlx-community/fish-audio-s2-pro (mlx-audio 0.4.4,
-Phase 0 gate):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **44100** | from `server.hello.audio.rate`, read from `model.sample_rate` (NOT 24000, matches `dia`) |
-| `streaming` | `false` | segment-level; one `GenerationResult` per text batch |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | `<|speaker:N|>` and `[tag]` markup ride **inside** plain text (undocumented on the wire — see `docs/protocol.md` §6, Option A/B) |
-| `languages` | 38-language static list (`en`, `zh`, `ja`, `ko`, `es`, …) | from the upstream model card (Phase 0 Q6); no `language` kwarg exists in `generate()`'s signature |
-| `voice_count` | `0` | no enumerable voices; speakers (if any) are addressed via in-text `<|speaker:N|>` tags |
-| `extras` | `["temperature","top_k","top_p","instruct"]` | fish's effective sampling kwargs, plus `instruct` — the first backend to advertise a string-typed style-control extra (`ref_audio`/`ref_text` never advertised — no cloning) |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | **`500`** | hard server cap — well below kokoro/voxtral_tts/pocket_tts/dia's 2000 (qwen3_tts is lower still, at 800); derived from Phase 0's per-batch token-ceiling calibration, not from license class — a truncation tripwire (`FishTruncationError` → `response.failed`/`BACKEND_ERROR`) also guards the real per-batch token ceiling (see the dev plan Findings for the calibration) |
-
-**Multi-speaker tag syntax — `<|speaker:N|>` — is NOT `dia`'s `[S1]`/`[S2]`
-syntax.** A caller must pick the right dialect for the backend it targets; the
-server cannot disambiguate or reject a wrong-dialect tag (same "Option A
-accepted cost" as `dia` — e.g. a fish `<|speaker:1|>` tag sent to Kokoro would be
-read aloud literally, not interpreted). Example:
-
-```text
-<|speaker:0|>Hello, how are you today?
-<|speaker:1|>I'm doing well, thanks for asking!
-```
-
-**Mixed-input rejection:** untagged prose preceding the *first* `<|speaker:N|>` tag
-would otherwise be silently dropped by the model's own text-splitting logic. The
-server rejects it at commit time instead, with `error {code: "invalid_config"}` —
-don't mix an untagged lead-in with tagged turns in the same commit; the commit
-will fail with a clear error rather than silently losing the lead-in.
-
-**Cross-batch context sharing:** consecutive `<|speaker:N|>`-tagged turns within
-one committed utterance share generation context — each batch's prompt includes
-the previous batch's audio codes, so a caller composing multi-turn tagged text
-should expect that context-sharing, not independent per-turn generation
-(Phase 0 gate Q1, confirmed on this machine).
-
-**Inline `[tag]` emotion/expression markup** is free-form bracketed text,
-accepted anywhere in the payload without server-side validation. The example
-vocabulary below is the same 34 example tags from the installed mlx-audio
-package's `fish_qwen3_omni/README.md` ("Fine-Grained Inline Control" section,
-regrouped thematically here rather than kept in upstream's original order) — the source
-itself frames these as *"Examples include"* free-form textual descriptions for
-open-ended expression control, i.e. the mechanism is open-ended and other
-bracketed descriptions may also work, untested:
-
-`[pause]` `[short pause]` `[emphasis]` `[laughing]` `[laughing tone]`
-`[chuckle]` `[chuckling]` `[tsk]` `[singing]` `[excited]` `[excited tone]`
-`[interrupting]` `[volume up]` `[volume down]` `[loud]` `[low volume]`
-`[low voice]` `[echo]` `[angry]` `[sigh]` `[whisper]` `[screaming]`
-`[shouting]` `[surprised]` `[shocked]` `[delight]` `[sad]` `[moaning]`
-`[exhale]` `[inhale]` `[panting]` `[audience laughter]` `[with strong accent]`
-`[clearing throat]`
-
-For the authoritative, potentially-more-current reference (Fish Audio may add
-more tags upstream), see the
-[`mlx-community/fish-audio-s2-pro` model card](https://huggingface.co/mlx-community/fish-audio-s2-pro)
-and Fish Audio's own S2 Pro documentation. As with `dia`'s `[S1]`/`[S2]` tags,
-these are plain substrings the server never parses (**"Option A accepted
-cost"**): a fish-dialect tag sent to a non-fish backend is read aloud literally,
-not interpreted.
-
-**`instruct` is a separate style-control surface**, not an in-text tag — it is
-a plain string request extra (see the `extras` table row above), validated to
-be a non-oversized `str`; an oversized or non-`str` `instruct` is **rejected**,
-never silently clamped or truncated (unlike `temperature`/`top_p`/`top_k`,
-where any in-range value is still a valid sample knob — a truncated
-instruction would silently change what the model is told to do). An
-empty-or-whitespace-only `instruct` is **valid**, not rejected — it is
-silently coerced to `None` and omitted from the forwarded extras, the same
-"unset extra" convention as leaving `instruct` out entirely. **The precedence
-between `instruct` and an in-text
-`[tag]` when they conflict is undefined and model-determined** — the server
-performs no arbitration and forwards both unmodified apart from
-whitespace-stripping of `instruct`; this is untested, do not assume one
-overrides the other without observing actual model output.
-
-### Kokoro capabilities (as shipped)
-
-Built per-backend (`server.hello.capabilities`). Verified against
-mlx-community/Kokoro-82M-bf16 (mlx-audio 0.4.4):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **24000** | from `server.hello.audio.rate`, not capabilities |
-| `streaming` | `false` | no sub-segment streaming; segments still stream per `\n+` |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | ssml/ipa not supported |
-| `languages` | `["en","es","fr","hi","it","pt"]` | from voice prefixes, minus languages needing extra G2P — **`ja`/`zh` are off by default** (opt-in, see below) |
-| `voice_count` | `54` | full list via `status` |
-| `extras` | `["speed"]` | Kokoro's only effective `generate()` kwarg |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | `2000` | hard server cap |
-
-### Kokoro language support (advertised = synthesizable)
-
-The advertised `languages` list reflects what this deployment can actually
-synthesize, not just what voices the model ships. The default `kokoro` extra
-pins `misaki[en]` only; verified live against mlx-community/Kokoro-82M-bf16:
-
-- **`en`** uses misaki[en]; **`es`/`fr`/`it`/`pt`/`hi`** route through the
-  espeak-ng G2P bundled with misaki[en] — all synthesize fine and are advertised.
-  (`hi`'s first call loads its G2P lazily and can exceed a 60 s client timeout.)
-- **`ja` and `zh` need an extra G2P package** — `misaki[ja]` (`pyopenjtalk`) and
-  `misaki[zh]` (`ordered_set`) respectively, which the `kokoro` extra does not
-  install. Because synthesis would fail at runtime (`response.failed`,
-  `code=backend_error`) without them, **they are not advertised by default** and
-  a request for them is rejected up front with `invalid_config` (before a
-  synthesis slot is consumed) rather than failing mid-response.
-
-**Enabling `ja` / `zh`** is a two-step, build-time decision:
-
-1. Install the G2P package(s):
-   `uv pip install "misaki[ja]" "misaki[zh]"`
-2. Opt the language(s) back into the advertised set:
-   `export PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh`
-
-The server logs its advertised language set at startup (including a reminder of
-any languages left disabled). The opt-in only *re-adds* a language the model
-already ships voices for; it cannot advertise one the model lacks. If you set the
-env var without installing the package, that language is advertised again and
-will fail at synthesis — install first.
-
-See [`tests/smoke/`](tests/smoke/) for the live end-to-end smoke scripts that
-verify this (`just smoke-tone` / `just smoke-kokoro` / `just smoke-multilingual`).
-
-### Kokoro cancellation caveat
-
-Kokoro yields one segment per `\n+` boundary and the cancel flag is only checked
-at a segment boundary. The **client-visible** cancel is prompt regardless: a
-`response.cancel` is acknowledged with `response.cancelled` in ~1 ms (measured on
-Apple Silicon), and no audio follows it. What runs to the segment boundary is the
-backend worker / Metal lock: a **long single-segment** commit keeps the lock
-until its `generate()` reaches the yield (≈ the full single-segment synthesis
-time — a few seconds for a ~1700-char segment, bounded by `drain_timeout_seconds`),
-so the *next* commit can't start synthesizing until then. To free the lock sooner
-for back-to-back commits, **clients should chunk at sentence/newline boundaries**
-for Kokoro. The server's hard guarantee is "no more audio after
-`response.cancelled`". (See the dev plan's *Phase 2 measured results* for the full
-re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifact.)
+See the complete
+[WebSocket protocol](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/protocol.md).
 
 ## Examples
 
-- [`examples/reference_client.py`](examples/reference_client.py) — a lightweight
-  stdlib + `websockets` oracle (no `tts_server` install, no Pipecat). It speaks
-  the wire protocol directly and writes the reassembled audio to a WAV. Useful
-  for manual end-to-end smoke checks once a server is running.
-- [`examples/pipecat_tts_service.py`](examples/pipecat_tts_service.py) — a
-  reference Pipecat-framework `TTSService` adapter (`LocalTTSService`) that wraps
-  the async `tts_server.client.TTSClient` so a bot pipeline can speak through a
-  running server. Streams `TTSAudioRawFrame`s at the server-advertised rate and
-  sends `response.cancel` on interruption. A commit rejected with `busy` is re-sent
-  after the server's `retry_after_ms` (at most `busy_retries=3` times within
-  `busy_retry_budget_s=3.0` s of waiting); `busy_retries=0` drops the utterance on the
-  first `busy`. Requires the Pipecat framework
-  (`uv sync --extra examples`, which pins `pipecat-ai==1.4.0`).
+- [`examples/reference_client.py`](https://github.com/vr000m/pipecat-local-tts-server/blob/main/examples/reference_client.py)
+  is a lightweight wire-protocol oracle that writes the received PCM to WAV.
+- [`examples/pipecat_tts_service.py`](https://github.com/vr000m/pipecat-local-tts-server/blob/main/examples/pipecat_tts_service.py)
+  provides `LocalTTSService`, a Pipecat `TTSService` adapter with interruption
+  and bounded busy-retry handling. Install it with `uv sync --extra examples`.
 
-## Layout
+## Documentation
 
-- `tts_server/` — protocol, backend abstraction, server, async client, CLI.
-- `tts_server/backends/` — lazy-imported per-model backends (Kokoro first).
-- `examples/` — the stdlib oracle and the Pipecat service adapter.
-- `tts_server/supervise.py` / `tts_server/prefetch.py` — the `serve --supervised`
-  JSON channel and the `prefetch` subcommand.
-- `justfile` — macOS operator recipes (`tts-list`, `tts-status`, …) and the menu
-  bar app's `app-build` / `app-open` / `app-install` / `app-run` / `app-test`.
-- `macos/` — Pipecat Service Toolbar, the native menu bar app (see `macos/README.md`).
-- `docs/protocol.md` — the wire protocol specification.
-- `docs/dev_plans/` — development plans.
+- [Documentation index](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/README.md)
+- [Backends](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
+- [Server operations](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md)
+- [WebSocket protocol](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/protocol.md)
+- [macOS app](https://github.com/vr000m/pipecat-local-tts-server/blob/main/macos/README.md)
+- [Profiling](https://github.com/vr000m/pipecat-local-tts-server/blob/main/scripts/profiling/README.md)
+- [Live smoke tests](https://github.com/vr000m/pipecat-local-tts-server/blob/main/tests/smoke/README.md)
+
+## Moved reference sections
+
+These compatibility anchors keep older README fragments useful without
+duplicating their detailed content.
+
+<a id="environment-variables"></a>
+<a id="checking-server-health"></a>
+<a id="prefetching-models"></a>
+<a id="supervised-mode"></a>
+
+- [Environment variables, health checks, prefetch and supervised mode](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md)
+
+<a id="phonon-capabilities-and-voice-selection"></a>
+<a id="voxtral-tts-capabilities-as-shipped"></a>
+<a id="pocket-tts-capabilities-as-shipped"></a>
+<a id="dia-capabilities-as-shipped"></a>
+<a id="dia-cancellation-caveat"></a>
+<a id="qwen3-tts-capabilities-as-shipped"></a>
+<a id="fish_tts-capabilities-as-shipped"></a>
+<a id="kokoro-capabilities-as-shipped"></a>
+<a id="kokoro-language-support-advertised--synthesizable"></a>
+<a id="kokoro-cancellation-caveat"></a>
+
+- [Backend capabilities, languages, controls, limits and cancellation](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
+
+<a id="layout"></a>
+
+- [Repository documentation and development records](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/README.md)
+
+## Development
+
+```sh
+uv sync --all-extras
+uv run ruff format .
+uv run ruff check .
+uv run pytest
+```
+
+Model synthesis smoke tests require Apple Silicon and downloaded weights. The
+full test and CI layout is described in `AGENTS.md`; live scripts always use
+isolated temporary sockets and never touch the canonical operator socket.

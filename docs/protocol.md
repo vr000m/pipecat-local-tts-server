@@ -160,42 +160,19 @@ holding the lock for the duration of one commit.
 
 ## 6. `capabilities` (in `server.hello`)
 
-Built **per backend** — never copied across backends. **Shipped backends:** `kokoro`
-(`streaming:false`, Apache-2.0), `voxtral_tts` (`streaming:true`, CC-BY-NC weights),
-`pocket_tts` (`streaming:true`, CC-BY-4.0 weights), `dia` (`streaming:false`,
-multi-speaker **dialogue**, `voice_count:0`, Apache-2.0 weights), `qwen3_tts`
-(`streaming:true`, apache-2.0 card tag, 9 named voices on the default CustomVoice
-model / `voice_count:0` on the Base variant, full-word language codes — see README →
-*Backends & licenses* and *Qwen3-TTS capabilities*), `fish_tts` (`streaming:false`,
-`voice_count:0`, Fish Audio Research License — non-commercial; commercial use
-requires a separate agreement — see README → *Backends & licenses* and *fish_tts
-capabilities*), `phonon` (`streaming:true`, 24 kHz, English only, `default` plus
-operator-enabled voices via `PIPECAT_TTS_PHONON_VOICES` so `voice_count` is
-1 + the enabled voices that resolved (unknown/unfetchable slugs are skipped); Apache-2.0 31M weights — see README → *Backends & licenses* and
-*Phonon capabilities and voice selection*), and the dependency-free `tone` reference. Kokoro example
-(fields VERIFIED via `scripts/verify_mlx_tts_api.py --load`, 2026-06-24, mlx-audio 0.4.4):
-
-```jsonc
-{
-  "streaming": false,            // no sub-segment streaming (segment-level still streams)
-  "binary_audio": false,         // base64-in-JSON for v1
-  "text_formats": ["plain"],     // ssml/ipa not yet supported for Kokoro
-  "languages": ["en","es","fr","hi","it","pt"],  // synthesizable set; ja/zh off by default (need extra G2P — opt in via PIPECAT_TTS_KOKORO_EXTRA_LANGS)
-  "voice_count": 54,             // VERIFIED (mlx-community/Kokoro-82M-bf16)
-  "extras": ["speed"],           // Kokoro's effective generate() kwargs ONLY
-  "ideal_words": 40,             // soft target; client rounds UP to a sentence boundary (chosen default)
-  "max_text_chars": 2000         // hard server cap (chosen default)
-}
-```
+Built **per backend** — never copied across backends. Clients MUST use the
+values in the connected server's `server.hello`, not a hard-coded backend
+inventory. The current model, license, language, voice, extras and limit matrix
+lives in the [backend guide](backends.md).
 
 | Field | Type | Meaning |
 |---|---|---|
 | `streaming` | bool | `true` ⇒ the backend streams sub-segment audio; client MAY send larger commits. `false` ⇒ client SHOULD chunk at sentences (else slow generation *and* no audio until the segment finishes). Either way the server emits each native segment as it completes. |
 | `binary_audio` | bool | `false` for v1 (audio is base64-in-JSON). |
-| `text_formats` | string[] | Accepted `text_format` values. Only `"plain"` for Kokoro v1. |
-| `languages` | string[] | The backend's **advertised language codes** — a backend-native vocabulary, NOT a normalized ISO namespace. `kokoro`/`voxtral_tts`/`pocket_tts`/`phonon` advertise ISO 639-1 codes (`"en"`, `"fr"`, …; the backend maps ISO → its own code, e.g. Kokoro `lang_code`), while `qwen3_tts` advertises the model's full-word codes (`"english"`, `"chinese"`, …, plus `"auto"`) and forwards them as `lang_code`. Clients MUST consult this list before sending `language` — a value outside it (e.g. `"en"` to `qwen3_tts`) is rejected with `invalid_config`; the server validates before synthesis and does **not** silently coerce to a default. `fish_tts` is a special case: it advertises 38 ISO 639-1-style codes (from the upstream model card) but `generate()` has no `language` parameter at all (Phase 0 gate-verified) — the list is informational only, `open_stream(language=…)` is accepted and unconditionally discarded, never forwarded. |
-| `voice_count` | int | Number of distinct voices. Full list via `server.status`. `0` ⇒ the backend has **no voice concept** (e.g. `dia`, whose speakers are addressed in-text); the server then **accepts** a supplied `voice` rather than rejecting it, and the backend ignores it. |
-| `extras` | string[] | Names of `generate()` kwargs the backend forwards. **Per-backend, real-and-effective only** (a kwarg the model ignores is dropped, never advertised). Kokoro→`["speed"]`; voxtral_tts→`["temperature","top_k","top_p"]`; pocket_tts→`["temperature"]`; phonon→`["temperature"]`; dia→`["temperature","top_p"]`; qwen3_tts→`["temperature","top_k","top_p"]`; fish_tts→`["temperature","top_k","top_p","instruct"]`. `ref_audio`/`ref_text` are **never** advertised by any backend (no voice cloning in v1); `instruct` is advertised only by `fish_tts` (no other backend offers style control — `fish_tts`'s `instruct` is a plain string, rejected outright if non-`str` or oversized rather than clamped/truncated, see README → *fish_tts capabilities*). |
+| `text_formats` | string[] | Accepted `text_format` values. v0.1 uses `"plain"`; dialect text can still ride inside it as described below. |
+| `languages` | string[] | The backend's **advertised language vocabulary**, which is not normalized across models. Clients MUST consult this list before sending `language`; unsupported values are rejected with `invalid_config`, never silently coerced. Some backends advertise informational languages while ignoring the request value; the [backend guide](backends.md) identifies those cases. |
+| `voice_count` | int | Number of distinct voices; retrieve their names with `server.status`. `0` means the backend has no enumerable voice concept, so a supplied `voice` is accepted and ignored. |
+| `extras` | string[] | Names of real, effective generation parameters the backend forwards. A parameter the model ignores is not advertised. `ref_audio` and `ref_text` are absent because v0.1 has no voice-cloning transport. Consult the [backend guide](backends.md) for the current per-backend lists and value constraints. |
 | `ideal_words` | int | Soft per-commit size hint; client rounds **up to the next sentence boundary**. Not a hard limit. |
 | `max_text_chars` | int | Hard cap on buffered text per commit; over-limit → error. |
 
@@ -222,9 +199,9 @@ in-text tag dialect, riding purely as ordinary substrings the server never parse
     independent per-turn generation — confirmed in the Phase-0 gate (dev plan
     `docs/dev_plans/20260804-feature-tts-fish-s2pro-backend.md` → Findings, Q1).
   - **`[tag]` inline emotion/expression markup** (e.g. `[whisper]`, `[laughing]`,
-    `[excited]`) is free-form bracketed text accepted anywhere in the payload — see
-    README → *fish_tts capabilities* for the example vocabulary and upstream
-    reference.
+    `[excited]`) is free-form bracketed text accepted anywhere in the payload.
+    See [fish_tts capabilities](backends.md#fish_tts-capabilities-as-shipped) for
+    example vocabulary and the upstream reference.
   - `fish_tts` also advertises a separate, non-in-text style-control surface:
     `instruct`, a plain string extra (`extras` table above). The precedence between
     `instruct` and an in-text `[tag]` when they conflict is **undefined and
