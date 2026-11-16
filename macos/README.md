@@ -169,7 +169,8 @@ for running both.
   Face cache, so a command-line or launchd server using the same model
   downloads them again after a delete. Moonshine's weights are not in that
   cache (`~/Library/Caches/moonshine_voice`): deleting Moonshine removes its
-  environment only, and the dialogs say its model files stay.
+  environment only, the dialogs say its model files stay, and the detail page
+  offers a single **Delete** instead of Keep Model Files or Delete Everything.
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
   microphone) and see whether the transcript matches its sentence. An External

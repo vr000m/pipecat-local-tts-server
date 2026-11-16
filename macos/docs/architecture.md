@@ -94,7 +94,9 @@ Installing a
 second variant downloads only its weights. Installs and removals on one family
 are serialized. Deleting a variant keeps the files an installed sibling still
 uses (Phonon's variants share one Hugging Face repo; the 8-bit and 4-bit
-conversions are their own), and the venv goes with the last variant. In Add
+conversions are their own), and the venv goes with the last variant. A service with `modelInHubCache` false
+(Moonshine) never has model files deleted: the deletion roots are the Hugging
+Face hub and the derived-models cache, and its weights are in neither. In Add
 Models, a family's uninstalled variants share one row that expands to list them;
 once installed, each is an ordinary row.
 
@@ -691,8 +693,10 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
   app serves loopback only; any local process can connect. What a token would
   take, and why it is not done: [`loopback-auth.md`](loopback-auth.md).
 - **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
-  (`ProcessEnvironment.huggingFace()`), never `uv`, whose package builds run
-  third-party code.
+  (`ProcessEnvironment.huggingFace(for:)`), never `uv`, whose package builds run
+  third-party code. A service whose weights are not in the Hugging Face cache
+  (`ServiceInfo.modelInHubCache` false: Moonshine, which downloads from
+  `download.moonshine.ai`) gets `base()`, with no token.
 - **No sandbox.** The app has no App Sandbox, so it can start `uv` and the
   per-service interpreters. The hardened runtime is on.
 - **Pinned downloads.**
