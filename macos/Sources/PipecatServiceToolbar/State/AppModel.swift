@@ -399,16 +399,22 @@ final class AppModel {
         var detail: String
         if keeping.isEmpty {
             detail = "This removes its Python environment"
-            if model.info.needsModelDownload {
+            if model.info.modelInHubCache {
                 detail += " and downloaded model files"
                 if let bytes = model.diskBytes { detail += " (\(Format.bytes(bytes)))" }
             }
             detail += "."
+            if model.info.needsModelDownload, !model.info.modelInHubCache {
+                // A model the backend fetches itself (Moonshine): outside the cache the app deletes from.
+                detail += " The model files"
+                if let bytes = model.diskBytes { detail += " (\(Format.bytes(bytes)))" }
+                detail += " are downloaded by the backend outside the Hugging Face cache and stay on disk."
+            }
         } else {
             detail = "This removes its model files. Files and the Python environment shared with "
                 + "\(keeping.formatted(.list(type: .and))) stay."
         }
-        if keeping.isEmpty, model.info.needsModelDownload {
+        if keeping.isEmpty, model.info.modelInHubCache {
             // The weights live in the shared Hugging Face cache, not in the app.
             detail += " The model files are in the shared Hugging Face cache, so a command-line or launchd "
                 + "server using the same model will download them again."

@@ -232,12 +232,19 @@ public enum ProcessEnvironment {
         return env
     }
 
-    /// The environment a service's `serve` child starts from: `huggingFace()`, plus the
+    /// `huggingFace()` for a service whose weights come from the Hugging Face cache, `base()` for one
+    /// that never contacts the Hub (Moonshine downloads from its own CDN; tone and Apple Speech
+    /// download nothing), so the credential reaches only a process that can use it.
+    public static func huggingFace(for service: Service) -> [String: String] {
+        service.info.modelInHubCache ? huggingFace() : base()
+    }
+
+    /// The environment a service's `serve` child starts from: `huggingFace(for:)`, plus the
     /// Homebrew prefixes on `PATH` for a service whose catalog entry says its server runs a
     /// Homebrew tool (`ServiceInfo.serveRunsHomebrewTools`: Parakeet's `ffmpeg`). A GUI app's
     /// minimal `PATH` cannot see a Homebrew install.
     public static func serve(_ service: Service) -> [String: String] {
-        var env = huggingFace()
+        var env = huggingFace(for: service)
         if service.info.serveRunsHomebrewTools {
             env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin"
         }

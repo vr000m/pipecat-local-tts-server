@@ -527,7 +527,7 @@ public actor EnvironmentManager {
         guard let args = prefetchArguments(for: backend.info, check: false) else {
             throw InstallError(stage: .model, message: "This service has no model to download.", logTail: [])
         }
-        let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.huggingFace()))
+        let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.huggingFace(for: backend)))
         running[backend] = sub
         defer { running[backend] = nil }
         try sub.run()
@@ -538,7 +538,9 @@ public actor EnvironmentManager {
         }
         let outcome = Task { () -> ServerCLIEvent? in
             var failure: ServerCLIEvent?
-            var progress = DownloadProgress(repo: backend.info.expectedModel ?? "")
+            // The repo before the first `start` event names it: a Phonon variant shows its Hub
+            // repo, not its `--model` alias; Moonshine (no repo) shows its model spec.
+            var progress = DownloadProgress(repo: backend.info.modelRepo ?? backend.info.modelArgument ?? "")
             for await line in sub.stdout {
                 guard let event = ServerCLIEvent.parse(line) else {
                     emit(.log(line))
@@ -627,6 +629,10 @@ public actor EnvironmentManager {
     /// that no installed sibling uses (`known`, the last check the app saw,
     /// when the environment can't report them). The repo-to-folder mapping
     /// lives here. The family environment goes with its last variant.
+    ///
+    /// Only Hugging Face repo folders and the derived-weights folders are ever deleted
+    /// (`deletionTarget`), so a model the backend fetches outside the Hub cache
+    /// (`ServiceInfo.modelInHubCache` false: Moonshine's) stays on disk whatever `deleteModel` is.
     ///
     /// Invariant: a folder is deleted only when every installed sibling's check
     /// answered, in full, and named none of it. A sibling whose check gave no

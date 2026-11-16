@@ -144,6 +144,11 @@ public struct ServiceInfo: Sendable, Equatable {
     public var family: Service { service.family }
     /// True for a Hugging Face model repo, or a model spec the backend fetches itself (Moonshine).
     public var needsModelDownload: Bool { modelRepo != nil || modelArgument != nil }
+    /// Whether the downloaded weights sit in the shared Hugging Face cache, the only place
+    /// `EnvironmentManager.remove` deletes model files from. False for a model the backend fetches
+    /// itself (Moonshine keeps its in `~/Library/Caches/moonshine_voice`): removing the service
+    /// leaves those on disk, and the delete copy must not say otherwise.
+    public var modelInHubCache: Bool { modelRepo != nil }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and
     /// `pipecat.stt-server[.<engine>]` for the STT families. Variants (Phonon q8/q4,
@@ -399,7 +404,7 @@ public enum ServiceCatalog {
             // The default is English; no language detection (`auto` falls back to `en`).
             ServiceInfo(
                 service: .moonshine, kind: .stt, expectedBackendName: "moonshine", displayName: "Moonshine",
-                tagline: "Small, fast streaming English recognition",
+                tagline: "Small, fast English recognition",
                 runtime: .sttHelper(engine: "moonshine", requirements: ["pipecat-local-stt-server[moonshine]==0.6.0"]),
                 port: 9965, modelRepo: nil, licence: .mit, streaming: false, symbol: "moon.stars",
                 modelArgument: "medium-streaming@en")

@@ -235,6 +235,15 @@ import Testing
         ])
         #expect(Service.moonshine.info.modelRepo == nil && Service.moonshine.info.needsModelDownload)
         #expect(Service.moonshine.info.expectedModel == "medium-streaming@en")
+        // No Hub token for a process that never contacts the Hub; Hub-cache services keep it.
+        #expect(ProcessEnvironment.huggingFace(for: .moonshine) == ProcessEnvironment.base())
+        #expect(ProcessEnvironment.serve(.moonshine) == ProcessEnvironment.base())
+        #expect(ProcessEnvironment.huggingFace(for: .kyutai) == ProcessEnvironment.huggingFace())
+        // Its weights are outside the Hugging Face cache, the only place removal deletes from.
+        #expect(!Service.moonshine.info.modelInHubCache)
+        for service in Service.allCases where service != .moonshine && service.info.needsModelDownload {
+            #expect(service.info.modelInHubCache, "\(service)")
+        }
         #expect(ServiceCatalog.snapshots(for: .moonshine).isEmpty)
         let kyutai = try #require(manager.serveArguments(for: Service.kyutai2B.info, port: 9666))
         #expect(Array(kyutai.prefix(6)) == ["-m", "stt_server", "serve", "--supervised", "--backend", "kyutai"])

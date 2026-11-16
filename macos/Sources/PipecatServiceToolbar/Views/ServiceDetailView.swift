@@ -544,7 +544,9 @@ struct RemoveSection: View {
             if confirming {
                 Text("Delete \(model.info.displayName)?")
                     .font(.system(size: 12.5, weight: .semibold))
-                Text("The Python environment is deleted. Model files live in the shared Hugging Face cache; delete them too to free \(model.diskBytes.map(Format.bytes) ?? "their space").")
+                Text(model.info.needsModelDownload && !model.info.modelInHubCache
+                    ? "The Python environment is deleted. This model is downloaded by the backend outside the Hugging Face cache, and its files (\(model.diskBytes.map(Format.bytes) ?? "unknown size")) stay on disk."
+                    : "The Python environment is deleted. Model files live in the shared Hugging Face cache; delete them too to free \(model.diskBytes.map(Format.bytes) ?? "their space").")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -552,11 +554,17 @@ struct RemoveSection: View {
                     Button("Cancel") { withAnimation(.snappy) { confirming = false } }
                         .buttonStyle(PillButtonStyle(tint: .secondary))
                     Spacer()
-                    Button("Keep Model Files") { model.remove(deleteModel: false) }
-                        .buttonStyle(PillButtonStyle(tint: .red))
-                    if model.info.needsModelDownload {
-                        Button("Delete Everything") { model.remove(deleteModel: true) }
+                    if model.info.needsModelDownload && !model.info.modelInHubCache {
+                        // Nothing the app can delete beyond the environment: one honest button.
+                        Button("Delete") { model.remove(deleteModel: false) }
                             .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
+                    } else {
+                        Button("Keep Model Files") { model.remove(deleteModel: false) }
+                            .buttonStyle(PillButtonStyle(tint: .red))
+                        if model.info.needsModelDownload {
+                            Button("Delete Everything") { model.remove(deleteModel: true) }
+                                .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
+                        }
                     }
                 }
             } else {

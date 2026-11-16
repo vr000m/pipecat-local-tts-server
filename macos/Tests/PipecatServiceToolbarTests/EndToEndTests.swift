@@ -49,7 +49,7 @@ struct EndToEndTests {
     }
 
     /// As `startServer`, keeping the `ready` line (always on an ephemeral port: never a
-    /// catalog port, so a LaunchAgent on 9565 to 9865 is never touched).
+    /// catalog port, so a LaunchAgent on 9565 to 9965 is never touched).
     func startServerReady(_ service: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> (Subprocess, ServerCLIEvent) {
         let args = try #require(manager.serveArguments(for: service.info, port: 0))
         let server = Subprocess(
@@ -322,8 +322,13 @@ struct EndToEndTests {
         await client.close()
         server.closeStdin()
         #expect(await server.waitForExit() == 0)
-        try await manager.remove(.moonshine, deleteModel: false)
+        // Deleting "everything" removes the environment only: the weights are not in the Hub cache,
+        // so the app leaves them (and says so, `ServiceInfo.modelInHubCache`).
+        let weights = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Caches/moonshine_voice")
+        #expect(FileManager.default.fileExists(atPath: weights.path))
+        try await manager.remove(.moonshine, deleteModel: true)
         #expect(manager.environmentStatus(.moonshine) == .missing)
+        #expect(FileManager.default.fileExists(atPath: weights.path))
     }
 }
 

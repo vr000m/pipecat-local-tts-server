@@ -432,8 +432,14 @@ def test_swift_stt_model_repos_match_the_launchagents_and_defaults():
     LaunchAgents serve, Whisper and Kyutai the upstream defaults. Each STT entry has
     its own repo (variants differ from their family's)."""
     catalog = macos_catalog()
-    for family, (_, _, _, repo) in _STT_FAMILIES.items():
-        assert (catalog[family].model_argument or catalog[family].model_repo) == repo, family
+    for family, (_, _, _, model) in _STT_FAMILIES.items():
+        entry = catalog[family]
+        if family == "moonshine":
+            # Not a Hub model: no repo (the app deletes only from the Hub cache and keys
+            # ``modelInHubCache`` on it), the spec is the ``--model`` argument.
+            assert entry.model_repo is None and entry.model_argument == model, family
+        else:
+            assert entry.model_repo == model and entry.model_argument is None, family
     repos = [e.model_repo for e in catalog.values() if e.kind == "stt" and e.model_repo]
     assert len(repos) == len(set(repos)), "each STT service has its own repo"
     assert catalog["apple_speech"].model_repo is None
