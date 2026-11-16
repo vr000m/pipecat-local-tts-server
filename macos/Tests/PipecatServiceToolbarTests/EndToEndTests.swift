@@ -240,7 +240,7 @@ struct EndToEndTests {
         let (text, latency) = try await timedShortRequest()
         print("kyutai: baseline \(baseline) s; after an abandoned \(long.count / 32000) s clip \(latency) s")
         #expect(text.lowercased().contains("weather"))
-        // pipecat-local-stt-server 0.5.0 stops a cancelled Kyutai decode at the next 80 ms frame,
+        // pipecat-local-stt-server 0.6.0 stops a cancelled Kyutai decode at the next 80 ms frame,
         // so an abandoned long clip must not keep the backend busy.
         #expect(latency < baseline + 8, "the abandoned request kept the backend busy for \(latency) s")
 
@@ -250,7 +250,7 @@ struct EndToEndTests {
     }
 
     /// Parakeet through the upstream CLI: install, serve on an ephemeral port, transcribe.
-    /// The live `ready` line has the shape of the recorded 0.5.0 fixture.
+    /// The live `ready` line has the shape of the recorded 0.6.0 fixture.
     @Test func parakeetInstallServeTranscribe() async throws {
         let (manager, paths) = try await Self.makeManager()
         let events = try await install(.parakeet, manager)
@@ -299,6 +299,31 @@ struct EndToEndTests {
         #expect(await server.waitForExit() == 0)
         try await manager.remove(.nemotron, deleteModel: false)
         #expect(manager.environmentStatus(.nemotron) == .missing)
+    }
+
+    /// Moonshine through the upstream CLI. Not a Hub model: the cache check names a synthetic
+    /// `moonshine-voice/...` repo and no hub folder, and the model spec is `--model`.
+    @Test func moonshineInstallServeTranscribe() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        let events = try await install(.moonshine, manager)
+        #expect(events.contains(.stage(.model)))
+        let cache = try #require(await manager.modelCacheStatus(.moonshine))
+        #expect(cache.cached)
+        let (server, ready) = try await startServerReady(.moonshine, manager, paths: paths)
+        defer { server.kill() }
+        let port = try #require(ready.port)
+        #expect(port != Service.moonshine.info.port)
+        #expect(ready.backend == "moonshine" && ready.host == "127.0.0.1" && ready.rate == 16000 && ready.pid != nil)
+        let client = STTClient(port: port)
+        #expect(try await client.connect().backend == "moonshine")
+        try await expectHelloMapsBack(.moonshine, port: port)
+        let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
+        #expect(text.lowercased().contains("weather"))
+        await client.close()
+        server.closeStdin()
+        #expect(await server.waitForExit() == 0)
+        try await manager.remove(.moonshine, deleteModel: false)
+        #expect(manager.environmentStatus(.moonshine) == .missing)
     }
 }
 
