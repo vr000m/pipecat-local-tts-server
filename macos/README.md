@@ -211,6 +211,7 @@ Or set `TTS_WS_HOST`/`TTS_WS_PORT` and `STT_WS_HOST`/`STT_WS_PORT`.
 | `~/Library/Application Support/Pipecat Service Toolbar/` | managed Python, one venv per model family |
 | `~/Library/Caches/Pipecat Service Toolbar/uv/` | package cache |
 | `~/.cache/huggingface/hub/` | model weights, shared with CLI use (`HF_HOME` honoured) |
+| `~/Library/Caches/moonshine_voice/` | Moonshine's weights, shared with CLI use (`MOONSHINE_VOICE_CACHE` honoured) |
 | `~/Library/Logs/Pipecat Service Toolbar/` | one log per service |
 | `~/Library/Caches/pipecat-tts-build/uv/<version>/` | the pinned `uv` the build bundles (build time only; `PIPECAT_TTS_BUILD_CACHE` moves the root) |
 

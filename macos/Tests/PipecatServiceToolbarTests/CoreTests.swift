@@ -168,8 +168,9 @@ import Testing
         let source: ModelSource
         let needsModelDownload: Bool
         let weightsInHubCache: Bool
-        let keepsWeightsOnRemove: Bool
+        let removalPolicy: ModelRemovalPolicy
         let hubRepo: String?
+        let displayModel: String?
         let expectedModel: String?
         let cliModelOverride: String?
     }
@@ -177,29 +178,58 @@ import Testing
     /// Every case (and both `.hub` shapes) against every derived property.
     static let rows: [Row] = [
         Row(
-            source: .none, needsModelDownload: false, weightsInHubCache: false, keepsWeightsOnRemove: false,
-            hubRepo: nil, expectedModel: nil, cliModelOverride: nil),
+            source: .none, needsModelDownload: false, weightsInHubCache: false, removalPolicy: .nothing,
+            hubRepo: nil, displayModel: nil, expectedModel: nil, cliModelOverride: nil),
         Row(
             source: .hub(repo: "org/repo"), needsModelDownload: true, weightsInHubCache: true,
-            keepsWeightsOnRemove: false, hubRepo: "org/repo", expectedModel: "org/repo", cliModelOverride: nil),
+            removalPolicy: .hubDeletable, hubRepo: "org/repo", displayModel: "org/repo", expectedModel: "org/repo",
+            cliModelOverride: nil),
         Row(
             source: .hub(repo: "org/repo", alias: "repo-q8"), needsModelDownload: true, weightsInHubCache: true,
-            keepsWeightsOnRemove: false, hubRepo: "org/repo", expectedModel: "repo-q8", cliModelOverride: "repo-q8"),
+            removalPolicy: .hubDeletable, hubRepo: "org/repo", displayModel: "org/repo", expectedModel: "repo-q8",
+            cliModelOverride: "repo-q8"),
         Row(
             source: .backendManaged(spec: "medium@en"), needsModelDownload: true, weightsInHubCache: false,
-            keepsWeightsOnRemove: true, hubRepo: nil, expectedModel: "medium@en", cliModelOverride: "medium@en"),
+            removalPolicy: .keptByBackend, hubRepo: nil, displayModel: "medium@en", expectedModel: "medium@en",
+            cliModelOverride: nil),
     ]
 
-    @Test(arguments: rows) func derivedProperties(_ row: Row) {
-        let info = ServiceInfo(
+    static func info(_ source: ModelSource) -> ServiceInfo {
+        ServiceInfo(
             service: .kokoro, kind: .tts, expectedBackendName: "x", displayName: "X", tagline: "",
-            runtime: .ttsServer(extra: nil), port: 1, model: row.source, licence: .none, streaming: false, symbol: "")
+            runtime: .ttsServer(extra: nil), port: 1, model: source, licence: .none, streaming: false, symbol: "")
+    }
+
+    @Test(arguments: rows) func derivedProperties(_ row: Row) {
+        let info = Self.info(row.source)
         #expect(info.needsModelDownload == row.needsModelDownload, "\(row.source)")
         #expect(info.weightsInHubCache == row.weightsInHubCache, "\(row.source)")
-        #expect(info.keepsWeightsOnRemove == row.keepsWeightsOnRemove, "\(row.source)")
+        #expect(info.removalPolicy == row.removalPolicy, "\(row.source)")
         #expect(info.hubRepo == row.hubRepo, "\(row.source)")
+        #expect(info.displayModel == row.displayModel, "\(row.source)")
         #expect(info.expectedModel == row.expectedModel, "\(row.source)")
         #expect(info.cliModelOverride == row.cliModelOverride, "\(row.source)")
+        // Delete Everything has a repo to delete exactly for `.hubDeletable` (`remove` reads `hubRepo`).
+        #expect((info.hubRepo != nil) == (info.removalPolicy == .hubDeletable), "\(row.source)")
+    }
+
+    /// The same Hub-shaped `prefetch --check` output (a check row inside a hub cache, a
+    /// quantized summary) read for each source: repo ids and folders only for `.hub`; the
+    /// `cached` flag and the size for every source.
+    @Test(arguments: rows) func checkOutputKeepsReposOnlyForTheHubCache(_ row: Row) throws {
+        let lines = [
+            #"{"event":"check","repo":"org/repo","cached":true,"path":"/h/hub/models--org--repo/snapshots/abc","size_bytes":10}"#,
+            #"{"event":"summary","cached":true,"size_bytes":10,"quantized":true,"quantized_path":"/c/derived/x/key"}"#,
+        ]
+        let status = try #require(EnvironmentManager.cacheStatus(checkOutput: lines, for: Self.info(row.source)))
+        #expect(status.cached && status.sizeBytes == 10, "\(row.source)")
+        if row.weightsInHubCache {
+            #expect(status.repoIDs == ["org/repo"], "\(row.source)")
+            #expect(status.repoFolders.map(\.lastPathComponent) == ["models--org--repo"], "\(row.source)")
+            #expect(status.derivedFolders == [URL(filePath: "/c/derived/x/key")], "\(row.source)")
+        } else {
+            #expect(status.repoIDs.isEmpty && status.repoFolders.isEmpty && status.derivedFolders.isEmpty, "\(row.source)")
+        }
     }
 
     private static func modelFlag(_ args: [String]?) -> String?? {
@@ -209,21 +239,24 @@ import Testing
     }
 
     /// The catalog-wide invariants: `.none` downloads nothing; the Hub cache is exactly `.hub`;
-    /// a removal keeps weights exactly for `.backendManaged`; STT passes `expectedModel` as
-    /// `--model`, TTS passes `cliModelOverride` (no flag when nil); no empty repo, alias or spec.
+    /// a removal keeps weights exactly for `.backendManaged`, which only STT uses; STT passes
+    /// `expectedModel` as `--model`, TTS passes `cliModelOverride` (no flag when nil); no empty
+    /// repo, alias or spec.
     @Test func catalogHoldsTheModelSourceInvariants() throws {
         let (manager, _) = try VariantTests.manager()
         for service in Service.allCases {
             let info = service.info
             switch info.model {
             case .none:
-                #expect(!info.needsModelDownload && !info.weightsInHubCache && !info.keepsWeightsOnRemove, "\(service)")
+                #expect(!info.needsModelDownload && !info.weightsInHubCache && info.removalPolicy == .nothing, "\(service)")
             case .hub(let repo, let alias):
-                #expect(info.weightsInHubCache && !info.keepsWeightsOnRemove && info.hubRepo == repo, "\(service)")
+                #expect(info.weightsInHubCache && info.removalPolicy == .hubDeletable && info.hubRepo == repo, "\(service)")
                 #expect(!repo.isEmpty && alias?.isEmpty != true, "\(service)")
             case .backendManaged(let spec):
-                #expect(!info.weightsInHubCache && info.keepsWeightsOnRemove && info.hubRepo == nil, "\(service)")
-                #expect(!spec.isEmpty, "\(service)")
+                #expect(!info.weightsInHubCache && info.removalPolicy == .keptByBackend && info.hubRepo == nil, "\(service)")
+                #expect(!spec.isEmpty && info.displayModel == spec && info.cliModelOverride == nil, "\(service)")
+                // TTS passes no `--model` for it (`cliModelOverride` is nil), so the spec would be lost.
+                if case .sttHelper = info.runtime {} else { Issue.record("\(service): .backendManaged outside STT") }
             }
             let expected: String?
             switch info.runtime {
@@ -594,17 +627,17 @@ import Testing
             EnvironmentManager.cacheStatus(checkOutput: [
                 check,
                 #"{"event":"summary","cached":true,"size_bytes":10,"quantized":false,"quantized_path":"\#(path)"}"#,
-            ]))
+            ], for: Service.phononQ8.info))
         #expect(!notYet.cached && notYet.derivedFolders.isEmpty)
         #expect(notYet.repoFolders.map(\.lastPathComponent) == ["models--gradium--phonon-31m-en"])
         let converted = try #require(
             EnvironmentManager.cacheStatus(checkOutput: [
                 check, #"{"event":"summary","cached":true,"size_bytes":10,"quantized":true,"quantized_path":"\#(path)"}"#,
-            ]))
+            ], for: Service.phononQ8.info))
         #expect(converted.cached && converted.derivedFolders == [URL(filePath: path)])
         // Unquantized backends report no `quantized` field.
         #expect(
-            EnvironmentManager.cacheStatus(checkOutput: [check, #"{"event":"summary","cached":true,"size_bytes":10}"#])?
+            EnvironmentManager.cacheStatus(checkOutput: [check, #"{"event":"summary","cached":true,"size_bytes":10}"#], for: Service.phonon.info)?
                 .cached == true)
     }
 }
@@ -1142,14 +1175,15 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
     static let kyutaiHub = "stt_prefetch_check_lines.jsonl"
 
     /// Moonshine's recorded check rows name a synthetic, Hub-shaped repo id and a path outside the
-    /// Hugging Face cache: `cacheStatus` finds no repo folder in them and the path is not deletable.
+    /// Hugging Face cache: `cacheStatus` keeps neither for it, and the path is not deletable.
     /// A recorded Hub row (Kyutai) names its real repo the same way.
     @Test func recordedMoonshineCheckNamesNoDeletableFolder() throws {
         let (_, paths) = try VariantTests.manager()
         for name in [Self.moonshineCached, Self.moonshineMissing] {
-            let status = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(name)), "\(name)")
+            let status = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(name), for: Service.moonshine.info), "\(name)")
             #expect(status.repoFolders.isEmpty && status.derivedFolders.isEmpty, "\(name)")
-            #expect(status.repoIDs == ["moonshine-voice/medium-streaming-en"], "\(name)")
+            // The synthetic repo id is not kept: Moonshine's weights are not in the Hub cache.
+            #expect(status.repoIDs.isEmpty, "\(name)")
             #expect(status.cached == (name == Self.moonshineCached), "\(name)")
         }
         let cachedRow = try #require(ServerCLIEvent.parse(Self.recordedPrefetch(Self.moonshineCached)[0]))
@@ -1161,7 +1195,7 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         #expect(fetch.map(\.event) == ["start", "progress", "done", "complete"])
         #expect(fetch[0].repo == "moonshine-voice/medium-streaming-en")
         #expect(fetch[2].path.flatMap(EnvironmentManager.repoFolder(fromSnapshot:)) == nil)
-        let hub = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(Self.kyutaiHub)))
+        let hub = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(Self.kyutaiHub), for: Service.kyutai.info))
         #expect(hub.repoIDs == ["kyutai/stt-1b-en_fr-mlx"] && hub.repoFolders.isEmpty && !hub.cached)
     }
 
@@ -1995,6 +2029,20 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(ProcessEnvironment.uv(paths: paths)["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.base()["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.huggingFace()["HF_TOKEN"] == "hf_test_secret")
+    }
+
+    /// A user's cache locations reach every child, Moonshine's included (moonshine-voice reads
+    /// `MOONSHINE_VOICE_CACHE`), so the app's check and serve find the weights a CLI server does.
+    @Test func baseForwardsTheUsersCacheLocations() {
+        let inherited = [
+            "HF_HOME": "/hf", "HF_HUB_CACHE": "/hub", "XDG_CACHE_HOME": "/xdg", "MOONSHINE_VOICE_CACHE": "/moon",
+            "HF_TOKEN": "hf_test_secret", "UNRELATED": "x",
+        ]
+        let env = ProcessEnvironment.base(inherited: inherited)
+        for key in ["HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME", "MOONSHINE_VOICE_CACHE"] {
+            #expect(env[key] == inherited[key], "\(key)")
+        }
+        #expect(env["HF_TOKEN"] == nil && env["UNRELATED"] == nil)
     }
 
     /// A process that never contacts the Hub (Moonshine) gets no token; Hub-cache services keep it.

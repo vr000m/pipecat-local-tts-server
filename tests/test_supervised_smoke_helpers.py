@@ -134,7 +134,7 @@ def test_prefetch_errors_fetch_run():
 
 def _swift_base_env_keys() -> set[str]:
     text = (sc.REPO / "macos" / "Sources" / "PipecatToolbarCore" / "ToolLocator.swift").read_text()
-    body = text[text.index("public static func base()") :]
+    body = text[text.index("public static func base(") :]
     body = body[: body.index("return env")]
     keys = set(re.findall(r'"([A-Z][A-Z0-9_]+)":', body))  # the literal dict
     keys |= set(re.findall(r'env\["([A-Z][A-Z0-9_]+)"\]', body))  # env["TMPDIR"] = ...

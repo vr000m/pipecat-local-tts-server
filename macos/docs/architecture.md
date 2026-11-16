@@ -68,7 +68,7 @@ Each service has one of three `ServiceRuntime` values:
 | Runtime | Install | Serve | Services |
 |---|---|---|---|
 | `ttsServer(extra:)` | `uv pip install "pipecat-local-tts-server[extra] @ <bundled wheel>"` with `uv.lock` constraints, then `python -m tts_server prefetch --json` | `python -m tts_server serve --supervised` | 8 TTS backends |
-| `sttHelper(engine:requirements:)` (the case name predates the helper's removal) | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `python -m stt_server prefetch --backend B --model R --json` (weights follow the repo's `main`) | `python -m stt_server serve --supervised --backend B` (`B` is the entry's expected backend name; Whisper is `mlx`) | Whisper, Kyutai, Parakeet, Nemotron |
+| `sttHelper(engine:requirements:)` (the case name predates the helper's removal) | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `python -m stt_server prefetch --backend B --model R --json` (weights follow the repo's `main`) | `python -m stt_server serve --supervised --backend B` (`B` is the entry's expected backend name; Whisper is `mlx`) | Whisper, Kyutai, Parakeet, Nemotron, Moonshine (`--model <spec>`, weights from its own CDN) |
 | `appleSpeech` | `AssetInventory` model download | `STTWebSocketServer` in-process | Apple Speech |
 
 On first use, all Python services share one uv-managed CPython 3.12, stored under
@@ -109,21 +109,29 @@ Each catalog entry states where its weights come from as one explicit field,
 |---|---|---|
 | `.none` | tone, Apple Speech | nothing to download |
 | `.hub(repo:alias:)` | every other TTS and STT entry | the shared Hugging Face cache; `alias` is the backend's `--model` alias (Phonon `phonon-q8` / `phonon-q4`) |
-| `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`) | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice`, outside the Hugging Face cache |
+| `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`) | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice` (moonshine-voice 0.1.6 `get_cache_dir`: `MOONSHINE_VOICE_CACHE`, else `platformdirs.user_cache_dir("moonshine_voice")`), outside the Hugging Face cache |
 
 - **Model step** (`needsModelDownload`): every case but `.none` downloads, sizes and checks a model.
-- **Delete and token** (`weightsInHubCache`, `.hub` only): Delete Everything deletes model
-  files only from the Hugging Face cache (plus their derived folders), and `HF_TOKEN` reaches
-  only a `.hub` service's `prefetch` and `serve` (`ProcessEnvironment.huggingFace(for:)`).
-  A `.backendManaged` service (`keepsWeightsOnRemove`) keeps its weights on removal whatever
-  is chosen, and gets no token. `EnvironmentManager.remove` enforces the delete rule by
-  switching on `model`; the detail page and the delete dialog read `keepsWeightsOnRemove`
-  only for their wording (a single **Delete**, and copy saying the files stay).
+- **Token and check output** (`weightsInHubCache`, `.hub` only): `HF_TOKEN` reaches only a
+  `.hub` service's `prefetch` and `serve` (`ProcessEnvironment.huggingFace(for:)`), and
+  `EnvironmentManager.cacheStatus` keeps the repo ids and folders of a `prefetch --check`
+  only for a `.hub` service (Moonshine's rows name a synthetic, Hub-shaped repo id).
+- **Delete** (`removalPolicy`: `.nothing`, `.hubDeletable`, `.keptByBackend`): Delete
+  Everything deletes model files only for `.hubDeletable`, from the Hugging Face cache (plus
+  their derived folders); `EnvironmentManager.remove` enforces it through `hubRepo`. A
+  `.keptByBackend` service keeps its weights whatever is chosen. The detail page and the
+  delete dialog switch on `removalPolicy` for their copy and buttons (a single **Delete**
+  unless `.hubDeletable`).
+- **Moonshine's integrity** is a residual risk: its weights sit outside the hash-pinned
+  supply chain ([Security notes](#security-notes), "Pinned downloads").
 - **Hub repo** (`hubRepo`): the repo sized, mapped to a cache folder, linked on the Details
-  card (a `.backendManaged` spec is shown as text) and compared with siblings' on removal.
+  card and compared with siblings' on removal.
+- **Display name** (`displayModel`): the repo, or a `.backendManaged` spec; the install's
+  progress label before the first `start` event and the Details card's Model row (text
+  unless `hubRepo` is set).
 - **Hello match** (`expectedModel`): alias, else repo, for `.hub`; the spec for
   `.backendManaged`; none for `.none`.
-- **`--model`**: TTS passes `cliModelOverride` (the alias or spec, else no flag, so
+- **`--model`**: TTS passes `cliModelOverride` (a `.hub` alias, else no flag, so
   `tts_server` loads the backend's default, which equals the catalog repo); STT always passes
   `expectedModel`. The doc comment on `cliModelOverride` is the one place the difference is
   explained.
@@ -562,7 +570,7 @@ leaves it running).
   model files from the Hugging Face cache: `remove(deleteModel: true)`.
 - The detail page's **Delete…** offers **Keep Model Files**
   (`deleteModel: false`: only the environment, or the variant's record in a
-  shared one) and, for a service with downloaded weights, **Delete Everything**
+  shared one) and, for a `.hubDeletable` service, **Delete Everything**
   (`deleteModel: true`), which removes the model files from the Hugging Face cache.
 - Order: an install in flight is cancelled and unwinds first (dropping the
   family lock), then the server is stopped, then `EnvironmentManager.remove`

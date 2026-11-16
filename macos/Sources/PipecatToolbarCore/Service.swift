@@ -124,6 +124,17 @@ public enum ModelSource: Equatable, Sendable {
     case backendManaged(spec: String)
 }
 
+/// What removing a service can do with its weights (`ServiceInfo.removalPolicy`).
+public enum ModelRemovalPolicy: Equatable, Sendable {
+    /// No weights to delete (`.none`).
+    case nothing
+    /// Weights in the shared Hugging Face cache: Delete Everything may delete them (`.hub`).
+    case hubDeletable
+    /// Weights the backend keeps outside the Hugging Face cache, which the app never deletes
+    /// (`.backendManaged`: Moonshine's).
+    case keptByBackend
+}
+
 /// Static facts about a service, mirrored from the server READMEs.
 public struct ServiceInfo: Sendable, Equatable {
     public let service: Service
@@ -165,20 +176,23 @@ public struct ServiceInfo: Sendable, Equatable {
         return true
     }
     /// Whether the service's weights live in, and are fetched from, the shared Hugging Face
-    /// cache: true only for `.hub`. Two policies rest on it: deletion eligibility
-    /// (`EnvironmentManager.remove` deletes model files only from the Hub cache, plus their
-    /// derived folders) and the credential (`ProcessEnvironment.huggingFace(for:)` passes
-    /// `HF_TOKEN` only to such a service). Also gates the Hub size estimate.
+    /// cache: true only for `.hub`. Three policies rest on it: the credential
+    /// (`ProcessEnvironment.huggingFace(for:)` passes `HF_TOKEN` only to such a service), the
+    /// Hub size estimate, and reading a `prefetch --check` (`EnvironmentManager.cacheStatus`
+    /// keeps repo ids and folders only for such a service). Deletion follows `removalPolicy`.
     public var weightsInHubCache: Bool {
         if case .hub = model { return true }
         return false
     }
-    /// Whether removing the service leaves downloaded weights on disk whatever the user picks:
-    /// true only for `.backendManaged` (Moonshine keeps its in `~/Library/Caches/moonshine_voice`).
-    /// `EnvironmentManager.remove` enforces it; the delete UI reads it to word its copy and buttons.
-    public var keepsWeightsOnRemove: Bool {
-        if case .backendManaged = model { return true }
-        return false
+    /// What removing the service can do with its weights. `EnvironmentManager.remove` deletes
+    /// only for `.hubDeletable` (through `hubRepo`); the detail page and the delete dialog switch
+    /// on it for their copy and buttons.
+    public var removalPolicy: ModelRemovalPolicy {
+        switch model {
+        case .none: .nothing
+        case .hub: .hubDeletable
+        case .backendManaged: .keptByBackend
+        }
     }
     /// The Hugging Face repo for a `.hub` source, else nil: the repo the app sizes, maps to a cache
     /// folder, links to on the Hub, and compares against siblings' repos on removal.
@@ -186,10 +200,20 @@ public struct ServiceInfo: Sendable, Equatable {
         if case .hub(let repo, _) = model { return repo }
         return nil
     }
+    /// The model's name for display: a `.hub` source's repo, a `.backendManaged` source's spec,
+    /// else nil. The install's progress label before the first `start` event and the Details
+    /// card's Model row (a link only when `hubRepo` is set).
+    public var displayModel: String? {
+        switch model {
+        case .hub(let repo, _): repo
+        case .backendManaged(let spec): spec
+        case .none: nil
+        }
+    }
     /// What the TTS runtime passes as `--model` to `tts_server serve`/`prefetch`: the alias of a
-    /// `.hub` source that has one (Phonon q8/q4), the spec of a `.backendManaged` source, else nil
-    /// (no flag: `tts_server` then loads the backend's `DEFAULT_*_MODEL`, which the drift tests pin
-    /// equal to the catalog repo).
+    /// `.hub` source that has one (Phonon q8/q4), else nil (no flag: `tts_server` then loads the
+    /// backend's `DEFAULT_*_MODEL`, which the drift tests pin equal to the catalog repo). No TTS
+    /// backend fetches its own weights, so a `.backendManaged` source (STT only) has none here.
     ///
     /// The two runtimes read the model differently, and this is the one place that says so:
     /// TTS passes `cliModelOverride` (only what differs from the backend's default), STT passes
@@ -197,11 +221,8 @@ public struct ServiceInfo: Sendable, Equatable {
     /// its own Hub pin to a default repo). `EnvironmentManager.prefetchArguments` /
     /// `serveArguments` are the only readers of either for an argument.
     public var cliModelOverride: String? {
-        switch model {
-        case .hub(_, let alias): alias
-        case .backendManaged(let spec): spec
-        case .none: nil
-        }
+        if case .hub(_, let alias) = model { return alias }
+        return nil
     }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and

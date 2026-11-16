@@ -461,11 +461,10 @@ struct DetailsCard: View {
                     .font(.system(size: 12))
                     .help(repo)
                 }
-            }
-            if case .backendManaged(let spec) = model.info.model {
+            } else if let name = model.info.displayModel {
                 // A model the backend downloads itself (Moonshine), not a Hugging Face repo.
                 InfoRow(label: "Model") {
-                    Text(spec).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(spec)
+                    Text(name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(name)
                 }
             }
             if let variant = model.info.variantLabel {
@@ -539,14 +538,24 @@ struct RemoveSection: View {
     let model: ServiceModel
     @State private var confirming = false
 
+    /// The confirmation copy for each `ModelRemovalPolicy`.
+    static func detail(_ policy: ModelRemovalPolicy, size: Int64?) -> String {
+        switch policy {
+        case .nothing:
+            "The Python environment is deleted. This service has no downloaded model."
+        case .hubDeletable:
+            "The Python environment is deleted. Model files live in the shared Hugging Face cache; delete them too to free \(size.map(Format.bytes) ?? "their space")."
+        case .keptByBackend:
+            "The Python environment is deleted. This model is downloaded by the backend outside the Hugging Face cache, and its files (\(size.map(Format.bytes) ?? "unknown size")) stay on disk."
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if confirming {
                 Text("Delete \(model.info.displayName)?")
                     .font(.system(size: 12.5, weight: .semibold))
-                Text(model.info.keepsWeightsOnRemove
-                    ? "The Python environment is deleted. This model is downloaded by the backend outside the Hugging Face cache, and its files (\(model.diskBytes.map(Format.bytes) ?? "unknown size")) stay on disk."
-                    : "The Python environment is deleted. Model files live in the shared Hugging Face cache; delete them too to free \(model.diskBytes.map(Format.bytes) ?? "their space").")
+                Text(Self.detail(model.info.removalPolicy, size: model.diskBytes))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -554,17 +563,16 @@ struct RemoveSection: View {
                     Button("Cancel") { withAnimation(.snappy) { confirming = false } }
                         .buttonStyle(PillButtonStyle(tint: .secondary))
                     Spacer()
-                    if model.info.keepsWeightsOnRemove {
+                    switch model.info.removalPolicy {
+                    case .hubDeletable:
+                        Button("Keep Model Files") { model.remove(deleteModel: false) }
+                            .buttonStyle(PillButtonStyle(tint: .red))
+                        Button("Delete Everything") { model.remove(deleteModel: true) }
+                            .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
+                    case .nothing, .keptByBackend:
                         // Nothing the app can delete beyond the environment: one honest button.
                         Button("Delete") { model.remove(deleteModel: false) }
                             .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
-                    } else {
-                        Button("Keep Model Files") { model.remove(deleteModel: false) }
-                            .buttonStyle(PillButtonStyle(tint: .red))
-                        if model.info.weightsInHubCache {
-                            Button("Delete Everything") { model.remove(deleteModel: true) }
-                                .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
-                        }
                     }
                 }
             } else {

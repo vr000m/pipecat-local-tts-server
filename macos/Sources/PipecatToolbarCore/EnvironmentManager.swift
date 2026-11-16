@@ -209,7 +209,7 @@ public actor EnvironmentManager {
         default: return nil
         }
         guard let spec = prefetchSpec(for: backend, check: true), let stdout = await probe(spec) else { return nil }
-        return Self.cacheStatus(checkOutput: stdout)
+        return Self.cacheStatus(checkOutput: stdout, for: backend.info)
     }
 
     /// Runs a short offline probe to completion and returns its stdout. None
@@ -225,14 +225,18 @@ public actor EnvironmentManager {
     /// Reads `prefetch --check --json` output: one `check` row per snapshot, then
     /// a `summary`. The TTS server and the upstream STT server write the same events
     /// (`docs/supervised-contract.json`, enforced by `tests/test_supervised_contract.py`).
-    static func cacheStatus(checkOutput lines: [String]) -> ModelCacheStatus? {
+    ///
+    /// Repo ids and folders are kept only for a service whose weights are in the Hugging Face
+    /// cache (`info.weightsInHubCache`): Moonshine's rows name a synthetic, Hub-shaped repo id
+    /// that is no Hub repo, so for it the status carries only `cached` and the size.
+    static func cacheStatus(checkOutput lines: [String], for info: ServiceInfo) -> ModelCacheStatus? {
         let events = lines.compactMap(ServerCLIEvent.parse)
         guard let summary = events.last(where: { $0.event == "summary" }) else { return nil }
-        let checks = events.filter { $0.event == "check" }
+        let checks = info.weightsInHubCache ? events.filter { $0.event == "check" } : []
         let paths = checks.compactMap(\.path)
         let repos = Array(Set(checks.compactMap(\.repo))).sorted()
         // A quantized Phonon variant also needs its converted copy of the weights.
-        let derived = summary.quantized == true ? [summary.quantizedPath].compactMap { $0.map { URL(filePath: $0) } } : []
+        let derived = info.weightsInHubCache && summary.quantized == true ? [summary.quantizedPath].compactMap { $0.map { URL(filePath: $0) } } : []
         return ModelCacheStatus(
             cached: (summary.cached ?? false) && summary.quantized != false, sizeBytes: summary.sizeBytes ?? 0,
             repoFolders: Array(Set(paths.compactMap(Self.repoFolder(fromSnapshot:)))), derivedFolders: derived, repoIDs: repos)
@@ -547,13 +551,7 @@ public actor EnvironmentManager {
             var failure: ServerCLIEvent?
             // The repo before the first `start` event names it: a Phonon variant shows its Hub
             // repo, not its `--model` alias; Moonshine (no repo) shows its model spec.
-            let initial: String =
-                switch backend.info.model {
-                case .hub(let repo, _): repo
-                case .backendManaged(let spec): spec
-                case .none: ""
-                }
-            var progress = DownloadProgress(repo: initial)
+            var progress = DownloadProgress(repo: backend.info.displayModel ?? "")
             for await line in sub.stdout {
                 guard let event = ServerCLIEvent.parse(line) else {
                     emit(.log(line))
@@ -645,8 +643,8 @@ public actor EnvironmentManager {
     ///
     /// Only Hugging Face repo folders and the derived-weights folders are ever deleted
     /// (`deletionTarget`), so a model the backend fetches outside the Hub cache
-    /// (`ModelSource.backendManaged`: Moonshine's) stays on disk whatever `deleteModel` is:
-    /// the flag is honoured only for a `.hub` source, here, not left to the UI or to
+    /// (`ModelRemovalPolicy.keptByBackend`: Moonshine's) stays on disk whatever `deleteModel` is:
+    /// the flag is honoured only for `.hubDeletable` (a `hubRepo`), here, not left to the UI or to
     /// `deletionTarget` (macos/docs/architecture.md, "Model source").
     ///
     /// Invariant: a folder is deleted only when every installed sibling's check
@@ -662,12 +660,8 @@ public actor EnvironmentManager {
         var doomed: [URL] = []
         // Model folders kept because a sibling's use of them is unknown (reported).
         var kept: [URL] = []
-        let hubRepo: String? =
-            switch backend.info.model {
-            case .hub(let repo, _): repo
-            case .backendManaged, .none: nil  // nothing in the Hub cache to delete
-            }
-        if deleteModel, let hubRepo {
+        // `hubRepo` is set exactly for `removalPolicy == .hubDeletable`: nothing else is deleted.
+        if deleteModel, let hubRepo = backend.info.hubRepo {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
             // Every repo the check names counts, cached or partial, and so does the

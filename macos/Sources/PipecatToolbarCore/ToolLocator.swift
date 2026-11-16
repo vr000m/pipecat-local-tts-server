@@ -200,8 +200,7 @@ public enum ToolLocator {
 /// GUI apps inherit almost nothing from launchd, and `swift run` inherits a whole
 /// developer shell; spelling it out gives both the same behaviour.
 public enum ProcessEnvironment {
-    public static func base() -> [String: String] {
-        let inherited = ProcessInfo.processInfo.environment
+    public static func base(inherited: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
@@ -215,9 +214,11 @@ public enum ProcessEnvironment {
             "DO_NOT_TRACK": "1",
         ]
         env["TMPDIR"] = inherited["TMPDIR"] ?? NSTemporaryDirectory()
-        // Honour a user's own Hugging Face configuration (cache location). The
-        // token is not here: see `huggingFace()`.
-        for key in ["HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME", "PIPECAT_TTS_PHONON_VOICES"] {
+        // Honour a user's own cache locations: Hugging Face's, and Moonshine's
+        // (`MOONSHINE_VOICE_CACHE`, read by moonshine-voice's `get_cache_dir`), so the app's
+        // `prefetch --check` and `serve` find the same weights a command-line server does.
+        // The token is not here: see `huggingFace()`.
+        for key in ["HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME", "MOONSHINE_VOICE_CACHE", "PIPECAT_TTS_PHONON_VOICES"] {
             if let value = inherited[key] { env[key] = value }
         }
         return env

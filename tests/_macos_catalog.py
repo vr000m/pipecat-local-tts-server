@@ -43,8 +43,10 @@ class CatalogEntry:
     model_source: str
     # ``ServiceInfo.hubRepo``: the repo of a ``.hub`` source, else None
     model_repo: str | None
-    # ``ServiceInfo.cliModelOverride``: a ``.hub`` alias or a ``.backendManaged`` spec, else None
+    # ``ServiceInfo.cliModelOverride``: a ``.hub`` alias, else None
     model_argument: str | None
+    # the spec of a ``.backendManaged`` source, else None
+    model_spec: str | None
     streaming: bool
     # ``expectedBackendName``: the ``backend.name`` the entry's ``server.hello`` reports
     expected_backend_name: str
@@ -60,7 +62,7 @@ class CatalogEntry:
     def expected_model(self) -> str | None:
         """``ServiceInfo.expectedModel``: alias or repo for ``.hub``, the spec for
         ``.backendManaged``, None for ``.none``."""
-        return self.model_argument or self.model_repo
+        return self.model_argument or self.model_repo or self.model_spec
 
 
 _MODEL = re.compile(
@@ -72,8 +74,8 @@ _MODEL = re.compile(
 )
 
 
-def _model_source(block: str, case: str) -> tuple[str, str | None, str | None]:
-    """``(model_source, model_repo, model_argument)`` of the block's one ``model:``
+def _model_source(block: str, case: str) -> tuple[str, str | None, str | None, str | None]:
+    """``(model_source, model_repo, model_argument, model_spec)`` of the block's one ``model:``
     argument. Loud on a missing, repeated or unknown shape: never a silent default."""
     block = re.sub(r"^\s*//.*$", "", block, flags=re.MULTILINE)  # prose may say "model: "
     labelled = re.findall(r"\bmodel: ", block)
@@ -82,10 +84,10 @@ def _model_source(block: str, case: str) -> tuple[str, str | None, str | None]:
     assert len(matches) == 1, f"{case}: unparsed model: shape in {block!r}"
     m = matches[0]
     if m.group("none"):
-        return "none", None, None
+        return "none", None, None, None
     if m.group("repo"):
-        return "hub", m.group("repo"), m.group("alias")
-    return "backendManaged", None, m.group("spec")
+        return "hub", m.group("repo"), m.group("alias"), None
+    return "backendManaged", None, None, m.group("spec")
 
 
 def _field(block: str, pattern: str) -> str | None:
@@ -133,7 +135,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
         assert "ServiceInfo(" in block, f"{case}: neither a ServiceInfo literal nor a variant"
         assert _field(block, r"service: \.(\w+),") == case, f"{case}: literal names another service"
         engine, requirements = _stt_helper(block, constants)
-        model_source, model_repo, model_argument = _model_source(block, case)
+        model_source, model_repo, model_argument, model_spec = _model_source(block, case)
         literals[case] = CatalogEntry(
             engine=engine,
             requirements=requirements,
@@ -145,6 +147,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
             model_source=model_source,
             model_repo=model_repo,
             model_argument=model_argument,
+            model_spec=model_spec,
             streaming=_field(block, r"streaming: (true|false)") == "true",
             expected_backend_name=_field(block, r'expectedBackendName: "(\w+)"'),
         )
@@ -152,7 +155,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
     for case, base, block in variants:
         # A variant shares its family's runtime, kind, streaming flag and backend name, and
         # states its own model.
-        model_source, model_repo, model_argument = _model_source(block, case)
+        model_source, model_repo, model_argument, model_spec = _model_source(block, case)
         entries[case] = replace(
             literals[base],
             name=raw[case],
@@ -160,6 +163,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
             model_source=model_source,
             model_repo=model_repo,
             model_argument=model_argument,
+            model_spec=model_spec,
         )
     assert sorted(entries) == sorted(raw), "every Service case has a catalog entry"
     return {entry.name: entry for entry in entries.values()}

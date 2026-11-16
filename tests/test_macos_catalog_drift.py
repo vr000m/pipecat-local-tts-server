@@ -107,6 +107,28 @@ def _backend_streaming(family: str) -> bool:
     return flags[0] == "True"
 
 
+def test_swift_model_source_fields_follow_the_case():
+    """Each ``ModelSource`` case fixes which mirrored fields are set, as the Swift derived
+    properties do: ``model_argument`` (``cliModelOverride``) is a ``.hub`` alias only, never a
+    ``.backendManaged`` spec, and a ``.backendManaged`` entry is STT (TTS would drop its spec)."""
+    seen = set()
+    for entry in macos_catalog().values():
+        seen.add(entry.model_source)
+        fields = (entry.model_repo, entry.model_argument, entry.model_spec)
+        if entry.model_source == "none":
+            assert fields == (None, None, None), entry.name
+        elif entry.model_source == "hub":
+            assert entry.model_repo and entry.model_spec is None, entry.name
+        else:
+            assert entry.model_source == "backendManaged", entry.name
+            assert entry.model_spec and fields[:2] == (None, None), entry.name
+            assert entry.kind == "stt", entry.name
+        assert entry.expected_model == (
+            entry.model_argument or entry.model_repo or entry.model_spec
+        ), entry.name
+    assert seen == {"none", "hub", "backendManaged"}
+
+
 def test_swift_streaming_flags_match_backend_capabilities():
     for entry in macos_catalog().values():
         if entry.kind == "tts":
@@ -121,7 +143,7 @@ def test_swift_model_arguments_are_backend_aliases():
     for entry in macos_catalog().values():
         if entry.kind != "tts" or entry.model_argument is None:
             continue
-        # A TTS ``--model`` override is only ever a Hub alias (no TTS backend fetches its own).
+        # ``cliModelOverride`` is only ever a Hub alias (it is nil for ``.backendManaged``).
         assert entry.model_source == "hub", entry.name
         table = aliases.get(entry.family)
         assert table is not None, f"{entry.name}: {entry.family} has no --model aliases"
@@ -447,19 +469,21 @@ def test_swift_stt_model_repos_match_the_launchagents_and_defaults():
         # is ``.backendManaged`` with the spec equal to upstream's default.
         is_hub_repo = re.fullmatch(r"[\w.\-]+/[\w.\-]+", model) is not None
         if is_hub_repo:
-            assert (entry.model_source, entry.model_repo, entry.model_argument) == (
-                "hub",
-                model,
-                None,
-            ), family
+            assert (
+                entry.model_source,
+                entry.model_repo,
+                entry.model_argument,
+                entry.model_spec,
+            ) == ("hub", model, None, None), family
         else:
-            assert (entry.model_source, entry.model_repo, entry.model_argument) == (
-                "backendManaged",
-                None,
-                model,
-            ), family
+            assert (
+                entry.model_source,
+                entry.model_repo,
+                entry.model_argument,
+                entry.model_spec,
+            ) == ("backendManaged", None, None, model), family
     assert catalog["moonshine"].model_source == "backendManaged"
-    assert catalog["moonshine"].model_argument == upstream_stt().default_models["moonshine"]
+    assert catalog["moonshine"].model_spec == upstream_stt().default_models["moonshine"]
     # Every STT variant is a Hub repo with no alias (STT passes the repo itself).
     for entry in catalog.values():
         if entry.kind == "stt" and entry.is_variant:
