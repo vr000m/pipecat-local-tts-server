@@ -22,7 +22,7 @@ import Python, so these tests parse the Swift source (one parser,
   * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
     TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
     repo at upstream's ``PINNED_REVISIONS`` commit for a pinned default, else with no
-    revision (the app passes none: upstream 0.5.0 pins the default models itself);
+    revision (the app passes none: upstream 0.6.0 pins the default models itself);
   * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
     repo's LaunchAgent labels and ports (written out here), and backend names and
     default model repos that equal the upstream registry, read from the recorded
@@ -349,7 +349,7 @@ def test_swift_expected_models_match_what_the_backends_report():
             assert expected == entry.model_argument != entry.model_repo, entry.name
 
 
-# The STT repo's (pipecat-local-stt-server 0.5.0) LaunchAgents, which the app's STT entries
+# The STT repo's (pipecat-local-stt-server 0.6.0) LaunchAgents, which the app's STT entries
 # agree with: ``backend.name`` the server reports, port, launchd label and default model repo
 # per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper`` engine name is the
 # app's own (it names the environment and the constraints file). The backend names and
@@ -372,14 +372,10 @@ _STT_FAMILIES = {
         "mlx-community/nemotron-3.5-asr-streaming-0.6b",
     ),
     # Moonshine is not a Hub model: the "repo" is its model spec, passed as ``--model``
-    # (the catalog's ``modelArgument``; ``modelRepo`` is nil). STT feature branch
-    # ``feature/moonshine-streaming-backend``, port 9965 confirmed in its plan.
+    # (the catalog's ``modelArgument``; ``modelRepo`` is nil). STT
+    # 0.6.0, port 9965.
     "moonshine": ("moonshine", 9965, "pipecat.stt-server.moonshine", "medium-streaming@en"),
 }
-
-# Families whose backend is not in the recorded release excerpt yet. Re-record the excerpt
-# (``tests/fixtures/stt_server_<version>_source.txt``) with the release bump and delete this.
-_NOT_IN_RECORDED_RELEASE = {"moonshine"}
 
 
 def test_stt_families_match_the_recorded_upstream_registry():
@@ -388,13 +384,9 @@ def test_stt_families_match_the_recorded_upstream_registry():
     registry when ``stt_server`` is importable), so an upstream rename or a new default fails here."""
     upstream = upstream_stt().default_models
     for family, (backend, _, _, repo) in _STT_FAMILIES.items():
-        if family in _NOT_IN_RECORDED_RELEASE:
-            continue
         assert upstream.get(backend) == repo, family
     # Every upstream backend but the test-only ``echo`` is a catalog family.
-    assert {name for name in upstream if name != "echo"} == {
-        b for f, (b, *_) in _STT_FAMILIES.items() if f not in _NOT_IN_RECORDED_RELEASE
-    }
+    assert {name for name in upstream if name != "echo"} == {b for b, *_ in _STT_FAMILIES.values()}
     try:
         from stt_server.backends import BACKENDS as live
     except ImportError:
