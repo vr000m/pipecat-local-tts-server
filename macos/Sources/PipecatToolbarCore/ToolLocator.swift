@@ -232,11 +232,12 @@ public enum ProcessEnvironment {
         return env
     }
 
-    /// `huggingFace()` for a service whose weights come from the Hugging Face cache, `base()` for one
+    /// `huggingFace()` for a service whose weights come from the Hugging Face cache
+    /// (`ServiceInfo.weightsInHubCache`), `base()` for one
     /// that never contacts the Hub (Moonshine downloads from its own CDN; tone and Apple Speech
     /// download nothing), so the credential reaches only a process that can use it.
     public static func huggingFace(for service: Service) -> [String: String] {
-        service.info.modelInHubCache ? huggingFace() : base()
+        service.info.weightsInHubCache ? huggingFace() : base()
     }
 
     /// The environment a service's `serve` child starts from: `huggingFace(for:)`, plus the

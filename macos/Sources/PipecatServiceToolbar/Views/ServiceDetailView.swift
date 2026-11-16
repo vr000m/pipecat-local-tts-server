@@ -453,7 +453,7 @@ struct DetailsCard: View {
 
     var body: some View {
         Card(title: "Details", systemImage: "info.circle") {
-            if let repo = model.info.modelRepo {
+            if let repo = model.info.hubRepo {
                 InfoRow(label: "Model") {
                     Link(destination: URL(string: "https://huggingface.co/\(repo)")!) {
                         Text(repo).lineLimit(1).truncationMode(.middle)
@@ -462,7 +462,7 @@ struct DetailsCard: View {
                     .help(repo)
                 }
             }
-            if model.info.modelRepo == nil, let spec = model.info.modelArgument {
+            if case .backendManaged(let spec) = model.info.model {
                 // A model the backend downloads itself (Moonshine), not a Hugging Face repo.
                 InfoRow(label: "Model") {
                     Text(spec).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(spec)
@@ -544,7 +544,7 @@ struct RemoveSection: View {
             if confirming {
                 Text("Delete \(model.info.displayName)?")
                     .font(.system(size: 12.5, weight: .semibold))
-                Text(model.info.needsModelDownload && !model.info.modelInHubCache
+                Text(model.info.keepsWeightsOnRemove
                     ? "The Python environment is deleted. This model is downloaded by the backend outside the Hugging Face cache, and its files (\(model.diskBytes.map(Format.bytes) ?? "unknown size")) stay on disk."
                     : "The Python environment is deleted. Model files live in the shared Hugging Face cache; delete them too to free \(model.diskBytes.map(Format.bytes) ?? "their space").")
                     .font(.system(size: 11.5))
@@ -554,14 +554,14 @@ struct RemoveSection: View {
                     Button("Cancel") { withAnimation(.snappy) { confirming = false } }
                         .buttonStyle(PillButtonStyle(tint: .secondary))
                     Spacer()
-                    if model.info.needsModelDownload && !model.info.modelInHubCache {
+                    if model.info.keepsWeightsOnRemove {
                         // Nothing the app can delete beyond the environment: one honest button.
                         Button("Delete") { model.remove(deleteModel: false) }
                             .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
                     } else {
                         Button("Keep Model Files") { model.remove(deleteModel: false) }
                             .buttonStyle(PillButtonStyle(tint: .red))
-                        if model.info.needsModelDownload {
+                        if model.info.weightsInHubCache {
                             Button("Delete Everything") { model.remove(deleteModel: true) }
                                 .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
                         }

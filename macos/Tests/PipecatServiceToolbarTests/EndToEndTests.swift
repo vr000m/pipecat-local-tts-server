@@ -323,8 +323,8 @@ struct EndToEndTests {
         server.closeStdin()
         #expect(await server.waitForExit() == 0)
         // Deleting "everything" removes the environment only: the weights are not in the Hub cache,
-        // so the app leaves them (and says so, `ServiceInfo.modelInHubCache`).
-        // Smoke check only that the weights are untouched; the `modelInHubCache` guard itself is covered by
+        // so the app leaves them (and says so, `ServiceInfo.weightsInHubCache`).
+        // Smoke check only that the weights are untouched; the `weightsInHubCache` guard itself is covered by
         // `removalKeepsModelFilesOfAServiceOutsideTheHubCache` in CoreTests.swift.
         let weights = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Caches/moonshine_voice")
         #expect(FileManager.default.fileExists(atPath: weights.path))

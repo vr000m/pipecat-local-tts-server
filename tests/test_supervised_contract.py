@@ -20,7 +20,7 @@ stt wire rate. The lean job has no STT server installed, so:
     with the app's installed 0.6.0 environment (moonshine-voice 0.1.6) and
     ``MOONSHINE_VOICE_CACHE`` set to a temporary root linked to the real cache, so no home
     path is recorded. Its rows carry a synthetic, Hub-shaped ``repo``, which only the
-    catalog's ``modelInHubCache`` keeps out of ``EnvironmentManager.remove`` (the Swift
+    catalog's ``model: .backendManaged`` source keeps out of ``EnvironmentManager.remove`` (the Swift
     tests feed these files through ``cacheStatus`` and ``remove``);
   * every ``"event": "<name>"`` literal in ``tts_server`` is a contract event;
   * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``; the ``stt``

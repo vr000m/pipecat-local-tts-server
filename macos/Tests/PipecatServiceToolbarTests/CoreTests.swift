@@ -83,8 +83,8 @@ import Testing
         let parakeet = Service.parakeet.info, nemotron = Service.nemotron.info
         #expect(parakeet.kind == .stt && nemotron.kind == .stt)
         #expect(parakeet.port == 9765 && nemotron.port == 9865)
-        #expect(parakeet.modelRepo == "mlx-community/parakeet-tdt-0.6b-v3")
-        #expect(nemotron.modelRepo == "mlx-community/nemotron-3.5-asr-streaming-0.6b")
+        #expect(parakeet.hubRepo == "mlx-community/parakeet-tdt-0.6b-v3")
+        #expect(nemotron.hubRepo == "mlx-community/nemotron-3.5-asr-streaming-0.6b")
         #expect(Service.parakeet.family == .parakeet && Service.nemotron.family == .nemotron)
         #expect(Service.parakeet.variants == [.parakeet] && Service.nemotron.variants == [.nemotron])
         #expect(parakeet.needsModelDownload && nemotron.needsModelDownload)
@@ -145,7 +145,7 @@ import Testing
     /// An STT default model is sized at upstream's pin, any other STT model at `main` (nil).
     @Test func sttSnapshotsCarryUpstreamsPinsForTheDefaultModelsOnly() {
         for service in ServiceCatalog.services(of: .stt) {
-            guard let repo = service.info.modelRepo else { continue }
+            guard let repo = service.info.hubRepo else { continue }
             let snapshots = ServiceCatalog.snapshots(for: service)
             #expect(snapshots.map(\.repo) == [repo], "\(service)")
             let pin = ServiceCatalog.sttPinnedRevisions[repo]
@@ -159,6 +159,91 @@ import Testing
         }
         #expect(ServiceCatalog.snapshots(for: .kyutai2B).first?.files == .allButDocs)
         #expect(ServiceCatalog.snapshots(for: .whisper).first?.files == .allButDocs)
+    }
+}
+
+/// `ServiceInfo.model` is the only stored model fact; every policy is derived from it.
+@Suite struct ModelSourceTests {
+    struct Row: Sendable {
+        let source: ModelSource
+        let needsModelDownload: Bool
+        let weightsInHubCache: Bool
+        let keepsWeightsOnRemove: Bool
+        let hubRepo: String?
+        let expectedModel: String?
+        let cliModelOverride: String?
+    }
+
+    /// Every case (and both `.hub` shapes) against every derived property.
+    static let rows: [Row] = [
+        Row(
+            source: .none, needsModelDownload: false, weightsInHubCache: false, keepsWeightsOnRemove: false,
+            hubRepo: nil, expectedModel: nil, cliModelOverride: nil),
+        Row(
+            source: .hub(repo: "org/repo"), needsModelDownload: true, weightsInHubCache: true,
+            keepsWeightsOnRemove: false, hubRepo: "org/repo", expectedModel: "org/repo", cliModelOverride: nil),
+        Row(
+            source: .hub(repo: "org/repo", alias: "repo-q8"), needsModelDownload: true, weightsInHubCache: true,
+            keepsWeightsOnRemove: false, hubRepo: "org/repo", expectedModel: "repo-q8", cliModelOverride: "repo-q8"),
+        Row(
+            source: .backendManaged(spec: "medium@en"), needsModelDownload: true, weightsInHubCache: false,
+            keepsWeightsOnRemove: true, hubRepo: nil, expectedModel: "medium@en", cliModelOverride: "medium@en"),
+    ]
+
+    @Test(arguments: rows) func derivedProperties(_ row: Row) {
+        let info = ServiceInfo(
+            service: .kokoro, kind: .tts, expectedBackendName: "x", displayName: "X", tagline: "",
+            runtime: .ttsServer(extra: nil), port: 1, model: row.source, licence: .none, streaming: false, symbol: "")
+        #expect(info.needsModelDownload == row.needsModelDownload, "\(row.source)")
+        #expect(info.weightsInHubCache == row.weightsInHubCache, "\(row.source)")
+        #expect(info.keepsWeightsOnRemove == row.keepsWeightsOnRemove, "\(row.source)")
+        #expect(info.hubRepo == row.hubRepo, "\(row.source)")
+        #expect(info.expectedModel == row.expectedModel, "\(row.source)")
+        #expect(info.cliModelOverride == row.cliModelOverride, "\(row.source)")
+    }
+
+    private static func modelFlag(_ args: [String]?) -> String?? {
+        guard let args else { return .none }
+        guard let i = args.firstIndex(of: "--model") else { return .some(nil) }
+        return .some(args[i + 1])
+    }
+
+    /// The catalog-wide invariants: `.none` downloads nothing; the Hub cache is exactly `.hub`;
+    /// a removal keeps weights exactly for `.backendManaged`; STT passes `expectedModel` as
+    /// `--model`, TTS passes `cliModelOverride` (no flag when nil); no empty repo, alias or spec.
+    @Test func catalogHoldsTheModelSourceInvariants() throws {
+        let (manager, _) = try VariantTests.manager()
+        for service in Service.allCases {
+            let info = service.info
+            switch info.model {
+            case .none:
+                #expect(!info.needsModelDownload && !info.weightsInHubCache && !info.keepsWeightsOnRemove, "\(service)")
+            case .hub(let repo, let alias):
+                #expect(info.weightsInHubCache && !info.keepsWeightsOnRemove && info.hubRepo == repo, "\(service)")
+                #expect(!repo.isEmpty && alias?.isEmpty != true, "\(service)")
+            case .backendManaged(let spec):
+                #expect(!info.weightsInHubCache && info.keepsWeightsOnRemove && info.hubRepo == nil, "\(service)")
+                #expect(!spec.isEmpty, "\(service)")
+            }
+            let expected: String?
+            switch info.runtime {
+            case .ttsServer: expected = info.cliModelOverride
+            case .sttHelper: expected = info.expectedModel
+            case .appleSpeech:
+                #expect(manager.serveArguments(for: info, port: info.port) == nil)
+                #expect(info.model == .none)
+                continue
+            }
+            for args in [
+                manager.serveArguments(for: info, port: info.port),
+                manager.prefetchArguments(for: info, check: false),
+                manager.prefetchArguments(for: info, check: true),
+            ] {
+                #expect(Self.modelFlag(args) == .some(expected), "\(service)")
+            }
+        }
+        #expect(Service.moonshine.info.model == .backendManaged(spec: "medium-streaming@en"))
+        #expect(Service.phononQ8.info.model == .hub(repo: Service.phonon.info.hubRepo!, alias: "phonon-q8"))
     }
 }
 
@@ -233,12 +318,12 @@ import Testing
             "-m", "stt_server", "prefetch", "--backend", "moonshine",
             "--model", "medium-streaming@en", "--json", "--check",
         ])
-        #expect(Service.moonshine.info.modelRepo == nil && Service.moonshine.info.needsModelDownload)
+        #expect(Service.moonshine.info.hubRepo == nil && Service.moonshine.info.needsModelDownload)
         #expect(Service.moonshine.info.expectedModel == "medium-streaming@en")
         // Its weights are outside the Hugging Face cache, the only place removal deletes from.
-        #expect(!Service.moonshine.info.modelInHubCache)
+        #expect(!Service.moonshine.info.weightsInHubCache)
         for service in Service.allCases where service != .moonshine && service.info.needsModelDownload {
-            #expect(service.info.modelInHubCache, "\(service)")
+            #expect(service.info.weightsInHubCache, "\(service)")
         }
         #expect(ServiceCatalog.snapshots(for: .moonshine).isEmpty)
         let kyutai = try #require(manager.serveArguments(for: Service.kyutai2B.info, port: 9666))
@@ -1032,7 +1117,7 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
     /// environment still goes. Hub-cache services delete as in the tests above.
     @Test func removalKeepsModelFilesOfAServiceOutsideTheHubCache() async throws {
         let (manager, paths) = try VariantTests.manager()
-        #expect(!Service.moonshine.info.modelInHubCache && Service.pocketTTS.info.modelInHubCache)
+        #expect(!Service.moonshine.info.weightsInHubCache && Service.pocketTTS.info.weightsInHubCache)
         let repo = paths.hubDir.appending(path: "models--moonshine-voice--medium")
         let snapshot = repo.appending(path: "snapshots/abc")
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
@@ -1938,7 +2023,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(kyutai.environment["HF_TOKEN"] == "hf_test_secret")
         for service in Service.allCases where service.info.needsModelDownload {
             let download = try #require(manager.prefetchSpec(for: service, check: false), "\(service)")
-            #expect((download.environment["HF_TOKEN"] != nil) == service.info.modelInHubCache, "\(service)")
+            #expect((download.environment["HF_TOKEN"] != nil) == service.info.weightsInHubCache, "\(service)")
             #expect(manager.prefetchSpec(for: service, check: true)?.environment["HF_TOKEN"] == nil, "\(service)")
         }
         #expect(manager.prefetchSpec(for: .appleSpeech, check: false) == nil)
@@ -2178,7 +2263,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
 
     @Test func whisperVariantsAllReportMlx() throws {
         for service in Service.whisper.variants {
-            let repo = try #require(service.info.modelRepo)
+            let repo = try #require(service.info.hubRepo)
             let json = HelloFixtures.json(name: "mlx", model: repo, rate: 16000)
             #expect(try HelloFixtures.match(json, port: service.info.port)?.service == service, "\(service)")
             // The model decides which variant; another size's repo on this port is a mismatch.
@@ -2187,7 +2272,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
             }
         }
         // The family name is not the backend name.
-        let turbo = try #require(Service.whisper.info.modelRepo)
+        let turbo = try #require(Service.whisper.info.hubRepo)
         #expect(try HelloFixtures.match(HelloFixtures.json(name: "whisper", model: turbo), port: Service.whisper.info.port) == nil)
     }
 
@@ -2206,7 +2291,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
 
     @Test func kokoroWithNoModelIsAMismatch() throws {
         // A missing model matches only an entry that pins none; kokoro pins its repo.
-        let repo = try #require(Service.kokoro.info.modelRepo)
+        let repo = try #require(Service.kokoro.info.hubRepo)
         #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: repo), port: 8765)?.service == .kokoro)
         #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: nil), port: 8765) == nil)
     }

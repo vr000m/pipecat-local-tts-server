@@ -157,7 +157,7 @@ public actor EnvironmentManager {
         switch info.runtime {
         case .ttsServer:
             args = ["-m", "tts_server", "prefetch", "--backend", info.family.rawValue, "--json"]
-            if let model = info.modelArgument { args += ["--model", model] }
+            if let model = info.cliModelOverride { args += ["--model", model] }
         case .sttHelper:
             guard let model = info.expectedModel else { return nil }
             args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", model, "--json"]
@@ -182,7 +182,7 @@ public actor EnvironmentManager {
         switch info.runtime {
         case .ttsServer:
             var args = ["-m", "tts_server", "serve", "--backend", info.family.rawValue]
-            if let model = info.modelArgument { args += ["--model", model] }
+            if let model = info.cliModelOverride { args += ["--model", model] }
             return args + [
                 "--host", ServiceCatalog.host, "--port", String(port), "--supervised", "--log-level", "INFO",
             ]
@@ -547,7 +547,13 @@ public actor EnvironmentManager {
             var failure: ServerCLIEvent?
             // The repo before the first `start` event names it: a Phonon variant shows its Hub
             // repo, not its `--model` alias; Moonshine (no repo) shows its model spec.
-            var progress = DownloadProgress(repo: backend.info.modelRepo ?? backend.info.modelArgument ?? "")
+            let initial: String =
+                switch backend.info.model {
+                case .hub(let repo, _): repo
+                case .backendManaged(let spec): spec
+                case .none: ""
+                }
+            var progress = DownloadProgress(repo: initial)
             for await line in sub.stdout {
                 guard let event = ServerCLIEvent.parse(line) else {
                     emit(.log(line))
@@ -639,8 +645,9 @@ public actor EnvironmentManager {
     ///
     /// Only Hugging Face repo folders and the derived-weights folders are ever deleted
     /// (`deletionTarget`), so a model the backend fetches outside the Hub cache
-    /// (`ServiceInfo.modelInHubCache` false: Moonshine's) stays on disk whatever `deleteModel` is:
-    /// the flag is ignored for such a service here, not left to the UI or to `deletionTarget`.
+    /// (`ModelSource.backendManaged`: Moonshine's) stays on disk whatever `deleteModel` is:
+    /// the flag is honoured only for a `.hub` source, here, not left to the UI or to
+    /// `deletionTarget` (macos/docs/architecture.md, "Model source").
     ///
     /// Invariant: a folder is deleted only when every installed sibling's check
     /// answered, in full, and named none of it. A sibling whose check gave no
@@ -655,17 +662,22 @@ public actor EnvironmentManager {
         var doomed: [URL] = []
         // Model folders kept because a sibling's use of them is unknown (reported).
         var kept: [URL] = []
-        if deleteModel && backend.info.modelInHubCache {
+        let hubRepo: String? =
+            switch backend.info.model {
+            case .hub(let repo, _): repo
+            case .backendManaged, .none: nil  // nothing in the Hub cache to delete
+            }
+        if deleteModel, let hubRepo {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
             // Every repo the check names counts, cached or partial, and so does the
             // service's model repo: a partial download is still gigabytes on disk.
             let status = await modelCacheStatus(backend, includeOutdated: true) ?? known
-            let repos = (status?.repoIDs ?? []) + [backend.info.modelRepo].compactMap { $0 }
+            let repos = (status?.repoIDs ?? []) + [hubRepo]
             let own = (status.map { $0.repoFolders + $0.derivedFolders } ?? [])
                 + repos.map { paths.hubDir.appending(path: Self.cacheFolderName(repo: $0)) }
             var shared: [URL] = []
-            var sharedRepos = siblings.compactMap(\.info.modelRepo)
+            var sharedRepos = siblings.compactMap(\.info.hubRepo)
             var siblingsKnown = true
             for sibling in siblings {
                 // nil is "unknown" (a failed probe, or one quit stopped), never
