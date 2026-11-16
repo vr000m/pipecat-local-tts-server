@@ -546,6 +546,11 @@ leaves it running).
   repos). A sibling whose check gives no answer (it failed, or quit stopped it)
   keeps every candidate folder. Only folders inside the model roots are
   deleted.
+- Moonshine is the exception: its weights are in `~/Library/Caches/moonshine_voice`,
+  outside the Hugging Face cache, so the detail page offers a single **Delete**
+  and its dialogs say the model files stay. The core enforces this: `remove`
+  ignores `deleteModel` for a service whose `modelInHubCache` is false, so only
+  the environment goes.
 - Leftovers are reported, never silent: a folder kept for an unanswered
   sibling, one the deletion guard refuses, or one that can't be deleted fails
   the removal with `RemovalError` ("Couldn't remove", listing each path), after
@@ -706,6 +711,10 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
   - Phonon's weights and Pocket TTS's voice embeddings are pinned to a commit.
     Other TTS repos (Dia's codec included) follow `main`; the default STT models are
     pinned by upstream 0.6.0 itself and other STT models follow `main`.
+  - Moonshine's weights are fetched from `download.moonshine.ai` by `moonshine-voice`,
+    which checks each file by size and CRC32C against a manifest in its native
+    library. That catches corruption, not tampering: their integrity rests on TLS
+    and the CDN.
 - **Logs.** The app never writes audio or transcripts to disk itself. Each
   service's log file holds what that server prints at INFO level, plus the
   app's start and stop markers.

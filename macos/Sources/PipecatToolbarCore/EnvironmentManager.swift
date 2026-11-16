@@ -632,7 +632,8 @@ public actor EnvironmentManager {
     ///
     /// Only Hugging Face repo folders and the derived-weights folders are ever deleted
     /// (`deletionTarget`), so a model the backend fetches outside the Hub cache
-    /// (`ServiceInfo.modelInHubCache` false: Moonshine's) stays on disk whatever `deleteModel` is.
+    /// (`ServiceInfo.modelInHubCache` false: Moonshine's) stays on disk whatever `deleteModel` is:
+    /// the flag is ignored for such a service here, not left to the UI or to `deletionTarget`.
     ///
     /// Invariant: a folder is deleted only when every installed sibling's check
     /// answered, in full, and named none of it. A sibling whose check gave no
@@ -647,7 +648,7 @@ public actor EnvironmentManager {
         var doomed: [URL] = []
         // Model folders kept because a sibling's use of them is unknown (reported).
         var kept: [URL] = []
-        if deleteModel {
+        if deleteModel && backend.info.modelInHubCache {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
             // Every repo the check names counts, cached or partial, and so does the

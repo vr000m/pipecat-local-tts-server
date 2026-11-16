@@ -235,10 +235,6 @@ import Testing
         ])
         #expect(Service.moonshine.info.modelRepo == nil && Service.moonshine.info.needsModelDownload)
         #expect(Service.moonshine.info.expectedModel == "medium-streaming@en")
-        // No Hub token for a process that never contacts the Hub; Hub-cache services keep it.
-        #expect(ProcessEnvironment.huggingFace(for: .moonshine) == ProcessEnvironment.base())
-        #expect(ProcessEnvironment.serve(.moonshine) == ProcessEnvironment.base())
-        #expect(ProcessEnvironment.huggingFace(for: .kyutai) == ProcessEnvironment.huggingFace())
         // Its weights are outside the Hugging Face cache, the only place removal deletes from.
         #expect(!Service.moonshine.info.modelInHubCache)
         for service in Service.allCases where service != .moonshine && service.info.needsModelDownload {
@@ -1024,6 +1020,23 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try await manager.remove(.pocketTTS, deleteModel: true)
         #expect(!FileManager.default.fileExists(atPath: cached.path))
         #expect(!FileManager.default.fileExists(atPath: partial.path), "a partial repo survived Delete Everything")
+    }
+
+    /// The core ignores `deleteModel` for a service whose weights are not in the Hugging Face
+    /// cache (Moonshine's): even a check naming a hub folder deletes nothing, while the
+    /// environment still goes. Hub-cache services delete as in the tests above.
+    @Test func removalKeepsModelFilesOfAServiceOutsideTheHubCache() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        #expect(!Service.moonshine.info.modelInHubCache && Service.pocketTTS.info.modelInHubCache)
+        let repo = paths.hubDir.appending(path: "models--moonshine-voice--medium")
+        let snapshot = repo.appending(path: "snapshots/abc")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Self.checkingEnvironment(.moonshine, paths, rows: [
+            #"{"event":"check","repo":"moonshine-voice/medium","path":"\#(snapshot.path)","cached":true}"#
+        ])
+        try await manager.remove(.moonshine, deleteModel: true)
+        #expect(manager.environmentStatus(.moonshine) == .missing)
+        #expect(FileManager.default.fileExists(atPath: repo.path), "deleteModel deleted a non-Hub-cache service's files")
     }
 
     /// A reported folder the deletion guard refuses is a failure, never a silent success.
@@ -1836,6 +1849,17 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(ProcessEnvironment.uv(paths: paths)["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.base()["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.huggingFace()["HF_TOKEN"] == "hf_test_secret")
+    }
+
+    /// A process that never contacts the Hub (Moonshine) gets no token; Hub-cache services keep it.
+    @Test func hubTokenReachesOnlyHubCacheServices() {
+        let saved = ProcessInfo.processInfo.environment["HF_TOKEN"]
+        setenv("HF_TOKEN", "hf_test_secret", 1)
+        defer { if let saved { setenv("HF_TOKEN", saved, 1) } else { unsetenv("HF_TOKEN") } }
+        #expect(ProcessEnvironment.huggingFace(for: .moonshine)["HF_TOKEN"] == nil)
+        #expect(ProcessEnvironment.serve(.moonshine)["HF_TOKEN"] == nil)
+        #expect(ProcessEnvironment.huggingFace(for: .kyutai)["HF_TOKEN"] == "hf_test_secret")
+        #expect(ProcessEnvironment.serve(.kyutai)["HF_TOKEN"] == "hf_test_secret")
     }
 
     /// Parakeet's `serve` child sees Homebrew's `ffmpeg`; nothing else gets a wider `PATH`.

@@ -25,7 +25,7 @@ import Python, so these tests parse the Swift source (one parser,
     revision (the app passes none: upstream 0.6.0 pins the default models itself);
   * the five STT families (Whisper, Kyutai, Parakeet, Nemotron, Moonshine) keep the STT
     repo's LaunchAgent labels and ports (written out here), and backend names and
-    default model repos that equal the upstream registry, read from the recorded
+    default models (repo or spec) that equal the upstream registry, read from the recorded
     excerpt of the installed release (``_stt_upstream``; the lean job never imports
     ``stt_server``);
   * the Try it wire fixture is what the server sends.
@@ -350,10 +350,11 @@ def test_swift_expected_models_match_what_the_backends_report():
 
 
 # The STT repo's (pipecat-local-stt-server 0.6.0) LaunchAgents, which the app's STT entries
-# agree with: ``backend.name`` the server reports, port, launchd label and default model repo
-# per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper`` engine name is the
-# app's own (it names the environment and the constraints file). The backend names and
-# default models are checked against the recorded upstream registry
+# agree with: ``backend.name`` the server reports, port, launchd label and default model
+# (repo or spec) per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper``
+# engine name is the app's own (it names the environment and the constraints file). The
+# fourth slot is the default model (a Hub repo id, or a model spec for Moonshine). The
+# backend names and default models are checked against the recorded upstream registry
 # (``test_stt_families_match_the_recorded_upstream_registry``); the ports and labels are the
 # STT repo's LaunchAgent plists (PR #16), which no released source carries yet.
 _STT_FAMILIES = {
@@ -371,20 +372,20 @@ _STT_FAMILIES = {
         "pipecat.stt-server.nemotron",
         "mlx-community/nemotron-3.5-asr-streaming-0.6b",
     ),
-    # Moonshine is not a Hub model: the "repo" is its model spec, passed as ``--model``
-    # (the catalog's ``modelArgument``; ``modelRepo`` is nil). STT
-    # 0.6.0, port 9965.
+    # Moonshine is not a Hub model: its model is a spec, passed as ``--model`` (the catalog's
+    # ``modelArgument``; ``modelRepo`` is nil). STT 0.6.0, port 9965.
     "moonshine": ("moonshine", 9965, "pipecat.stt-server.moonshine", "medium-streaming@en"),
 }
 
 
 def test_stt_families_match_the_recorded_upstream_registry():
     """Each family's ``backend.name`` is an upstream ``BACKENDS`` name whose default model is the
-    family's repo, read from the recorded excerpt of the release the app installs (and the live
-    registry when ``stt_server`` is importable), so an upstream rename or a new default fails here."""
+    family's default model, read from the recorded excerpt of the release the app installs (and
+    the live registry when ``stt_server`` is importable), so an upstream rename or a new default
+    fails here."""
     upstream = upstream_stt().default_models
-    for family, (backend, _, _, repo) in _STT_FAMILIES.items():
-        assert upstream.get(backend) == repo, family
+    for family, (backend, _, _, model) in _STT_FAMILIES.items():
+        assert upstream.get(backend) == model, family
     # Every upstream backend but the test-only ``echo`` is a catalog family.
     assert {name for name in upstream if name != "echo"} == {b for b, *_ in _STT_FAMILIES.values()}
     try:
@@ -428,18 +429,19 @@ def test_swift_stt_ports_and_labels_match_the_stt_launchagents():
 
 
 def test_swift_stt_model_repos_match_the_launchagents_and_defaults():
-    """The family entries' ``modelRepo``: Parakeet and Nemotron the models their
-    LaunchAgents serve, Whisper and Kyutai the upstream defaults. Each STT entry has
-    its own repo (variants differ from their family's)."""
+    """The family entries' model: Parakeet and Nemotron the models their LaunchAgents serve,
+    Whisper, Kyutai and Moonshine the upstream defaults. ``modelRepo`` is set exactly when
+    that model is a Hub repo id. Each STT entry has its own repo (variants differ from
+    their family's)."""
     catalog = macos_catalog()
     for family, (_, _, _, model) in _STT_FAMILIES.items():
         entry = catalog[family]
-        if family == "moonshine":
-            # Not a Hub model: no repo (the app deletes only from the Hub cache and keys
-            # ``modelInHubCache`` on it), the spec is the ``--model`` argument.
-            assert entry.model_repo is None and entry.model_argument == model, family
-        else:
-            assert entry.model_repo == model and entry.model_argument is None, family
+        assert (entry.model_argument or entry.model_repo) == model, family
+        # ``modelRepo`` is set exactly for a model that is a Hub repo id (``<org>/<name>``): the
+        # app deletes only from the Hub cache and keys ``modelInHubCache`` on it, so a spec
+        # (Moonshine's) must have none and a repo id must not lose it.
+        is_hub_repo = re.fullmatch(r"[\w.\-]+/[\w.\-]+", model) is not None
+        assert (entry.model_repo is not None) == is_hub_repo, family
     repos = [e.model_repo for e in catalog.values() if e.kind == "stt" and e.model_repo]
     assert len(repos) == len(set(repos)), "each STT service has its own repo"
     assert catalog["apple_speech"].model_repo is None

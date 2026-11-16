@@ -230,7 +230,7 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.6.0
   itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
   no revision flag (there is none), only `--model <repo>`: a model other than a pinned
-  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is not a Hub model: its weights come from `download.moonshine.ai`, fixed by the `moonshine-voice` version in its constraints, and the app passes the model spec as `--model`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is not a Hub model: its weights come from `download.moonshine.ai`, and the app passes the model spec as `--model`. `moonshine-voice` checks each downloaded file by size and CRC32C against a manifest in its native library (that catches corruption, not tampering), so their integrity rests on TLS and the CDN. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
   Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
   `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
   it the server exits with `BackendStartError: FFmpeg is not installed or not in
