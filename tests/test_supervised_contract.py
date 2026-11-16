@@ -15,6 +15,13 @@ stt wire rate. The lean job has no STT server installed, so:
     ``prefetch --check --json``: a ``check`` row then the ``summary``, recorded offline on
     an empty cache), checked against the same contract and against the key sets the TTS
     emitter writes for the same events; the lean job never imports ``stt_server``;
+  * Moonshine's non-Hub prefetch output is recorded too (``stt_prefetch_*_moonshine_*``:
+    ``--check`` on an empty and on a full cache, and a fetch with the weights cached), run
+    with the app's installed 0.6.0 environment (moonshine-voice 0.1.6) and
+    ``MOONSHINE_VOICE_CACHE`` set to a temporary root linked to the real cache, so no home
+    path is recorded. Its rows carry a synthetic, Hub-shaped ``repo``, which only the
+    catalog's ``modelInHubCache`` keeps out of ``EnvironmentManager.remove`` (the Swift
+    tests feed these files through ``cacheStatus`` and ``remove``);
   * every ``"event": "<name>"`` literal in ``tts_server`` is a contract event;
   * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``; the ``stt``
     list == upstream ``stt_server.supervise.CODE_*``, read from a verbatim recorded
@@ -61,6 +68,12 @@ CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
 SERVICE_SWIFT = CORE / "Service.swift"
 STT_FIXTURE = REPO / "tests" / "fixtures" / "stt_supervised_lines.jsonl"
 STT_PREFETCH_FIXTURE = REPO / "tests" / "fixtures" / "stt_prefetch_check_lines.jsonl"
+FIXTURES = REPO / "tests" / "fixtures"
+MOONSHINE_FIXTURES = {
+    "check_cached": FIXTURES / "stt_prefetch_check_moonshine_cached_lines.jsonl",
+    "check_missing": FIXTURES / "stt_prefetch_check_moonshine_missing_lines.jsonl",
+    "fetch": FIXTURES / "stt_prefetch_fetch_moonshine_lines.jsonl",
+}
 SCOPES = ("serve", "prefetch")
 TTS_CODES = set(CONTRACT["error_codes"]["tts"])
 STT_CODES = set(CONTRACT["error_codes"]["stt"])
@@ -250,6 +263,41 @@ def test_recorded_stt_prefetch_check_conforms_to_the_contract(emitted):
     }
     assert set(check) in tts["check"]
     assert set(summary) in tts["summary"]
+
+
+def _jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_recorded_moonshine_prefetch_conforms_to_the_contract(emitted):
+    """Moonshine's 0.6.0 ``prefetch`` (not on the Hub) speaks the same events with the same
+    key sets, and its rows are what the Swift side relies on: a synthetic ``repo`` and a
+    path outside any Hugging Face ``models--*/snapshots/<rev>`` folder."""
+    lines = {name: _jsonl(path) for name, path in MOONSHINE_FIXTURES.items()}
+    assert [e["event"] for e in lines["check_cached"]] == ["check", "summary"]
+    assert [e["event"] for e in lines["check_missing"]] == ["check", "summary"]
+    assert [e["event"] for e in lines["fetch"]] == ["start", "progress", "done", "complete"]
+    tts = {e["event"]: [] for e in emitted["prefetch"]}
+    for e in emitted["prefetch"]:
+        tts[e["event"]].append(set(e))
+    for name, events in lines.items():
+        for event in events:
+            conform("prefetch", event, "stt")
+            assert set(event) in tts[event["event"]], (name, event["event"])
+    for event in lines["check_cached"] + lines["check_missing"] + lines["fetch"]:
+        if "repo" in event:
+            assert event["repo"] == "moonshine-voice/medium-streaming-en"
+        if event.get("path"):
+            parts = Path(event["path"]).parts
+            assert not any(p.startswith("models--") for p in parts), event["path"]
+            assert "snapshots" not in parts and "huggingface" not in parts
+    cached, missing = lines["check_cached"][0], lines["check_missing"][0]
+    assert cached["cached"] and cached["path"] and cached["size_bytes"] > 0
+    assert not missing["cached"] and missing["path"] is None and missing["size_bytes"] == 0
+    # The revision is the moonshine-voice pin, not a Hub commit.
+    assert cached["revision"] == missing["revision"] == lines["fetch"][0]["revision"] == "0.1.6"
+    for summary in (lines["check_cached"][1], lines["check_missing"][1], lines["fetch"][3]):
+        assert summary["backend"] == "moonshine" and summary["model"] == "medium-streaming@en"
 
 
 @pytest.mark.skipif(

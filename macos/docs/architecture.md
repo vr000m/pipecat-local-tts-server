@@ -675,7 +675,11 @@ against recorded upstream artifacts instead: a real 0.6.0 `ready` and `error` li
 (`tests/fixtures/stt_supervised_lines.jsonl`), a real 0.6.0 kyutai `prefetch --check --json`
 (`tests/fixtures/stt_prefetch_check_lines.jsonl`: the `check` row then the `summary` that
 `EnvironmentManager.cacheStatus` reads, recorded offline on an empty cache and re-recorded by
-the opt-in `-k verbatim` run), and a verbatim excerpt of the 0.6.0 source
+the opt-in `-k verbatim` run), Moonshine's real 0.6.0 `prefetch` output
+(`tests/fixtures/stt_prefetch_*_moonshine_*.jsonl`: `--check` on an empty and a full cache,
+and a fetch with the weights cached; its rows name a synthetic `moonshine-voice/<arch>-<lang>`
+repo and a path outside the Hugging Face cache, and the Swift tests replay them through
+`cacheStatus` and `remove`), and a verbatim excerpt of the 0.6.0 source
 (`tests/fixtures/stt_server_0.6.0_source.txt`: its `CODE_*` error codes and backend
 registry, checked against the live package too where it is importable). The test also
 checks the Swift decoder (`ServerCLIEvent`), the error codes (`SupervisedErrorCode`, the
@@ -698,7 +702,8 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
   app serves loopback only; any local process can connect. What a token would
   take, and why it is not done: [`loopback-auth.md`](loopback-auth.md).
 - **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
-  (`ProcessEnvironment.huggingFace(for:)`), never `uv`, whose package builds run
+  (`ProcessEnvironment.huggingFace(for:)`, through `EnvironmentManager.prefetchSpec` for a
+  download; the offline `--check` gets none), never `uv`, whose package builds run
   third-party code. A service whose weights are not in the Hugging Face cache
   (`ServiceInfo.modelInHubCache` false: Moonshine, which downloads from
   `download.moonshine.ai`) gets `base()`, with no token.

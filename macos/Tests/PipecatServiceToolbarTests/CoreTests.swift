@@ -995,9 +995,14 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
 
     /// An environment whose `prefetch --check` prints `rows`, for removal tests.
     static func checkingEnvironment(_ service: Service, _ paths: AppPaths, rows: [String]) throws {
+        try recordingEnvironment(service, paths, lines: rows + [#"{"event":"summary","cached":false,"size_bytes":8}"#])
+    }
+
+    /// An environment whose `prefetch --check` prints exactly `lines`.
+    static func recordingEnvironment(_ service: Service, _ paths: AppPaths, lines: [String]) throws {
         let python = paths.python(service)
         try FileManager.default.createDirectory(at: python.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let json = (rows + [#"{"event":"summary","cached":false,"size_bytes":8}"#]).joined(separator: "\n")
+        let json = lines.joined(separator: "\n")
         try "#!/bin/sh\ncat <<'EOF'\n\(json)\nEOF\n".write(to: python, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
         try EnvironmentMarker(service: service.rawValue, fingerprint: "old.whl", python: "3.12.0", createdAt: Date())
@@ -1037,6 +1042,62 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try await manager.remove(.moonshine, deleteModel: true)
         #expect(manager.environmentStatus(.moonshine) == .missing)
         #expect(FileManager.default.fileExists(atPath: repo.path), "deleteModel deleted a non-Hub-cache service's files")
+    }
+
+    /// Real 0.6.0 `stt_server prefetch --json` output (`tests/fixtures`; the Python contract test
+    /// checks the same files against `docs/supervised-contract.json`).
+    static func recordedPrefetch(_ name: String) throws -> [String] {
+        let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appending(path: "tests/fixtures/\(name)")
+        return try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+    }
+
+    static let moonshineCached = "stt_prefetch_check_moonshine_cached_lines.jsonl"
+    static let moonshineMissing = "stt_prefetch_check_moonshine_missing_lines.jsonl"
+    static let kyutaiHub = "stt_prefetch_check_lines.jsonl"
+
+    /// Moonshine's recorded check rows name a synthetic, Hub-shaped repo id and a path outside the
+    /// Hugging Face cache: `cacheStatus` finds no repo folder in them and the path is not deletable.
+    /// A recorded Hub row (Kyutai) names its real repo the same way.
+    @Test func recordedMoonshineCheckNamesNoDeletableFolder() throws {
+        let (_, paths) = try VariantTests.manager()
+        for name in [Self.moonshineCached, Self.moonshineMissing] {
+            let status = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(name)), "\(name)")
+            #expect(status.repoFolders.isEmpty && status.derivedFolders.isEmpty, "\(name)")
+            #expect(status.repoIDs == ["moonshine-voice/medium-streaming-en"], "\(name)")
+            #expect(status.cached == (name == Self.moonshineCached), "\(name)")
+        }
+        let cachedRow = try #require(ServerCLIEvent.parse(Self.recordedPrefetch(Self.moonshineCached)[0]))
+        let weights = try #require(cachedRow.path)
+        #expect(EnvironmentManager.repoFolder(fromSnapshot: weights) == nil)
+        #expect(EnvironmentManager.deletionTarget(URL(filePath: weights), hub: paths.hubDir, derived: paths.derivedModelsDir) == nil)
+        // The fetch's `start` labels the download with the same synthetic id; `done` is outside the cache too.
+        let fetch = try Self.recordedPrefetch("stt_prefetch_fetch_moonshine_lines.jsonl").compactMap(ServerCLIEvent.parse)
+        #expect(fetch.map(\.event) == ["start", "progress", "done", "complete"])
+        #expect(fetch[0].repo == "moonshine-voice/medium-streaming-en")
+        #expect(fetch[2].path.flatMap(EnvironmentManager.repoFolder(fromSnapshot:)) == nil)
+        let hub = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(Self.kyutaiHub)))
+        #expect(hub.repoIDs == ["kyutai/stt-1b-en_fr-mlx"] && hub.repoFolders.isEmpty && !hub.cached)
+    }
+
+    /// Every recorded row, with Delete Everything on and off, against a hub folder planted at the
+    /// name `cacheFolderName` derives from the row's repo id: only the Hub row with `deleteModel`
+    /// deletes it; Moonshine's synthetic id never reaches the hub cache.
+    @Test(arguments: [LifecycleTests.moonshineCached, LifecycleTests.moonshineMissing, LifecycleTests.kyutaiHub], [true, false])
+    func removalOfARecordedCheckDeletesOnlyHubFolders(fixture: String, deleteModel: Bool) async throws {
+        let (manager, paths) = try VariantTests.manager()
+        let service: Service = fixture == Self.kyutaiHub ? .kyutai : .moonshine
+        let lines = try Self.recordedPrefetch(fixture)
+        let repo = try #require(ServerCLIEvent.parse(lines[0])?.repo)
+        let planted = paths.hubDir.appending(path: EnvironmentManager.cacheFolderName(repo: repo))
+        try FileManager.default.createDirectory(at: planted.appending(path: "blobs"), withIntermediateDirectories: true)
+        try Self.recordingEnvironment(service, paths, lines: lines)
+
+        try await manager.remove(service, deleteModel: deleteModel)
+
+        #expect(manager.environmentStatus(service) == .missing)
+        let deleted = fixture == Self.kyutaiHub && deleteModel
+        #expect(FileManager.default.fileExists(atPath: planted.path) == !deleted, "\(fixture) deleteModel=\(deleteModel)")
     }
 
     /// A reported folder the deletion guard refuses is a failure, never a silent success.
@@ -1860,6 +1921,27 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(ProcessEnvironment.serve(.moonshine)["HF_TOKEN"] == nil)
         #expect(ProcessEnvironment.huggingFace(for: .kyutai)["HF_TOKEN"] == "hf_test_secret")
         #expect(ProcessEnvironment.serve(.kyutai)["HF_TOKEN"] == "hf_test_secret")
+    }
+
+    /// The `prefetch` subprocess the install step and the cache probe actually run: a download
+    /// carries the token only for a Hub-cache service; the offline `--check` never does.
+    @Test func prefetchSubprocessGetsTheTokenOnlyForHubCacheDownloads() throws {
+        let saved = ProcessInfo.processInfo.environment["HF_TOKEN"]
+        setenv("HF_TOKEN", "hf_test_secret", 1)
+        defer { if let saved { setenv("HF_TOKEN", saved, 1) } else { unsetenv("HF_TOKEN") } }
+        let (manager, paths) = try VariantTests.manager()
+        let moonshine = try #require(manager.prefetchSpec(for: .moonshine, check: false))
+        #expect(moonshine.environment["HF_TOKEN"] == nil)
+        #expect(moonshine.executable == paths.python(.moonshine))
+        #expect(moonshine.arguments == manager.prefetchArguments(for: Service.moonshine.info, check: false))
+        let kyutai = try #require(manager.prefetchSpec(for: .kyutai, check: false))
+        #expect(kyutai.environment["HF_TOKEN"] == "hf_test_secret")
+        for service in Service.allCases where service.info.needsModelDownload {
+            let download = try #require(manager.prefetchSpec(for: service, check: false), "\(service)")
+            #expect((download.environment["HF_TOKEN"] != nil) == service.info.modelInHubCache, "\(service)")
+            #expect(manager.prefetchSpec(for: service, check: true)?.environment["HF_TOKEN"] == nil, "\(service)")
+        }
+        #expect(manager.prefetchSpec(for: .appleSpeech, check: false) == nil)
     }
 
     /// Parakeet's `serve` child sees Homebrew's `ffmpeg`; nothing else gets a wider `PATH`.

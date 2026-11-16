@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- macOS app: Moonshine STT (port 9965, English by default via the model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model. Deleting it removes its Python environment only: its weights stay in `~/Library/Caches/moonshine_voice`, outside the Hugging Face cache the app deletes from, so the confirmation offers one **Delete** button and says the files stay.
+- macOS app: Moonshine STT (port 9965, English only: model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model. Deleting it removes its Python environment only: its weights stay in `~/Library/Caches/moonshine_voice`, outside the Hugging Face cache the app deletes from, so the confirmation offers one **Delete** button and says the files stay.
 
 ### Changed
 

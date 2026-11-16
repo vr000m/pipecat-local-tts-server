@@ -1,0 +1,4 @@
+{"event":"start","repo":"moonshine-voice/medium-streaming-en","revision":"0.1.6","kind":"model"}
+{"event":"progress","repo":"moonshine-voice/medium-streaming-en","downloaded_bytes":0,"total_bytes":0,"files_done":0,"files_total":0}
+{"event":"done","repo":"moonshine-voice/medium-streaming-en","path":"/var/folders/sz/74wjrthj01z_jf1jmphcczgw0000gn/T/tmp.IUHfoXHvt6/download.moonshine.ai/model/medium-streaming-en/quantized_26_11_02","size_bytes":269306511}
+{"event":"complete","backend":"moonshine","model":"medium-streaming@en","cached":true,"size_bytes":269306511}

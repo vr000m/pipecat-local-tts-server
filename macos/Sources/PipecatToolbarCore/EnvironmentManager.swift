@@ -168,6 +168,15 @@ public actor EnvironmentManager {
         return args
     }
 
+    /// The `prefetch` subprocess both callers run. The offline `--check` gets `base()` (no
+    /// token); a download gets `huggingFace(for:)`, so the token reaches only a service whose
+    /// weights come from the Hugging Face cache (never Moonshine's).
+    public nonisolated func prefetchSpec(for backend: Service, check: Bool) -> Subprocess.Spec? {
+        guard let args = prefetchArguments(for: backend.info, check: check) else { return nil }
+        let environment = check ? ProcessEnvironment.base() : ProcessEnvironment.huggingFace(for: backend)
+        return .init(executable: paths.python(backend), arguments: args, environment: environment)
+    }
+
     /// The supervised server command (run with the environment's python).
     public nonisolated func serveArguments(for info: ServiceInfo, port: Int) -> [String]? {
         switch info.runtime {
@@ -199,9 +208,7 @@ public actor EnvironmentManager {
         case .outdated where includeOutdated: break
         default: return nil
         }
-        guard let args = prefetchArguments(for: backend.info, check: true),
-            let stdout = await probe(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.base()))
-        else { return nil }
+        guard let spec = prefetchSpec(for: backend, check: true), let stdout = await probe(spec) else { return nil }
         return Self.cacheStatus(checkOutput: stdout)
     }
 
@@ -524,10 +531,10 @@ public actor EnvironmentManager {
     private func prefetch(_ backend: Service, emit: @escaping @Sendable (InstallEvent) -> Void) async throws {
         try Task.checkCancellation()
         if shuttingDown { throw CancellationError() }
-        guard let args = prefetchArguments(for: backend.info, check: false) else {
+        guard let spec = prefetchSpec(for: backend, check: false) else {
             throw InstallError(stage: .model, message: "This service has no model to download.", logTail: [])
         }
-        let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.huggingFace(for: backend)))
+        let sub = Subprocess(spec)
         running[backend] = sub
         defer { running[backend] = nil }
         try sub.run()
