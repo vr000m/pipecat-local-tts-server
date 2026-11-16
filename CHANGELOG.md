@@ -9,13 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- macOS app: Moonshine STT (port 9965, English by default via the model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model.
+- macOS app: Moonshine STT (port 9965, English by default via the model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model. Deleting it removes its Python environment only: its weights stay in `~/Library/Caches/moonshine_voice`, outside the Hugging Face cache the app deletes from, so the confirmation offers one **Delete** button and says the files stay.
 
 ### Changed
 
 - macOS app: STT installs now go through `pipecat-local-stt-server` 0.6.0 instead of 0.5.0, for all engines (constraints regenerated, source excerpt re-recorded). Regenerating also re-resolved the transitive pins of the Whisper, Parakeet and Nemotron environments.
-- macOS app: `HF_TOKEN` is now passed only to services whose weights come from the Hugging Face cache, so Moonshine no longer receives it.
-- macOS app: deleting Moonshine removes its Python environment only. Its weights stay in `~/Library/Caches/moonshine_voice`, outside the Hugging Face cache the app deletes from, so the confirmation offers one **Delete** button and says the files stay.
+- macOS app: `HF_TOKEN` is now passed only to services whose weights come from the Hugging Face cache; a service whose weights live elsewhere gets no token.
 
 ### Fixed
 

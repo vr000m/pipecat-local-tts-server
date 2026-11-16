@@ -164,13 +164,13 @@ for running both.
   **Copy Environment Variables**, Start/Stop, **Delete Model…** (an External
   service gets the Copy items, Test and Show Details only). Deleting
   removes the model's Python environment and, unless another installed variant
-  still uses them, its weights. The detail page's **Delete…** offers **Keep
-  Model Files** or **Delete Everything**. Weights live in the shared Hugging
-  Face cache, so a command-line or launchd server using the same model
-  downloads them again after a delete. Moonshine is the exception: its weights are not in that
-  cache (`~/Library/Caches/moonshine_voice`): deleting Moonshine removes its
-  environment only, the dialogs say its model files stay, and the detail page
-  offers a single **Delete** instead of Keep Model Files or Delete Everything.
+  still uses them, its weights from the Hugging Face cache. The detail page's
+  **Delete…** offers **Keep Model Files** or **Delete Everything**. Weights live
+  in the shared cache, so a command-line or launchd server using the same model
+  downloads them again after a delete. Moonshine is the one exception: its
+  weights are in `~/Library/Caches/moonshine_voice`, outside that cache, so
+  deleting it removes only its environment, the dialogs say its model files
+  stay, and the detail page offers a single **Delete**.
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
   microphone) and see whether the transcript matches its sentence. An External
@@ -230,7 +230,12 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.6.0
   itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
   no revision flag (there is none), only `--model <repo>`: a model other than a pinned
-  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is not a Hub model: its weights come from `download.moonshine.ai`, and the app passes the model spec as `--model`. `moonshine-voice` checks each downloaded file by size and CRC32C against a manifest in its native library (that catches corruption, not tampering), so their integrity rests on TLS and the CDN. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is
+  not a Hub model: its weights come from `download.moonshine.ai`, and the app passes the
+  model spec as `--model`. `moonshine-voice` checks each downloaded file by size and
+  CRC32C against a manifest in its native library (that catches corruption, not
+  tampering), so their integrity rests on TLS and the CDN. Kyutai runs as a `moshi_mlx`
+  backend inside `stt_server`.
   Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
   `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
   it the server exits with `BackendStartError: FFmpeg is not installed or not in

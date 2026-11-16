@@ -531,11 +531,11 @@ leaves it running).
 ### Delete
 
 - **Delete Model…** (right-click) asks first, then removes the service with its
-  model files: `remove(deleteModel: true)` (Moonshine is the exception: its weights are never deleted, see below).
+  model files from the Hugging Face cache: `remove(deleteModel: true)`.
 - The detail page's **Delete…** offers **Keep Model Files**
   (`deleteModel: false`: only the environment, or the variant's record in a
   shared one) and, for a service with downloaded weights, **Delete Everything**
-  (`deleteModel: true`; Moonshine is the exception, see below).
+  (`deleteModel: true`), which removes the model files from the Hugging Face cache.
 - Order: an install in flight is cancelled and unwinds first (dropping the
   family lock), then the server is stopped, then `EnvironmentManager.remove`
   runs under the family lock. The family environment goes with its last
@@ -546,11 +546,11 @@ leaves it running).
   repos). A sibling whose check gives no answer (it failed, or quit stopped it)
   keeps every candidate folder. Only folders inside the model roots are
   deleted.
-- Moonshine is the exception: its weights are in `~/Library/Caches/moonshine_voice`,
-  outside the Hugging Face cache, so the detail page offers a single **Delete**
-  and its dialogs say the model files stay. The core enforces this: `remove`
-  ignores `deleteModel` for a service whose `modelInHubCache` is false, so only
-  the environment goes.
+- Moonshine is the one exception: its weights are in `~/Library/Caches/moonshine_voice`,
+  outside the Hugging Face cache, so Delete removes only its environment, the
+  detail page offers a single **Delete** and the dialogs say the files stay.
+  The core enforces this: `remove` ignores `deleteModel` for a service whose
+  `modelInHubCache` is false.
 - Leftovers are reported, never silent: a folder kept for an unanswered
   sibling, one the deletion guard refuses, or one that can't be deleted fails
   the removal with `RemovalError` ("Couldn't remove", listing each path), after

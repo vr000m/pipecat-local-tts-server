@@ -173,6 +173,8 @@ public struct ServiceInfo: Sendable, Equatable {
     public var serveRunsHomebrewTools: Bool { family == .parakeet }
     /// What a server's hello must report as `backend.model` to be this entry: the
     /// `--model` argument when the entry passes one (Phonon reports the alias), else the repo.
+    /// It is also the value STT `prefetch` and `serve` pass as `--model`, so changing it
+    /// changes both the hello match and that argument.
     /// Nil for an entry that pins no model (tone, Apple Speech).
     public var expectedModel: String? { modelArgument ?? modelRepo }
     public var endpoint: String { "ws://\(ServiceCatalog.host):\(port)/" }
