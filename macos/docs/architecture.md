@@ -572,8 +572,9 @@ leaves it running).
   model files from the Hugging Face cache: `remove(deleteModel: true)`.
 - The detail page's **Delete…** offers **Keep Model Files**
   (`deleteModel: false`: only the environment, or the variant's record in a
-  shared one) and, for a `.hubDeletable` service, **Delete Everything**
-  (`deleteModel: true`), which removes the model files from the Hugging Face cache.
+  shared one) and, where `removalPolicy` allows it ([Model source](#model-source)),
+  **Delete Everything** (`deleteModel: true`), which removes the model files from
+  the Hugging Face cache.
 - Order: an install in flight is cancelled and unwinds first (dropping the
   family lock), then the server is stopped, then `EnvironmentManager.remove`
   runs under the family lock. The family environment goes with its last
@@ -584,8 +585,6 @@ leaves it running).
   repos). A sibling whose check gives no answer (it failed, or quit stopped it)
   keeps every candidate folder. Only folders inside the model roots are
   deleted.
-- A `.backendManaged` service (Moonshine) keeps its weights: Delete removes only
-  its environment ([Model source](#model-source)).
 - Leftovers are reported, never silent: a folder kept for an unanswered
   sibling, one the deletion guard refuses, or one that can't be deleted fails
   the removal with `RemovalError` ("Couldn't remove", listing each path), after
@@ -739,8 +738,7 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
 - **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
   (`ProcessEnvironment.huggingFace(for:)`, through `EnvironmentManager.prefetchSpec` for a
   download; the offline `--check` gets none), never `uv`, whose package builds run
-  third-party code. Only a `.hub` service gets it ([Model source](#model-source));
-  any other gets `base()`, with no token.
+  third-party code. Which services get it: [Model source](#model-source).
 - **No sandbox.** The app has no App Sandbox, so it can start `uv` and the
   per-service interpreters. The hardened runtime is on.
 - **Pinned downloads.**

@@ -166,9 +166,8 @@ for running both.
   removes the model's Python environment and, unless another installed variant
   still uses them, its weights from the Hugging Face cache. Those weights live
   in the shared cache, so a command-line or launchd server using the same model
-  downloads them again after a delete. The detail page's **Delete…** buttons
-  depend on where the weights live; Moonshine's stay on disk ("Model source" in
-  [`docs/architecture.md`](docs/architecture.md#model-source)).
+  downloads them again after a delete. Which **Delete…** buttons the detail
+  page offers follows [Model source](docs/architecture.md#model-source).
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
   microphone) and see whether the transcript matches its sentence. An External
@@ -231,9 +230,8 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   no revision flag (there is none), only `--model <repo>`: a model other than a pinned
   default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is
   not a Hub model: its weights come from `download.moonshine.ai`, and the app passes the
-  model spec as `--model`. `moonshine-voice` checks each downloaded file by size and
-  CRC32C against a manifest in its native library (that catches corruption, not
-  tampering), so their integrity rests on TLS and the CDN. Kyutai runs as a `moshi_mlx`
+  model spec as `--model`; for how those downloads are checked, see "Pinned downloads"
+  in [`docs/architecture.md`](docs/architecture.md). Kyutai runs as a `moshi_mlx`
   backend inside `stt_server`.
   Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
   `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
