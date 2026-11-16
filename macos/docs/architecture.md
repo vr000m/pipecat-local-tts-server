@@ -94,11 +94,39 @@ Installing a
 second variant downloads only its weights. Installs and removals on one family
 are serialized. Deleting a variant keeps the files an installed sibling still
 uses (Phonon's variants share one Hugging Face repo; the 8-bit and 4-bit
-conversions are their own), and the venv goes with the last variant. A service with `modelInHubCache` false
-(Moonshine) never has model files deleted: the deletion roots are the Hugging
-Face hub and the derived-models cache, and its weights are in neither. In Add
+conversions are their own), and the venv goes with the last variant; a
+`.backendManaged` service keeps its weights (see [Model source](#model-source)). In Add
 Models, a family's uninstalled variants share one row that expands to list them;
 once installed, each is an ordinary row.
+
+### Model source
+
+Each catalog entry states where its weights come from as one explicit field,
+`ServiceInfo.model: ModelSource`; every model policy is derived from it, once, in
+`Service.swift`, and no call site re-derives the kind:
+
+| Case | Entries | Weights |
+|---|---|---|
+| `.none` | tone, Apple Speech | nothing to download |
+| `.hub(repo:alias:)` | every other TTS and STT entry | the shared Hugging Face cache; `alias` is the backend's `--model` alias (Phonon `phonon-q8` / `phonon-q4`) |
+| `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`) | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice`, outside the Hugging Face cache |
+
+- **Model step** (`needsModelDownload`): every case but `.none` downloads, sizes and checks a model.
+- **Delete and token** (`weightsInHubCache`, `.hub` only): Delete Everything deletes model
+  files only from the Hugging Face cache (plus their derived folders), and `HF_TOKEN` reaches
+  only a `.hub` service's `prefetch` and `serve` (`ProcessEnvironment.huggingFace(for:)`).
+  A `.backendManaged` service (`keepsWeightsOnRemove`) keeps its weights on removal whatever
+  is chosen, and gets no token. `EnvironmentManager.remove` enforces the delete rule by
+  switching on `model`; the detail page and the delete dialog read `keepsWeightsOnRemove`
+  only for their wording (a single **Delete**, and copy saying the files stay).
+- **Hub repo** (`hubRepo`): the repo sized, mapped to a cache folder, linked on the Details
+  card (a `.backendManaged` spec is shown as text) and compared with siblings' on removal.
+- **Hello match** (`expectedModel`): alias, else repo, for `.hub`; the spec for
+  `.backendManaged`; none for `.none`.
+- **`--model`**: TTS passes `cliModelOverride` (the alias or spec, else no flag, so
+  `tts_server` loads the backend's default, which equals the catalog repo); STT always passes
+  `expectedModel`. The doc comment on `cliModelOverride` is the one place the difference is
+  explained.
 
 ## Lifecycle state machine
 
@@ -546,11 +574,8 @@ leaves it running).
   repos). A sibling whose check gives no answer (it failed, or quit stopped it)
   keeps every candidate folder. Only folders inside the model roots are
   deleted.
-- Moonshine is the one exception: its weights are in `~/Library/Caches/moonshine_voice`,
-  outside the Hugging Face cache, so Delete removes only its environment, the
-  detail page offers a single **Delete** and the dialogs say the files stay.
-  The core enforces this: `remove` ignores `deleteModel` for a service whose
-  `modelInHubCache` is false.
+- A `.backendManaged` service (Moonshine) keeps its weights: Delete removes only
+  its environment ([Model source](#model-source)).
 - Leftovers are reported, never silent: a folder kept for an unanswered
   sibling, one the deletion guard refuses, or one that can't be deleted fails
   the removal with `RemovalError` ("Couldn't remove", listing each path), after
@@ -704,9 +729,8 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
 - **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
   (`ProcessEnvironment.huggingFace(for:)`, through `EnvironmentManager.prefetchSpec` for a
   download; the offline `--check` gets none), never `uv`, whose package builds run
-  third-party code. A service whose weights are not in the Hugging Face cache
-  (`ServiceInfo.modelInHubCache` false: Moonshine, which downloads from
-  `download.moonshine.ai`) gets `base()`, with no token.
+  third-party code. Only a `.hub` service gets it ([Model source](#model-source));
+  any other gets `base()`, with no token.
 - **No sandbox.** The app has no App Sandbox, so it can start `uv` and the
   per-service interpreters. The hardened runtime is on.
 - **Pinned downloads.**

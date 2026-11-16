@@ -167,10 +167,9 @@ for running both.
   still uses them, its weights from the Hugging Face cache. The detail page's
   **Delete…** offers **Keep Model Files** or **Delete Everything**. Weights live
   in the shared cache, so a command-line or launchd server using the same model
-  downloads them again after a delete. Moonshine is the one exception: its
-  weights are in `~/Library/Caches/moonshine_voice`, outside that cache, so
-  deleting it removes only its environment, the dialogs say its model files
-  stay, and the detail page offers a single **Delete**.
+  downloads them again after a delete. Moonshine's weights are outside that cache
+  and stay on disk (one **Delete** button; "Model source" in
+  [`docs/architecture.md`](docs/architecture.md#model-source)).
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
   microphone) and see whether the transcript matches its sentence. An External
