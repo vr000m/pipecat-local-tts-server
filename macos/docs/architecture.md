@@ -531,11 +531,11 @@ leaves it running).
 ### Delete
 
 - **Delete Model…** (right-click) asks first, then removes the service with its
-  model files: `remove(deleteModel: true)`.
+  model files: `remove(deleteModel: true)` (Moonshine is the exception: its weights are never deleted, see below).
 - The detail page's **Delete…** offers **Keep Model Files**
   (`deleteModel: false`: only the environment, or the variant's record in a
   shared one) and, for a service with downloaded weights, **Delete Everything**
-  (`deleteModel: true`).
+  (`deleteModel: true`; Moonshine is the exception, see below).
 - Order: an install in flight is cancelled and unwinds first (dropping the
   family lock), then the server is stopped, then `EnvironmentManager.remove`
   runs under the family lock. The family environment goes with its last
