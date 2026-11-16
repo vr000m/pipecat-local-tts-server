@@ -162,55 +162,93 @@ import Testing
     }
 }
 
-/// `ServiceInfo.model` is the only stored model fact; every policy is derived from it.
+/// `ServiceInfo.model` is the only stored model fact. Two properties switch on it
+/// (`removalPolicy`, `expectedModel`); every other policy is read off those two.
 @Suite struct ModelSourceTests {
+    /// One cell of the state space: a source on a runtime kind, against every operation.
     struct Row: Sendable {
         let source: ModelSource
+        let kind: ServiceKind
         let needsModelDownload: Bool
-        let weightsInHubCache: Bool
         let removalPolicy: ModelRemovalPolicy
         let hubRepo: String?
+        let weightsInHubCache: Bool
         let displayModel: String?
         let expectedModel: String?
-        let cliModelOverride: String?
+        /// The `--model` value `serve` and `prefetch` pass; nil for no flag.
+        let cliModel: String?
+        /// The install's label after a `start` row naming `org/synthetic`.
+        let labelAfterStart: String
     }
 
-    /// Every case (and both `.hub` shapes) against every derived property.
+    /// Every source (and both `.hub` shapes) on both runtimes. `.none` on STT is Apple Speech's
+    /// source, which has no CLI (`appleSpeech` runtime), so it is listed for TTS only.
     static let rows: [Row] = [
         Row(
-            source: .none, needsModelDownload: false, weightsInHubCache: false, removalPolicy: .nothing,
-            hubRepo: nil, displayModel: nil, expectedModel: nil, cliModelOverride: nil),
+            source: .none, kind: .tts, needsModelDownload: false, removalPolicy: .nothing, hubRepo: nil,
+            weightsInHubCache: false, displayModel: nil, expectedModel: nil, cliModel: nil, labelAfterStart: ""),
         Row(
-            source: .hub(repo: "org/repo"), needsModelDownload: true, weightsInHubCache: true,
-            removalPolicy: .hubDeletable, hubRepo: "org/repo", displayModel: "org/repo", expectedModel: "org/repo",
-            cliModelOverride: nil),
+            source: .hub(repo: "org/repo"), kind: .tts, needsModelDownload: true,
+            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "org/repo", cliModel: nil, labelAfterStart: "org/synthetic"),
         Row(
-            source: .hub(repo: "org/repo", alias: "repo-q8"), needsModelDownload: true, weightsInHubCache: true,
-            removalPolicy: .hubDeletable, hubRepo: "org/repo", displayModel: "org/repo", expectedModel: "repo-q8",
-            cliModelOverride: "repo-q8"),
+            source: .hub(repo: "org/repo"), kind: .stt, needsModelDownload: true,
+            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "org/repo", cliModel: "org/repo", labelAfterStart: "org/synthetic"),
         Row(
-            source: .backendManaged(spec: "medium@en"), needsModelDownload: true, weightsInHubCache: false,
-            removalPolicy: .keptByBackend, hubRepo: nil, displayModel: "medium@en", expectedModel: "medium@en",
-            cliModelOverride: nil),
+            source: .hub(repo: "org/repo", alias: "repo-q8"), kind: .tts, needsModelDownload: true,
+            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "repo-q8", cliModel: "repo-q8", labelAfterStart: "org/synthetic"),
+        Row(
+            source: .hub(repo: "org/repo", alias: "repo-q8"), kind: .stt, needsModelDownload: true,
+            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "repo-q8", cliModel: "repo-q8", labelAfterStart: "org/synthetic"),
+        // The spec is never dropped: a TTS runtime would pass it too (the catalog keeps it STT-only).
+        Row(
+            source: .backendManaged(spec: "medium@en"), kind: .tts, needsModelDownload: true,
+            removalPolicy: .keptByBackend, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
+            expectedModel: "medium@en", cliModel: "medium@en", labelAfterStart: "medium@en"),
+        Row(
+            source: .backendManaged(spec: "medium@en"), kind: .stt, needsModelDownload: true,
+            removalPolicy: .keptByBackend, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
+            expectedModel: "medium@en", cliModel: "medium@en", labelAfterStart: "medium@en"),
     ]
 
-    static func info(_ source: ModelSource) -> ServiceInfo {
+    static func info(_ source: ModelSource, kind: ServiceKind = .tts) -> ServiceInfo {
         ServiceInfo(
-            service: .kokoro, kind: .tts, expectedBackendName: "x", displayName: "X", tagline: "",
-            runtime: .ttsServer(extra: nil), port: 1, model: source, licence: .none, streaming: false, symbol: "")
+            service: kind == .tts ? .kokoro : .kyutai, kind: kind, expectedBackendName: "x", displayName: "X", tagline: "",
+            runtime: kind == .tts ? .ttsServer(extra: nil) : .sttHelper(engine: "x", requirements: []),
+            port: 1, model: source, licence: .none, streaming: false, symbol: "")
     }
 
-    @Test(arguments: rows) func derivedProperties(_ row: Row) {
-        let info = Self.info(row.source)
-        #expect(info.needsModelDownload == row.needsModelDownload, "\(row.source)")
-        #expect(info.weightsInHubCache == row.weightsInHubCache, "\(row.source)")
-        #expect(info.removalPolicy == row.removalPolicy, "\(row.source)")
-        #expect(info.hubRepo == row.hubRepo, "\(row.source)")
-        #expect(info.displayModel == row.displayModel, "\(row.source)")
-        #expect(info.expectedModel == row.expectedModel, "\(row.source)")
-        #expect(info.cliModelOverride == row.cliModelOverride, "\(row.source)")
-        // Delete Everything has a repo to delete exactly for `.hubDeletable` (`remove` reads `hubRepo`).
-        #expect((info.hubRepo != nil) == (info.removalPolicy == .hubDeletable), "\(row.source)")
+    private static func modelFlag(_ args: [String]?) -> String?? {
+        guard let args else { return .none }
+        guard let i = args.firstIndex(of: "--model") else { return .some(nil) }
+        return .some(args[i + 1])
+    }
+
+    @Test(arguments: rows) func everyOperationFollowsTheSource(_ row: Row) throws {
+        let info = Self.info(row.source, kind: row.kind)
+        let tag = "\(row.source) \(row.kind)"
+        #expect(info.needsModelDownload == row.needsModelDownload, "\(tag)")
+        #expect(info.removalPolicy == row.removalPolicy, "\(tag)")
+        #expect(info.hubRepo == row.hubRepo, "\(tag)")
+        #expect(info.weightsInHubCache == row.weightsInHubCache, "\(tag)")
+        #expect(info.displayModel == row.displayModel, "\(tag)")
+        #expect(info.expectedModel == row.expectedModel, "\(tag)")
+        #expect(info.cliModel == row.cliModel, "\(tag)")
+        // `serve --model` and `prefetch --model` (both modes) carry exactly `cliModel`.
+        let (manager, _) = try VariantTests.manager()
+        for args in [
+            manager.serveArguments(for: info, port: 1),
+            manager.prefetchArguments(for: info, check: false),
+            manager.prefetchArguments(for: info, check: true),
+        ] {
+            #expect(Self.modelFlag(args) == .some(row.cliModel), "\(tag)")
+        }
+        // The install label: `displayModel`, replaced by a `start` row's repo only for the Hub cache.
+        let start = try #require(ServerCLIEvent.parse(#"{"event":"start","repo":"org/synthetic"}"#))
+        #expect(EnvironmentManager.downloadLabel(start, current: info.displayModel ?? "", for: info) == row.labelAfterStart, "\(tag)")
     }
 
     /// The same Hub-shaped `prefetch --check` output (a check row inside a hub cache, a
@@ -221,7 +259,7 @@ import Testing
             #"{"event":"check","repo":"org/repo","cached":true,"path":"/h/hub/models--org--repo/snapshots/abc","size_bytes":10}"#,
             #"{"event":"summary","cached":true,"size_bytes":10,"quantized":true,"quantized_path":"/c/derived/x/key"}"#,
         ]
-        let status = try #require(EnvironmentManager.cacheStatus(checkOutput: lines, for: Self.info(row.source)))
+        let status = try #require(EnvironmentManager.cacheStatus(checkOutput: lines, for: Self.info(row.source, kind: row.kind)))
         #expect(status.cached && status.sizeBytes == 10, "\(row.source)")
         if row.weightsInHubCache {
             #expect(status.repoIDs == ["org/repo"], "\(row.source)")
@@ -232,48 +270,23 @@ import Testing
         }
     }
 
-    private static func modelFlag(_ args: [String]?) -> String?? {
-        guard let args else { return .none }
-        guard let i = args.firstIndex(of: "--model") else { return .some(nil) }
-        return .some(args[i + 1])
-    }
-
-    /// The catalog-wide invariants: `.none` downloads nothing; the Hub cache is exactly `.hub`;
-    /// a removal keeps weights exactly for `.backendManaged`, which only STT uses; STT passes
-    /// `expectedModel` as `--model`, TTS passes `cliModelOverride` (no flag when nil); no empty
-    /// repo, alias or spec.
-    @Test func catalogHoldsTheModelSourceInvariants() throws {
-        let (manager, _) = try VariantTests.manager()
+    /// The catalog-wide invariants: `.backendManaged` is STT-only (no TTS backend fetches its own
+    /// weights, and its hello would carry the spec only through `stt_server`); Apple Speech has
+    /// no model; no empty repo, alias or spec. Each property's value per case is the table above.
+    @Test func catalogHoldsTheModelSourceInvariants() {
         for service in Service.allCases {
             let info = service.info
             switch info.model {
             case .none:
-                #expect(!info.needsModelDownload && !info.weightsInHubCache && info.removalPolicy == .nothing, "\(service)")
+                break
             case .hub(let repo, let alias):
-                #expect(info.weightsInHubCache && info.removalPolicy == .hubDeletable && info.hubRepo == repo, "\(service)")
                 #expect(!repo.isEmpty && alias?.isEmpty != true, "\(service)")
             case .backendManaged(let spec):
-                #expect(!info.weightsInHubCache && info.removalPolicy == .keptByBackend && info.hubRepo == nil, "\(service)")
-                #expect(!spec.isEmpty && info.displayModel == spec && info.cliModelOverride == nil, "\(service)")
-                // TTS passes no `--model` for it (`cliModelOverride` is nil), so the spec would be lost.
-                if case .sttHelper = info.runtime {} else { Issue.record("\(service): .backendManaged outside STT") }
+                #expect(!spec.isEmpty, "\(service)")
+                #expect(info.kind == .stt, "\(service): .backendManaged outside STT")
+                if case .sttHelper = info.runtime {} else { Issue.record("\(service): .backendManaged outside the STT runtime") }
             }
-            let expected: String?
-            switch info.runtime {
-            case .ttsServer: expected = info.cliModelOverride
-            case .sttHelper: expected = info.expectedModel
-            case .appleSpeech:
-                #expect(manager.serveArguments(for: info, port: info.port) == nil)
-                #expect(info.model == .none)
-                continue
-            }
-            for args in [
-                manager.serveArguments(for: info, port: info.port),
-                manager.prefetchArguments(for: info, check: false),
-                manager.prefetchArguments(for: info, check: true),
-            ] {
-                #expect(Self.modelFlag(args) == .some(expected), "\(service)")
-            }
+            if info.runtime == .appleSpeech { #expect(info.model == .none, "\(service)") }
         }
         #expect(Service.moonshine.info.model == .backendManaged(spec: "medium-streaming@en"))
         #expect(Service.phononQ8.info.model == .hub(repo: Service.phonon.info.hubRepo!, alias: "phonon-q8"))
@@ -1195,6 +1208,13 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         #expect(fetch.map(\.event) == ["start", "progress", "done", "complete"])
         #expect(fetch[0].repo == "moonshine-voice/medium-streaming-en")
         #expect(fetch[2].path.flatMap(EnvironmentManager.repoFolder(fromSnapshot:)) == nil)
+        // The install label keeps Moonshine's spec through the whole fetch; a Hub service's
+        // label would take the same `start` row's repo.
+        func label(_ info: ServiceInfo) -> String {
+            fetch.reduce(info.displayModel ?? "") { EnvironmentManager.downloadLabel($1, current: $0, for: info) }
+        }
+        #expect(label(Service.moonshine.info) == "medium-streaming@en")
+        #expect(label(Service.kyutai.info) == "moonshine-voice/medium-streaming-en")
         let hub = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(Self.kyutaiHub), for: Service.kyutai.info))
         #expect(hub.repoIDs == ["kyutai/stt-1b-en_fr-mlx"] && hub.repoFolders.isEmpty && !hub.cached)
     }

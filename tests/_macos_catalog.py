@@ -43,8 +43,8 @@ class CatalogEntry:
     model_source: str
     # ``ServiceInfo.hubRepo``: the repo of a ``.hub`` source, else None
     model_repo: str | None
-    # ``ServiceInfo.cliModelOverride``: a ``.hub`` alias, else None
-    model_argument: str | None
+    # the alias of a ``.hub`` source, else None (TTS passes it as ``--model``)
+    model_alias: str | None
     # the spec of a ``.backendManaged`` source, else None
     model_spec: str | None
     streaming: bool
@@ -61,8 +61,9 @@ class CatalogEntry:
     @property
     def expected_model(self) -> str | None:
         """``ServiceInfo.expectedModel``: alias or repo for ``.hub``, the spec for
-        ``.backendManaged``, None for ``.none``."""
-        return self.model_argument or self.model_repo or self.model_spec
+        ``.backendManaged``, None for ``.none``. ``test_macos_catalog_drift`` pins the Swift
+        switch this mirrors (``test_swift_expected_model_is_the_mirrored_switch``)."""
+        return self.model_alias or self.model_repo or self.model_spec
 
 
 _MODEL = re.compile(
@@ -75,7 +76,7 @@ _MODEL = re.compile(
 
 
 def _model_source(block: str, case: str) -> tuple[str, str | None, str | None, str | None]:
-    """``(model_source, model_repo, model_argument, model_spec)`` of the block's one ``model:``
+    """``(model_source, model_repo, model_alias, model_spec)`` of the block's one ``model:``
     argument. Loud on a missing, repeated or unknown shape: never a silent default."""
     block = re.sub(r"^\s*//.*$", "", block, flags=re.MULTILINE)  # prose may say "model: "
     labelled = re.findall(r"\bmodel: ", block)
@@ -135,7 +136,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
         assert "ServiceInfo(" in block, f"{case}: neither a ServiceInfo literal nor a variant"
         assert _field(block, r"service: \.(\w+),") == case, f"{case}: literal names another service"
         engine, requirements = _stt_helper(block, constants)
-        model_source, model_repo, model_argument, model_spec = _model_source(block, case)
+        model_source, model_repo, model_alias, model_spec = _model_source(block, case)
         literals[case] = CatalogEntry(
             engine=engine,
             requirements=requirements,
@@ -146,7 +147,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
             port=int(_field(block, r"port: (\d+)")),
             model_source=model_source,
             model_repo=model_repo,
-            model_argument=model_argument,
+            model_alias=model_alias,
             model_spec=model_spec,
             streaming=_field(block, r"streaming: (true|false)") == "true",
             expected_backend_name=_field(block, r'expectedBackendName: "(\w+)"'),
@@ -155,14 +156,14 @@ def macos_catalog() -> dict[str, CatalogEntry]:
     for case, base, block in variants:
         # A variant shares its family's runtime, kind, streaming flag and backend name, and
         # states its own model.
-        model_source, model_repo, model_argument, model_spec = _model_source(block, case)
+        model_source, model_repo, model_alias, model_spec = _model_source(block, case)
         entries[case] = replace(
             literals[base],
             name=raw[case],
             port=int(_field(block, r"port: (\d+)")),
             model_source=model_source,
             model_repo=model_repo,
-            model_argument=model_argument,
+            model_alias=model_alias,
             model_spec=model_spec,
         )
     assert sorted(entries) == sorted(raw), "every Service case has a catalog entry"

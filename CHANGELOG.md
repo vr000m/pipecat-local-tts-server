@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - macOS app: STT installs now go through `pipecat-local-stt-server` 0.6.0 instead of 0.5.0, for all engines (constraints regenerated, source excerpt re-recorded). Regenerating also re-resolved the transitive pins of the Whisper, Parakeet and Nemotron environments.
 - macOS app: `HF_TOKEN` is now passed only to services whose weights come from the Hugging Face cache; a service whose weights live elsewhere gets no token.
+- macOS app: the detail page's Delete offers Delete Everything only for models in the Hugging Face cache. Tone, Apple Speech and Moonshine show a single Delete. Before, every model with a download offered it (see "Model source" in `macos/docs/architecture.md`).
 
 ### Fixed
 

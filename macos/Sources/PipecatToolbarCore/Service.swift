@@ -124,12 +124,14 @@ public enum ModelSource: Equatable, Sendable {
     case backendManaged(spec: String)
 }
 
-/// What removing a service can do with its weights (`ServiceInfo.removalPolicy`).
+/// Where a service's weights live, and so what removing it can do with them
+/// (`ServiceInfo.removalPolicy`). The one weights-location fact: `hubRepo` and
+/// `weightsInHubCache` are read off it, so a repo exists exactly for `.hubDeletable`.
 public enum ModelRemovalPolicy: Equatable, Sendable {
     /// No weights to delete (`.none`).
     case nothing
     /// Weights in the shared Hugging Face cache: Delete Everything may delete them (`.hub`).
-    case hubDeletable
+    case hubDeletable(repo: String)
     /// Weights the backend keeps outside the Hugging Face cache, which the app never deletes
     /// (`.backendManaged`: Moonshine's).
     case keptByBackend
@@ -169,60 +171,56 @@ public struct ServiceInfo: Sendable, Equatable {
 
     // MARK: Model policies, each derived from `model` (macos/docs/architecture.md, "Model source")
 
-    /// Whether installing the service has a model step (download, size, cached check, the
-    /// "Loading model…" wording): every source but `.none`.
-    public var needsModelDownload: Bool {
-        if case .none = model { return false }
-        return true
-    }
-    /// Whether the service's weights live in, and are fetched from, the shared Hugging Face
-    /// cache: true only for `.hub`. Three policies rest on it: the credential
-    /// (`ProcessEnvironment.huggingFace(for:)` passes `HF_TOKEN` only to such a service), the
-    /// Hub size estimate, and reading a `prefetch --check` (`EnvironmentManager.cacheStatus`
-    /// keeps repo ids and folders only for such a service). Deletion follows `removalPolicy`.
-    public var weightsInHubCache: Bool {
-        if case .hub = model { return true }
-        return false
-    }
-    /// What removing the service can do with its weights. `EnvironmentManager.remove` deletes
-    /// only for `.hubDeletable` (through `hubRepo`); the detail page and the delete dialog switch
-    /// on it for their copy and buttons.
+    // Two canonical properties switch on `model`: `removalPolicy` (where the weights live) and
+    // `expectedModel` (the model's name on the wire). Every other policy is read off those two.
+
+    /// Where the weights live, and what removing the service can do with them. The only
+    /// weights-location switch on `model`: `EnvironmentManager.remove` deletes only in its
+    /// `.hubDeletable(repo:)` case, and the detail page and the delete dialog switch on it.
     public var removalPolicy: ModelRemovalPolicy {
         switch model {
         case .none: .nothing
-        case .hub: .hubDeletable
+        case .hub(let repo, _): .hubDeletable(repo: repo)
         case .backendManaged: .keptByBackend
         }
     }
-    /// The Hugging Face repo for a `.hub` source, else nil: the repo the app sizes, maps to a cache
-    /// folder, links to on the Hub, and compares against siblings' repos on removal.
-    public var hubRepo: String? {
-        if case .hub(let repo, _) = model { return repo }
-        return nil
-    }
-    /// The model's name for display: a `.hub` source's repo, a `.backendManaged` source's spec,
-    /// else nil. The install's progress label before the first `start` event and the Details
-    /// card's Model row (a link only when `hubRepo` is set).
-    public var displayModel: String? {
+    /// What a server's hello must report as `backend.model` to be this entry: a `.hub` source's
+    /// alias when it has one (Phonon reports the alias), else its repo; a `.backendManaged`
+    /// source's spec; nil for `.none` (tone, Apple Speech). The only model-name switch on `model`.
+    public var expectedModel: String? {
         switch model {
-        case .hub(let repo, _): repo
+        case .hub(let repo, let alias): alias ?? repo
         case .backendManaged(let spec): spec
         case .none: nil
         }
     }
-    /// What the TTS runtime passes as `--model` to `tts_server serve`/`prefetch`: the alias of a
-    /// `.hub` source that has one (Phonon q8/q4), else nil (no flag: `tts_server` then loads the
-    /// backend's `DEFAULT_*_MODEL`, which the drift tests pin equal to the catalog repo). No TTS
-    /// backend fetches its own weights, so a `.backendManaged` source (STT only) has none here.
-    ///
-    /// The two runtimes read the model differently, and this is the one place that says so:
-    /// TTS passes `cliModelOverride` (only what differs from the backend's default), STT passes
-    /// `expectedModel` always (`stt_server` gets an explicit `--model <repo or spec>`, and applies
-    /// its own Hub pin to a default repo). `EnvironmentManager.prefetchArguments` /
-    /// `serveArguments` are the only readers of either for an argument.
-    public var cliModelOverride: String? {
-        if case .hub(_, let alias) = model { return alias }
+    /// Whether installing the service has a model step (download, size, cached check, the
+    /// "Loading model…" wording): every source but `.none`.
+    public var needsModelDownload: Bool { removalPolicy != .nothing }
+    /// The Hugging Face repo of `.hubDeletable`, else nil: the repo the app sizes, maps to a cache
+    /// folder, links to on the Hub, and compares against siblings' repos on removal.
+    public var hubRepo: String? {
+        if case .hubDeletable(let repo) = removalPolicy { return repo }
         return nil
+    }
+    /// Whether the weights live in, and are fetched from, the shared Hugging Face cache
+    /// (`.hubDeletable`). The credential (`ProcessEnvironment.huggingFace(for:)`), the Hub size
+    /// estimate, the install's progress label and reading a `prefetch --check`
+    /// (`EnvironmentManager.cacheStatus`) rest on it.
+    public var weightsInHubCache: Bool { hubRepo != nil }
+    /// The model's name for display: the Hub repo when there is one (a Phonon variant shows its
+    /// repo, not its alias), else `expectedModel` (Moonshine's spec). The install's progress label
+    /// and the Details card's Model row (a link only when `hubRepo` is set).
+    public var displayModel: String? { hubRepo ?? expectedModel }
+    /// The `--model` value both runtimes pass to `serve` and `prefetch`, nil for no flag. It is
+    /// `expectedModel`, except that TTS omits a bare Hub repo: `tts_server` then loads the
+    /// backend's `DEFAULT_*_MODEL`, which the drift tests pin equal to the catalog repo. STT always
+    /// passes it (`stt_server` applies its own Hub pin to a default repo). Nothing is dropped: a
+    /// spec or an alias is always passed. `EnvironmentManager.prefetchArguments` /
+    /// `serveArguments` are its only readers.
+    public var cliModel: String? {
+        if kind == .tts, expectedModel == hubRepo { return nil }
+        return expectedModel
     }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and
@@ -246,18 +244,6 @@ public struct ServiceInfo: Sendable, Equatable {
     /// `parakeet-mlx` decodes audio by running `ffmpeg`, also during its warm-up before
     /// `ready`. No other service runs a tool from `PATH` (`ProcessEnvironment.serve`).
     public var serveRunsHomebrewTools: Bool { family == .parakeet }
-    /// What a server's hello must report as `backend.model` to be this entry: a `.hub` source's
-    /// alias when it has one (Phonon reports the alias), else its repo; a `.backendManaged`
-    /// source's spec; nil for `.none` (tone, Apple Speech).
-    /// It is also the value STT `prefetch` and `serve` pass as `--model` (see `cliModelOverride`
-    /// for why TTS differs), so changing it changes both the hello match and that argument.
-    public var expectedModel: String? {
-        switch model {
-        case .hub(let repo, let alias): alias ?? repo
-        case .backendManaged(let spec): spec
-        case .none: nil
-        }
-    }
     public var endpoint: String { "ws://\(ServiceCatalog.host):\(port)/" }
 
     /// Client environment for a Pipecat bot (`TTS_WS_*` / `STT_WS_*`).

@@ -164,11 +164,10 @@ for running both.
   **Copy Environment Variables**, Start/Stop, **Delete Model…** (an External
   service gets the Copy items, Test and Show Details only). Deleting
   removes the model's Python environment and, unless another installed variant
-  still uses them, its weights from the Hugging Face cache. The detail page's
-  **Delete…** offers **Keep Model Files** or **Delete Everything**. Weights live
+  still uses them, its weights from the Hugging Face cache. Those weights live
   in the shared cache, so a command-line or launchd server using the same model
-  downloads them again after a delete. Moonshine's weights are outside that cache
-  and stay on disk (one **Delete** button; "Model source" in
+  downloads them again after a delete. The detail page's **Delete…** buttons
+  depend on where the weights live; Moonshine's stay on disk ("Model source" in
   [`docs/architecture.md`](docs/architecture.md#model-source)).
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no

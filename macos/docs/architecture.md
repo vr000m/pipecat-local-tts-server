@@ -102,39 +102,41 @@ once installed, each is an ordinary row.
 ### Model source
 
 Each catalog entry states where its weights come from as one explicit field,
-`ServiceInfo.model: ModelSource`; every model policy is derived from it, once, in
-`Service.swift`, and no call site re-derives the kind:
+`ServiceInfo.model: ModelSource`. Only two properties in `Service.swift` switch on it:
+`removalPolicy` (where the weights live) and `expectedModel` (the model's name on the
+wire). Every other policy is read off those two, and no call site re-derives the kind:
 
 | Case | Entries | Weights |
 |---|---|---|
 | `.none` | tone, Apple Speech | nothing to download |
 | `.hub(repo:alias:)` | every other TTS and STT entry | the shared Hugging Face cache; `alias` is the backend's `--model` alias (Phonon `phonon-q8` / `phonon-q4`) |
-| `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`) | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice` (moonshine-voice 0.1.6 `get_cache_dir`: `MOONSHINE_VOICE_CACHE`, else `platformdirs.user_cache_dir("moonshine_voice")`), outside the Hugging Face cache |
+| `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`), STT only | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice` (moonshine-voice 0.1.6 `get_cache_dir`: `MOONSHINE_VOICE_CACHE`, else `platformdirs.user_cache_dir("moonshine_voice")`), outside the Hugging Face cache |
 
+- **Delete** (`removalPolicy`: `.nothing`, `.hubDeletable(repo:)`, `.keptByBackend`):
+  Delete Everything deletes model files only for `.hubDeletable`, from the Hugging Face
+  cache (plus their derived folders). `EnvironmentManager.remove`, the detail page and the
+  delete dialog all switch on `removalPolicy`. A `.keptByBackend` service keeps its weights
+  whatever is chosen. Only `.hubDeletable` offers **Keep Model Files** and **Delete
+  Everything**; the others show a single **Delete**.
+- **Hub repo** (`hubRepo`): the repo of `.hubDeletable`, so a repo exists exactly when
+  removal may delete one. It is the repo sized, mapped to a cache folder, linked on the
+  Details card and compared with siblings' on removal.
+- **Hub cache** (`weightsInHubCache`, `hubRepo != nil`): `HF_TOKEN` reaches only such a
+  service's `prefetch` and `serve` (`ProcessEnvironment.huggingFace(for:)`).
+  `EnvironmentManager.cacheStatus` keeps a `prefetch --check`'s repo ids and folders only
+  for it. The install's progress label takes a `start` row's repo only for it (Moonshine's
+  rows name a synthetic, Hub-shaped repo id).
 - **Model step** (`needsModelDownload`): every case but `.none` downloads, sizes and checks a model.
-- **Token and check output** (`weightsInHubCache`, `.hub` only): `HF_TOKEN` reaches only a
-  `.hub` service's `prefetch` and `serve` (`ProcessEnvironment.huggingFace(for:)`), and
-  `EnvironmentManager.cacheStatus` keeps the repo ids and folders of a `prefetch --check`
-  only for a `.hub` service (Moonshine's rows name a synthetic, Hub-shaped repo id).
-- **Delete** (`removalPolicy`: `.nothing`, `.hubDeletable`, `.keptByBackend`): Delete
-  Everything deletes model files only for `.hubDeletable`, from the Hugging Face cache (plus
-  their derived folders); `EnvironmentManager.remove` enforces it through `hubRepo`. A
-  `.keptByBackend` service keeps its weights whatever is chosen. The detail page and the
-  delete dialog switch on `removalPolicy` for their copy and buttons (a single **Delete**
-  unless `.hubDeletable`).
 - **Moonshine's integrity** is a residual risk: its weights sit outside the hash-pinned
   supply chain ([Security notes](#security-notes), "Pinned downloads").
-- **Hub repo** (`hubRepo`): the repo sized, mapped to a cache folder, linked on the Details
-  card and compared with siblings' on removal.
-- **Display name** (`displayModel`): the repo, or a `.backendManaged` spec; the install's
-  progress label before the first `start` event and the Details card's Model row (text
-  unless `hubRepo` is set).
 - **Hello match** (`expectedModel`): alias, else repo, for `.hub`; the spec for
   `.backendManaged`; none for `.none`.
-- **`--model`**: TTS passes `cliModelOverride` (a `.hub` alias, else no flag, so
-  `tts_server` loads the backend's default, which equals the catalog repo); STT always passes
-  `expectedModel`. The doc comment on `cliModelOverride` is the one place the difference is
-  explained.
+- **Display name** (`displayModel`, `hubRepo ?? expectedModel`): the install's progress
+  label until a Hub `start` row, and the Details card's Model row (text unless `hubRepo`
+  is set).
+- **`--model`** (`cliModel`): both runtimes pass `expectedModel`, except that TTS omits a
+  bare Hub repo. `tts_server` then loads the backend's default, which equals the catalog
+  repo. A spec or an alias is always passed.
 
 ## Lifecycle state machine
 

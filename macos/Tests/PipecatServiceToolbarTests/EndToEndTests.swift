@@ -323,10 +323,13 @@ struct EndToEndTests {
         server.closeStdin()
         #expect(await server.waitForExit() == 0)
         // Deleting "everything" removes the environment only: the weights are not in the Hub cache,
-        // so the app leaves them (and says so, `ServiceInfo.weightsInHubCache`).
-        // Smoke check only that the weights are untouched; the `weightsInHubCache` guard itself is covered by
+        // so the app leaves them (`ServiceInfo.removalPolicy` is `.keptByBackend`).
+        // Smoke check only that the weights are untouched; the policy itself is covered by
         // `removalKeepsModelFilesOfAServiceOutsideTheHubCache` in CoreTests.swift.
-        let weights = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Caches/moonshine_voice")
+        // Where moonshine-voice keeps them: `MOONSHINE_VOICE_CACHE`, which the app forwards, else its default.
+        let override = ProcessInfo.processInfo.environment["MOONSHINE_VOICE_CACHE"].flatMap { $0.isEmpty ? nil : $0 }
+        let weights = override.map { URL(filePath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Caches/moonshine_voice")
         #expect(FileManager.default.fileExists(atPath: weights.path))
         try await manager.remove(.moonshine, deleteModel: true)
         #expect(manager.environmentStatus(.moonshine) == .missing)

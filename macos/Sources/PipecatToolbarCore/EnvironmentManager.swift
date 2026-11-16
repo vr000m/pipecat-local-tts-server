@@ -157,9 +157,9 @@ public actor EnvironmentManager {
         switch info.runtime {
         case .ttsServer:
             args = ["-m", "tts_server", "prefetch", "--backend", info.family.rawValue, "--json"]
-            if let model = info.cliModelOverride { args += ["--model", model] }
+            if let model = info.cliModel { args += ["--model", model] }
         case .sttHelper:
-            guard let model = info.expectedModel else { return nil }
+            guard let model = info.cliModel else { return nil }
             args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", model, "--json"]
         case .appleSpeech:
             return nil
@@ -182,14 +182,14 @@ public actor EnvironmentManager {
         switch info.runtime {
         case .ttsServer:
             var args = ["-m", "tts_server", "serve", "--backend", info.family.rawValue]
-            if let model = info.cliModelOverride { args += ["--model", model] }
+            if let model = info.cliModel { args += ["--model", model] }
             return args + [
                 "--host", ServiceCatalog.host, "--port", String(port), "--supervised", "--log-level", "INFO",
             ]
         case .sttHelper:
             // The same upstream CLI a LaunchAgent runs; TCP on the catalog port.
             var args = ["-m", "stt_server", "serve", "--supervised", "--backend", info.expectedBackendName]
-            if let model = info.expectedModel { args += ["--model", model] }
+            if let model = info.cliModel { args += ["--model", model] }
             return args + ["--host", ServiceCatalog.host, "--port", String(port)]
         case .appleSpeech:
             return nil
@@ -549,8 +549,6 @@ public actor EnvironmentManager {
         }
         let outcome = Task { () -> ServerCLIEvent? in
             var failure: ServerCLIEvent?
-            // The repo before the first `start` event names it: a Phonon variant shows its Hub
-            // repo, not its `--model` alias; Moonshine (no repo) shows its model spec.
             var progress = DownloadProgress(repo: backend.info.displayModel ?? "")
             for await line in sub.stdout {
                 guard let event = ServerCLIEvent.parse(line) else {
@@ -559,7 +557,7 @@ public actor EnvironmentManager {
                 }
                 switch event.event {
                 case "start":
-                    progress = DownloadProgress(repo: event.repo ?? progress.repo)
+                    progress = DownloadProgress(repo: Self.downloadLabel(event, current: progress.repo, for: backend.info))
                     emit(.download(progress))
                 case "progress":
                     progress.downloadedBytes = event.downloadedBytes ?? progress.downloadedBytes
@@ -589,6 +587,14 @@ public actor EnvironmentManager {
             let message = failure?.message ?? tail.lines.last ?? "exit status \(status)"
             throw InstallError(stage: .model, message: "Model download failed: \(message)", logTail: tail.lines)
         }
+    }
+
+    /// The progress label after a `start` event. It starts as `displayModel` (a Phonon variant's
+    /// Hub repo, not its alias; Moonshine's spec). A `start` row's repo replaces it only when the
+    /// weights are in the Hugging Face cache: Moonshine's rows name a synthetic, Hub-shaped id.
+    static func downloadLabel(_ event: ServerCLIEvent, current: String, for info: ServiceInfo) -> String {
+        guard info.weightsInHubCache, let repo = event.repo else { return current }
+        return repo
     }
 
     /// The step's exit status, once its output `readers` finished or `drainLimit`
@@ -644,8 +650,8 @@ public actor EnvironmentManager {
     /// Only Hugging Face repo folders and the derived-weights folders are ever deleted
     /// (`deletionTarget`), so a model the backend fetches outside the Hub cache
     /// (`ModelRemovalPolicy.keptByBackend`: Moonshine's) stays on disk whatever `deleteModel` is:
-    /// the flag is honoured only for `.hubDeletable` (a `hubRepo`), here, not left to the UI or to
-    /// `deletionTarget` (macos/docs/architecture.md, "Model source").
+    /// the flag is honoured only in `removalPolicy`'s `.hubDeletable(repo:)` case, here, not left to
+    /// the UI or to `deletionTarget` (macos/docs/architecture.md, "Model source").
     ///
     /// Invariant: a folder is deleted only when every installed sibling's check
     /// answered, in full, and named none of it. A sibling whose check gave no
@@ -660,8 +666,8 @@ public actor EnvironmentManager {
         var doomed: [URL] = []
         // Model folders kept because a sibling's use of them is unknown (reported).
         var kept: [URL] = []
-        // `hubRepo` is set exactly for `removalPolicy == .hubDeletable`: nothing else is deleted.
-        if deleteModel, let hubRepo = backend.info.hubRepo {
+        // The same switch the UI copy reads: only `.hubDeletable` has weights the app deletes.
+        if deleteModel, case .hubDeletable(let hubRepo) = backend.info.removalPolicy {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
             // Every repo the check names counts, cached or partial, and so does the
