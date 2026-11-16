@@ -88,9 +88,9 @@ for running both.
 - **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
   server that needs a bearer token is not adopted (Start then reports the port busy
   because it wants a token); the app stores no token.
-- **Support floor.** STT starts through `pipecat-local-stt-server==0.5.0`'s own CLI
+- **Support floor.** STT starts through `pipecat-local-stt-server==0.6.0`'s own CLI
   (`python -m stt_server serve --supervised`). An STT agent on an older version
-  is still adopted by its hello, but an app-started STT server needs 0.5.0.
+  is still adopted by its hello, but an app-started STT server needs 0.6.0.
 
 
 ## Restore and Quit
@@ -224,7 +224,7 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   --require-hashes`; a bundled app missing that file refuses the install rather
   than resolve unpinned), run by the upstream CLI (`python -m stt_server prefetch`
   and `serve --supervised`). The four default STT models (Whisper large-v3-turbo,
-  Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.5.0
+  Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.6.0
   itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
   no revision flag (there is none), only `--model <repo>`: a model other than a pinned
   default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
