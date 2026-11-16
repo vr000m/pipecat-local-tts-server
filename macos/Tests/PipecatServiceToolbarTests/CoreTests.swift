@@ -29,7 +29,7 @@ import Testing
             .tone: 8665, .kokoro: 8765, .voxtralTTS: 8865, .pocketTTS: 8965,
             .dia: 9065, .qwen3TTS: 9165, .fishTTS: 9265, .phonon: 9365,
             .appleSpeech: 9465, .whisper: 9565, .kyutai: 9665,
-            .parakeet: 9765, .nemotron: 9865,
+            .parakeet: 9765, .nemotron: 9865, .moonshine: 9965,
             // Variants: the family's port + 1, 2, ...
             .phononQ8: 9366, .phononQ4: 9367,
             .whisperLargeV3: 9566, .whisperMedium: 9567, .whisperSmall: 9568, .whisperBase: 9569, .whisperTiny: 9570,
@@ -46,7 +46,7 @@ import Testing
         #expect(families.map(\.rawValue).sorted() == [
             "dia", "fish_tts", "kokoro", "phonon", "pocket_tts", "qwen3_tts", "tone", "voxtral_tts",
         ])
-        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai, .parakeet, .nemotron])
+        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai, .parakeet, .nemotron, .moonshine])
     }
 
     @Test func runtimes() {
@@ -222,6 +222,20 @@ import Testing
             "-m", "stt_server", "serve", "--supervised", "--backend", "nemotron",
             "--model", "mlx-community/nemotron-3.5-asr-streaming-0.6b", "--host", "127.0.0.1", "--port", "9865",
         ])
+        // Moonshine: no Hub repo; the model spec (English by default) is the `--model` argument.
+        let moonshine = try #require(manager.serveArguments(for: Service.moonshine.info, port: 9965))
+        #expect(moonshine == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "moonshine",
+            "--model", "medium-streaming@en", "--host", "127.0.0.1", "--port", "9965",
+        ])
+        let moonshineCheck = try #require(manager.prefetchArguments(for: Service.moonshine.info, check: true))
+        #expect(moonshineCheck == [
+            "-m", "stt_server", "prefetch", "--backend", "moonshine",
+            "--model", "medium-streaming@en", "--json", "--check",
+        ])
+        #expect(Service.moonshine.info.modelRepo == nil && Service.moonshine.info.needsModelDownload)
+        #expect(Service.moonshine.info.expectedModel == "medium-streaming@en")
+        #expect(ServiceCatalog.snapshots(for: .moonshine).isEmpty)
         let kyutai = try #require(manager.serveArguments(for: Service.kyutai2B.info, port: 9666))
         #expect(Array(kyutai.prefix(6)) == ["-m", "stt_server", "serve", "--supervised", "--backend", "kyutai"])
         #expect(kyutai.contains("kyutai/stt-2.6b-en-mlx"))
@@ -248,7 +262,7 @@ import Testing
 
     /// STT environments install against their engine's hash-pinned constraints
     /// (`--require-hashes`); TTS against the `uv.lock` export, without hashes.
-    @Test(arguments: [Service.kyutai, .whisperSmall, .parakeet, .nemotron, .phonon])
+    @Test(arguments: [Service.kyutai, .whisperSmall, .parakeet, .nemotron, .moonshine, .phonon])
     func packagesInstallWithTheirConstraints(_ service: Service) async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-pins-\(UUID().uuidString.prefix(8))")
         let paths = AppPaths(
@@ -257,7 +271,7 @@ import Testing
         try paths.prepare()
         let pins = root.appending(path: "constraints")
         try FileManager.default.createDirectory(at: pins, withIntermediateDirectories: true)
-        for engine in ["whisper", "kyutai", "parakeet", "nemotron"] {
+        for engine in ["whisper", "kyutai", "parakeet", "nemotron", "moonshine"] {
             FileManager.default.createFile(atPath: pins.appending(path: "stt-\(engine).txt").path, contents: Data())
         }
         let lock = root.appending(path: "constraints.txt")
@@ -2000,6 +2014,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         for service in Service.kyutai.variants { #expect(service.info.expectedBackendName == "kyutai", "\(service)") }
         #expect(Service.parakeet.info.expectedBackendName == "parakeet")
         #expect(Service.nemotron.info.expectedBackendName == "nemotron")
+        #expect(Service.moonshine.info.expectedBackendName == "moonshine")
     }
 
     @Test func launchdLabelsExistPerFamilyOnly() {
@@ -2012,6 +2027,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(Service.kyutai.info.launchdLabel == "pipecat.stt-server.kyutai")
         #expect(Service.parakeet.info.launchdLabel == "pipecat.stt-server.parakeet")
         #expect(Service.nemotron.info.launchdLabel == "pipecat.stt-server.nemotron")
+        #expect(Service.moonshine.info.launchdLabel == "pipecat.stt-server.moonshine")
         for service in Service.whisper.variants.dropFirst() + Service.kyutai.variants.dropFirst() {
             #expect(service.info.launchdLabel == nil, "\(service)")
         }

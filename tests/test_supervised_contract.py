@@ -563,11 +563,11 @@ def _pins(text: str) -> dict[str, str]:
 def test_every_stt_family_has_its_own_engine():
     families = {e.family for e in macos_catalog().values() if e.kind == "stt"}
     engines = {e.engine for e in _stt_entries() if not e.is_variant}
-    assert engines == {"whisper", "kyutai", "parakeet", "nemotron"}
+    assert engines == {"whisper", "kyutai", "parakeet", "nemotron", "moonshine"}
     assert families == engines | {"apple_speech"}
     # Variants share their family's engine (one environment); no two families share one.
     by_family = {e.family: e.engine for e in _stt_entries()}
-    assert len(set(by_family.values())) == len(by_family) == 4
+    assert len(set(by_family.values())) == len(by_family) == 5
 
 
 def test_every_stt_engine_has_hash_pinned_constraints():

@@ -57,6 +57,8 @@ enum HelloFixtures {
         Reported(
             service: .nemotron, name: "nemotron", model: "mlx-community/nemotron-3.5-asr-streaming-0.6b",
             rate: 16000),
+        // `backend.model` is the spec verbatim (`DEFAULT_MOONSHINE_MODEL` on the STT feature branch).
+        Reported(service: .moonshine, name: "moonshine", model: "medium-streaming@en", rate: 16000),
     ]
 
     static func reported(_ service: Service) -> Reported {

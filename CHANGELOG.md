@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- macOS app: Moonshine STT (port 9965, English by default via the model spec `medium-streaming@en`; not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model). Held back until `pipecat-local-stt-server` releases the `moonshine` extra: `sttServerRequirement` and the STT constraints need that version bump, and `macos/constraints/stt-moonshine.txt` must be generated with it.
+
 ### Fixed
 
 - macOS app: a suggested model whose Start needs a package refresh now keeps its Running-panel row, showing the install progress and Cancel, until it is starting; Cancel in that window, including between the refresh and the read after it, stops the start. Before, the category disappeared for the length of the install. A sibling variant's environment change during the read after the refresh no longer drops that Start.

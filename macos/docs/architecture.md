@@ -17,7 +17,7 @@ flowchart LR
     end
     subgraph Py["Per-service venvs (uv-managed CPython 3.12)"]
         TTS["python -m tts_server serve --supervised"]
-        STT["python -m stt_server serve --supervised<br/>(Whisper / Kyutai / Parakeet / Nemotron)"]
+        STT["python -m stt_server serve --supervised<br/>(Whisper / Kyutai / Parakeet / Nemotron / Moonshine)"]
     end
     BOT["Pipecat app<br/>LocalTTSService / LocalWebSocketSTTService"]
 

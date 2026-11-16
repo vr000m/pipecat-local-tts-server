@@ -38,6 +38,7 @@ then **Start**.
 | Kyutai STT | STT | 9665 | `kyutai/stt-1b-en_fr-mlx` | CC-BY-4.0 |
 | Parakeet | STT | 9765 | `mlx-community/parakeet-tdt-0.6b-v3` | CC-BY-4.0 |
 | Nemotron | STT | 9865 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | Custom licence (`license:other`) |
+| Moonshine | STT | 9965 | model spec `medium-streaming@en` (downloaded by the backend from `download.moonshine.ai`, not the Hub) | MIT |
 | **Kokoro** (default TTS) | TTS | 8765 | `mlx-community/Kokoro-82M-bf16` | Apache-2.0 |
 | Phonon | TTS | 9365 | `gradium/phonon-31m-en` | Apache-2.0 |
 | Pocket TTS | TTS | 8965 | `mlx-community/pocket-tts` | CC-BY-4.0 |
