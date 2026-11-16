@@ -3,8 +3,12 @@
 The drift tests (``test_macos_catalog_drift.py``, ``test_justfile_recipes.py``)
 compare the Swift copies of server facts against their Python/justfile sources;
 they all read the catalog through ``macos_catalog()`` so a variant entry
-(``info(for: .phonon).variant(.phononQ8, ..., port: 9366, modelArgument: ...)``)
+(``info(for: .phonon).variant(.phononQ8, ..., port: 9366, model: .hub(...))``)
 is seen exactly like a family literal (``ServiceInfo(service: .phonon, ...)``).
+
+Each entry states its ``model: ModelSource`` explicitly (``.none``,
+``.hub(repo: "...")``, ``.hub(repo: "...", alias: "...")`` or
+``.backendManaged(spec: "...")``); any other shape fails the parse.
 """
 
 from __future__ import annotations
@@ -35,8 +39,14 @@ class CatalogEntry:
     kind: str  # "tts" | "stt"
     extra: str | None  # ``runtime: .ttsServer(extra:)`` (TTS only)
     port: int
+    # ``model:`` case: "none" | "hub" | "backendManaged" (``ModelSource``)
+    model_source: str
+    # ``ServiceInfo.hubRepo``: the repo of a ``.hub`` source, else None
     model_repo: str | None
-    model_argument: str | None
+    # the alias of a ``.hub`` source, else None (TTS passes it as ``--model``)
+    model_alias: str | None
+    # the spec of a ``.backendManaged`` source, else None
+    model_spec: str | None
     streaming: bool
     # ``expectedBackendName``: the ``backend.name`` the entry's ``server.hello`` reports
     expected_backend_name: str
@@ -47,6 +57,31 @@ class CatalogEntry:
     @property
     def is_variant(self) -> bool:
         return self.name != self.family
+
+
+_MODEL = re.compile(
+    r"model: (?:"
+    r"(?P<none>\.none)"
+    r'|\.hub\(repo: "(?P<repo>[^"]+)"(?:, alias: "(?P<alias>[^"]+)")?\)'
+    r'|\.backendManaged\(spec: "(?P<spec>[^"]+)"\)'
+    r")[,)]"
+)
+
+
+def _model_source(block: str, case: str) -> tuple[str, str | None, str | None, str | None]:
+    """``(model_source, model_repo, model_alias, model_spec)`` of the block's one ``model:``
+    argument. Loud on a missing, repeated or unknown shape: never a silent default."""
+    block = re.sub(r"^\s*//.*$", "", block, flags=re.MULTILINE)  # prose may say "model: "
+    labelled = re.findall(r"\bmodel: ", block)
+    matches = list(_MODEL.finditer(block))
+    assert len(labelled) == 1, f"{case}: expected one model: argument, found {len(labelled)}"
+    assert len(matches) == 1, f"{case}: unparsed model: shape in {block!r}"
+    m = matches[0]
+    if m.group("none"):
+        return "none", None, None, None
+    if m.group("repo"):
+        return "hub", m.group("repo"), m.group("alias"), None
+    return "backendManaged", None, None, m.group("spec")
 
 
 def _field(block: str, pattern: str) -> str | None:
@@ -94,6 +129,7 @@ def macos_catalog() -> dict[str, CatalogEntry]:
         assert "ServiceInfo(" in block, f"{case}: neither a ServiceInfo literal nor a variant"
         assert _field(block, r"service: \.(\w+),") == case, f"{case}: literal names another service"
         engine, requirements = _stt_helper(block, constants)
+        model_source, model_repo, model_alias, model_spec = _model_source(block, case)
         literals[case] = CatalogEntry(
             engine=engine,
             requirements=requirements,
@@ -102,20 +138,26 @@ def macos_catalog() -> dict[str, CatalogEntry]:
             kind=_field(block, r"kind: \.(tts|stt),"),
             extra=_optional_string(block, r"runtime: \.ttsServer\(extra"),
             port=int(_field(block, r"port: (\d+)")),
-            model_repo=_optional_string(block, "modelRepo"),
-            model_argument=_optional_string(block, "modelArgument"),
+            model_source=model_source,
+            model_repo=model_repo,
+            model_alias=model_alias,
+            model_spec=model_spec,
             streaming=_field(block, r"streaming: (true|false)") == "true",
             expected_backend_name=_field(block, r'expectedBackendName: "(\w+)"'),
         )
     entries = dict(literals)
     for case, base, block in variants:
-        # A variant shares its family's runtime, kind, streaming flag and backend name.
+        # A variant shares its family's runtime, kind, streaming flag and backend name, and
+        # states its own model.
+        model_source, model_repo, model_alias, model_spec = _model_source(block, case)
         entries[case] = replace(
             literals[base],
             name=raw[case],
             port=int(_field(block, r"port: (\d+)")),
-            model_repo=_optional_string(block, "modelRepo") or literals[base].model_repo,
-            model_argument=_optional_string(block, "modelArgument"),
+            model_source=model_source,
+            model_repo=model_repo,
+            model_alias=model_alias,
+            model_spec=model_spec,
         )
     assert sorted(entries) == sorted(raw), "every Service case has a catalog entry"
     return {entry.name: entry for entry in entries.values()}
@@ -210,7 +252,7 @@ def macos_snapshots() -> dict[str, list[Snapshot]]:
             blocks[raw.get(name, name)] = block
     out = {}
     for entry in macos_catalog().values():
-        if entry.model_repo is None:  # the Swift guard: no model repo, nothing to fetch
+        if entry.model_repo is None:  # the Swift guard: no Hub repo, nothing to size
             out[entry.name] = []
             continue
         block = blocks.get(entry.family, blocks["default"])

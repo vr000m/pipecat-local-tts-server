@@ -179,7 +179,13 @@ _APP_FIXED_ENV = {
 }
 # Inherited when set (``base()``), plus ``HF_TOKEN`` (``huggingFace()``, given to
 # the processes that download: ``prefetch`` and ``serve``).
-_APP_INHERITED_ENV = ("HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME", "PIPECAT_TTS_PHONON_VOICES")
+_APP_INHERITED_ENV = (
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "XDG_CACHE_HOME",
+    "MOONSHINE_VOICE_CACHE",
+    "PIPECAT_TTS_PHONON_VOICES",
+)
 _APP_HF_ENV = ("HF_TOKEN",)
 
 # Every key ``base()`` writes (HOME and TMPDIR are computed, not fixed).

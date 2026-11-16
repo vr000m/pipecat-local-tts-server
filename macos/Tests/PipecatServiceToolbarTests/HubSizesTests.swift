@@ -49,7 +49,7 @@ import Testing
         // STT runs the upstream `prefetch`, which pins its default models: those are sized at
         // the pin, any other STT model at `main`.
         for service in Service.allCases where service.kind == .stt {
-            guard let repo = service.info.modelRepo else { continue }
+            guard let repo = service.info.hubRepo else { continue }
             let tree = "/tree/\(ServiceCatalog.sttPinnedRevisions[repo] ?? "main")?recursive=true"
             #expect(HubSizes.treeURL(ServiceCatalog.snapshots(for: service)[0])?.absoluteString.hasSuffix(tree) == true, "\(service)")
         }
@@ -61,7 +61,7 @@ import Testing
     @Test func everyServiceSizesItsModelRepoFirst() {
         for service in Service.allCases {
             let snapshots = ServiceCatalog.snapshots(for: service)
-            guard let repo = service.info.modelRepo else {
+            guard let repo = service.info.hubRepo else {
                 #expect(snapshots.isEmpty, "\(service)")
                 continue
             }

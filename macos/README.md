@@ -38,6 +38,7 @@ then **Start**.
 | Kyutai STT | STT | 9665 | `kyutai/stt-1b-en_fr-mlx` | CC-BY-4.0 |
 | Parakeet | STT | 9765 | `mlx-community/parakeet-tdt-0.6b-v3` | CC-BY-4.0 |
 | Nemotron | STT | 9865 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | Custom licence (`license:other`) |
+| Moonshine | STT | 9965 | English only: model spec `medium-streaming@en` (downloaded by the backend from `download.moonshine.ai`, not the Hub) | MIT |
 | **Kokoro** (default TTS) | TTS | 8765 | `mlx-community/Kokoro-82M-bf16` | Apache-2.0 |
 | Phonon | TTS | 9365 | `gradium/phonon-31m-en` | Apache-2.0 |
 | Pocket TTS | TTS | 8965 | `mlx-community/pocket-tts` | CC-BY-4.0 |
@@ -87,9 +88,9 @@ for running both.
 - **Not discovered:** Unix sockets, servers on other ports, LAN endpoints. A
   server that needs a bearer token is not adopted (Start then reports the port busy
   because it wants a token); the app stores no token.
-- **Support floor.** STT starts through `pipecat-local-stt-server==0.5.0`'s own CLI
+- **Support floor.** STT starts through `pipecat-local-stt-server==0.6.0`'s own CLI
   (`python -m stt_server serve --supervised`). An STT agent on an older version
-  is still adopted by its hello, but an app-started STT server needs 0.5.0.
+  is still adopted by its hello, but an app-started STT server needs 0.6.0.
 
 
 ## Restore and Quit
@@ -163,10 +164,10 @@ for running both.
   **Copy Environment Variables**, Start/Stop, **Delete Model…** (an External
   service gets the Copy items, Test and Show Details only). Deleting
   removes the model's Python environment and, unless another installed variant
-  still uses them, its weights. The detail page's **Delete…** offers **Keep
-  Model Files** or **Delete Everything**. Weights live in the shared Hugging
-  Face cache, so a command-line or launchd server using the same model
-  downloads them again after a delete.
+  still uses them, its weights from the Hugging Face cache. Those weights live
+  in the shared cache, so a command-line or launchd server using the same model
+  downloads them again after a delete. Which **Delete…** buttons the detail
+  page offers follows [Model source](docs/architecture.md#model-source).
 - **Try it**: type text and hear a TTS model. For STT, record from the
   microphone or transcribe a fixed spoken test clip (`STTSampleClip`, no
   microphone) and see whether the transcript matches its sentence. An External
@@ -208,6 +209,7 @@ Or set `TTS_WS_HOST`/`TTS_WS_PORT` and `STT_WS_HOST`/`STT_WS_PORT`.
 | `~/Library/Application Support/Pipecat Service Toolbar/` | managed Python, one venv per model family |
 | `~/Library/Caches/Pipecat Service Toolbar/uv/` | package cache |
 | `~/.cache/huggingface/hub/` | model weights, shared with CLI use (`HF_HOME` honoured) |
+| `~/Library/Caches/moonshine_voice/` | Moonshine's weights, shared with CLI use (`MOONSHINE_VOICE_CACHE` honoured) |
 | `~/Library/Logs/Pipecat Service Toolbar/` | one log per service |
 | `~/Library/Caches/pipecat-tts-build/uv/<version>/` | the pinned `uv` the build bundles (build time only; `PIPECAT_TTS_BUILD_CACHE` moves the root) |
 
@@ -218,15 +220,19 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
 - **TTS**: `uv pip install "pipecat-local-tts-server[<backend>] @ <bundled wheel>"`,
   pinned to `uv.lock`, then `python -m tts_server prefetch` and
   `serve --supervised`.
-- **Whisper, Kyutai, Parakeet, Nemotron**: PyPI packages hash-pinned to the last
+- **Whisper, Kyutai, Parakeet, Nemotron, Moonshine**: PyPI packages hash-pinned to the last
   transitive dependency (`constraints/stt-<engine>.txt`, `uv pip install
   --require-hashes`; a bundled app missing that file refuses the install rather
   than resolve unpinned), run by the upstream CLI (`python -m stt_server prefetch`
   and `serve --supervised`). The four default STT models (Whisper large-v3-turbo,
-  Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.5.0
+  Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.6.0
   itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
   no revision flag (there is none), only `--model <repo>`: a model other than a pinned
-  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is
+  not a Hub model: its weights come from `download.moonshine.ai`, and the app passes the
+  model spec as `--model`; for how those downloads are checked, see "Pinned downloads"
+  in [`docs/architecture.md`](docs/architecture.md). Kyutai runs as a `moshi_mlx`
+  backend inside `stt_server`.
   Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
   `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
   it the server exits with `BackendStartError: FFmpeg is not installed or not in

@@ -49,7 +49,7 @@ struct EndToEndTests {
     }
 
     /// As `startServer`, keeping the `ready` line (always on an ephemeral port: never a
-    /// catalog port, so a LaunchAgent on 9565 to 9865 is never touched).
+    /// catalog port, so a LaunchAgent on 9565 to 9965 is never touched).
     func startServerReady(_ service: Service, _ manager: EnvironmentManager, paths: AppPaths) async throws -> (Subprocess, ServerCLIEvent) {
         let args = try #require(manager.serveArguments(for: service.info, port: 0))
         let server = Subprocess(
@@ -240,7 +240,7 @@ struct EndToEndTests {
         let (text, latency) = try await timedShortRequest()
         print("kyutai: baseline \(baseline) s; after an abandoned \(long.count / 32000) s clip \(latency) s")
         #expect(text.lowercased().contains("weather"))
-        // pipecat-local-stt-server 0.5.0 stops a cancelled Kyutai decode at the next 80 ms frame,
+        // pipecat-local-stt-server 0.6.0 stops a cancelled Kyutai decode at the next 80 ms frame,
         // so an abandoned long clip must not keep the backend busy.
         #expect(latency < baseline + 8, "the abandoned request kept the backend busy for \(latency) s")
 
@@ -250,7 +250,7 @@ struct EndToEndTests {
     }
 
     /// Parakeet through the upstream CLI: install, serve on an ephemeral port, transcribe.
-    /// The live `ready` line has the shape of the recorded 0.5.0 fixture.
+    /// The live `ready` line has the shape of the recorded 0.6.0 fixture.
     @Test func parakeetInstallServeTranscribe() async throws {
         let (manager, paths) = try await Self.makeManager()
         let events = try await install(.parakeet, manager)
@@ -299,6 +299,41 @@ struct EndToEndTests {
         #expect(await server.waitForExit() == 0)
         try await manager.remove(.nemotron, deleteModel: false)
         #expect(manager.environmentStatus(.nemotron) == .missing)
+    }
+
+    /// Moonshine through the upstream CLI. Not a Hub model: the cache check names a synthetic
+    /// `moonshine-voice/...` repo and no hub folder, and the model spec is `--model`.
+    @Test func moonshineInstallServeTranscribe() async throws {
+        let (manager, paths) = try await Self.makeManager()
+        let events = try await install(.moonshine, manager)
+        #expect(events.contains(.stage(.model)))
+        let cache = try #require(await manager.modelCacheStatus(.moonshine))
+        #expect(cache.cached)
+        let (server, ready) = try await startServerReady(.moonshine, manager, paths: paths)
+        defer { server.kill() }
+        let port = try #require(ready.port)
+        #expect(port != Service.moonshine.info.port)
+        #expect(ready.backend == "moonshine" && ready.host == "127.0.0.1" && ready.rate == 16000 && ready.pid != nil)
+        let client = STTClient(port: port)
+        #expect(try await client.connect().backend == "moonshine")
+        try await expectHelloMapsBack(.moonshine, port: port)
+        let text = try await client.transcribe(try Self.spokenClip("The weather today is sunny and warm."))
+        #expect(text.lowercased().contains("weather"))
+        await client.close()
+        server.closeStdin()
+        #expect(await server.waitForExit() == 0)
+        // Deleting "everything" removes the environment only: the weights are not in the Hub cache,
+        // so the app leaves them (`ServiceInfo.weightsLocation` is `.backendManaged`).
+        // Smoke check only that the weights are untouched; the policy itself is covered by
+        // `removalKeepsModelFilesOfAServiceOutsideTheHubCache` in CoreTests.swift.
+        // Where moonshine-voice keeps them: `MOONSHINE_VOICE_CACHE`, which the app forwards, else its default.
+        let override = ProcessInfo.processInfo.environment["MOONSHINE_VOICE_CACHE"].flatMap { $0.isEmpty ? nil : $0 }
+        let weights = override.map { URL(filePath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Caches/moonshine_voice")
+        #expect(FileManager.default.fileExists(atPath: weights.path))
+        try await manager.remove(.moonshine, deleteModel: true)
+        #expect(manager.environmentStatus(.moonshine) == .missing)
+        #expect(FileManager.default.fileExists(atPath: weights.path))
     }
 }
 

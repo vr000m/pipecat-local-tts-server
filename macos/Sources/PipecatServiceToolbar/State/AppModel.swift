@@ -275,7 +275,7 @@ final class AppModel {
     private func loadDownloadSizes() async {
         let defaults = UserDefaults.standard
         for model in services where !Task.isCancelled {
-            guard model.info.modelRepo != nil else { continue }
+            guard model.info.weightsInHubCache else { continue }
             // Per service: a service's total spans several snapshots (the old `hubSize.<repo>` keys are left unread).
             let key = "hubSize.service.\(model.service.rawValue)"
             let stamp = defaults.double(forKey: key + ".at")
@@ -397,21 +397,24 @@ final class AppModel {
         alert.messageText = "Delete \(model.info.displayName)?"
         let keeping = siblings(of: model).filter(\.isInstalled).map(\.info.displayName)
         var detail: String
+        let size = model.diskBytes.map { " (\(Format.bytes($0)))" } ?? ""
         if keeping.isEmpty {
-            detail = "This removes its Python environment"
-            if model.info.needsModelDownload {
-                detail += " and downloaded model files"
-                if let bytes = model.diskBytes { detail += " (\(Format.bytes(bytes)))" }
+            switch model.info.weightsLocation {
+            case .none:
+                detail = "This removes its Python environment."
+            case .hubCache:
+                // The weights live in the shared Hugging Face cache, not in the app.
+                detail = "This removes its Python environment and downloaded model files\(size)."
+                    + " The model files are in the shared Hugging Face cache, so a command-line or launchd "
+                    + "server using the same model will download them again."
+            case .backendManaged:
+                // A model the backend fetches itself (Moonshine): outside the cache the app deletes from.
+                detail = "This removes its Python environment. The model files\(size)"
+                    + " are downloaded by the backend outside the Hugging Face cache and stay on disk."
             }
-            detail += "."
         } else {
             detail = "This removes its model files. Files and the Python environment shared with "
                 + "\(keeping.formatted(.list(type: .and))) stay."
-        }
-        if keeping.isEmpty, model.info.needsModelDownload {
-            // The weights live in the shared Hugging Face cache, not in the app.
-            detail += " The model files are in the shared Hugging Face cache, so a command-line or launchd "
-                + "server using the same model will download them again."
         }
         alert.informativeText = detail + " You can download it again later."
         alert.alertStyle = .warning

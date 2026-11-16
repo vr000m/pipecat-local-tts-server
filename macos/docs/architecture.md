@@ -17,7 +17,7 @@ flowchart LR
     end
     subgraph Py["Per-service venvs (uv-managed CPython 3.12)"]
         TTS["python -m tts_server serve --supervised"]
-        STT["python -m stt_server serve --supervised<br/>(Whisper / Kyutai / Parakeet / Nemotron)"]
+        STT["python -m stt_server serve --supervised<br/>(Whisper / Kyutai / Parakeet / Nemotron / Moonshine)"]
     end
     BOT["Pipecat app<br/>LocalTTSService / LocalWebSocketSTTService"]
 
@@ -68,7 +68,7 @@ Each service has one of three `ServiceRuntime` values:
 | Runtime | Install | Serve | Services |
 |---|---|---|---|
 | `ttsServer(extra:)` | `uv pip install "pipecat-local-tts-server[extra] @ <bundled wheel>"` with `uv.lock` constraints, then `python -m tts_server prefetch --json` | `python -m tts_server serve --supervised` | 8 TTS backends |
-| `sttHelper(engine:requirements:)` (the case name predates the helper's removal) | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `python -m stt_server prefetch --backend B --model R --json` (weights follow the repo's `main`) | `python -m stt_server serve --supervised --backend B` (`B` is the entry's expected backend name; Whisper is `mlx`) | Whisper, Kyutai, Parakeet, Nemotron |
+| `sttHelper(engine:requirements:)` (the case name predates the helper's removal) | `uv pip install --require-hashes <pinned PyPI requirements>` with the engine's `stt-<engine>.txt` constraints, then `python -m stt_server prefetch --backend B --model R --json` (weights follow the repo's `main`) | `python -m stt_server serve --supervised --backend B` (`B` is the entry's expected backend name; Whisper is `mlx`) | Whisper, Kyutai, Parakeet, Nemotron, Moonshine (`--model <spec>`, weights from its own CDN) |
 | `appleSpeech` | `AssetInventory` model download | `STTWebSocketServer` in-process | Apple Speech |
 
 On first use, all Python services share one uv-managed CPython 3.12, stored under
@@ -94,9 +94,49 @@ Installing a
 second variant downloads only its weights. Installs and removals on one family
 are serialized. Deleting a variant keeps the files an installed sibling still
 uses (Phonon's variants share one Hugging Face repo; the 8-bit and 4-bit
-conversions are their own), and the venv goes with the last variant. In Add
+conversions are their own), and the venv goes with the last variant; a
+`.backendManaged` service keeps its weights (see [Model source](#model-source)). In Add
 Models, a family's uninstalled variants share one row that expands to list them;
 once installed, each is an ordinary row.
+
+### Model source
+
+Each catalog entry states where its weights come from as one explicit field,
+`ServiceInfo.model: ModelSource`. Only two properties in `Service.swift` switch on it:
+`weightsLocation` (where the weights live) and `expectedModel` (the model's name on the
+wire). Every other policy is read off those two, and no call site re-derives the kind:
+
+| Case | Entries | Weights |
+|---|---|---|
+| `.none` | tone, Apple Speech | nothing to download |
+| `.hub(repo:alias:)` | every other TTS and STT entry | the shared Hugging Face cache; `alias` is the backend's `--model` alias (Phonon `phonon-q8` / `phonon-q4`) |
+| `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`), STT only | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice` (moonshine-voice 0.1.6 `get_cache_dir`: `MOONSHINE_VOICE_CACHE`, else `platformdirs.user_cache_dir("moonshine_voice")`), outside the Hugging Face cache |
+
+- **Delete** (`weightsLocation`: `.none`, `.hubCache(repo:)`, `.backendManaged`):
+  Delete Everything deletes model files only for `.hubCache`, from the Hugging Face
+  cache (plus their derived folders). `EnvironmentManager.remove`, the detail page and the
+  delete dialog all switch on `weightsLocation`. A `.backendManaged` service keeps its weights
+  whatever is chosen. Only `.hubCache` offers **Keep Model Files** and **Delete
+  Everything**; the others show a single **Delete**.
+- **Hub repo** (`hubRepo`): the repo of `.hubCache`, so a repo exists exactly when
+  removal may delete one. It is the repo sized, mapped to a cache folder, linked on the
+  Details card and compared with siblings' on removal.
+- **Hub cache** (`weightsInHubCache`, `hubRepo != nil`): `HF_TOKEN` reaches only such a
+  service's `prefetch` and `serve` (`ProcessEnvironment.huggingFace(for:)`).
+  `EnvironmentManager.cacheStatus` keeps a `prefetch --check`'s repo ids and folders only
+  for it. The install's progress label takes a `start` row's repo only for it (Moonshine's
+  rows name a synthetic, Hub-shaped repo id).
+- **Model step** (`needsModelDownload`): every case but `.none` downloads, sizes and checks a model.
+- **Moonshine's integrity** is a residual risk: its weights sit outside the hash-pinned
+  supply chain ([Security notes](#security-notes), "Pinned downloads").
+- **Hello match** (`expectedModel`): alias, else repo, for `.hub`; the spec for
+  `.backendManaged`; none for `.none`.
+- **Display name** (`displayModel`, `hubRepo ?? expectedModel`): the install's progress
+  label until a Hub `start` row, and the Details card's Model row (text unless `hubRepo`
+  is set).
+- **`--model`** (`cliModel`): `expectedModel`, except that the `tts_server` runtime omits
+  a Hub repo with no alias. `tts_server` then loads the backend's default, which equals the
+  catalog repo. A spec or an alias is always passed.
 
 ## Lifecycle state machine
 
@@ -340,7 +380,7 @@ during the alert.
   running ("Quit" when `ServiceCounts.owned == 0`, else "Stop All & Quit"), and waits
   for the discovery pass it cancels (`SerialPass`), so no probe or owner lookup
   outlives the app.
-- **Support floor.** STT is app-started through `pipecat-local-stt-server==0.5.0`;
+- **Support floor.** STT is app-started through `pipecat-local-stt-server==0.6.0`;
   older STT servers are adopted by hello only.
 - **Beside LaunchAgents.** `just tts-install` and `just stt-*` agents use the same
   ports, so they show as External; the source line is the agent's label when
@@ -414,7 +454,7 @@ Every Python server, and the native server, follows one contract.
 
 `tts_server` implements this natively (`serve --supervised`,
 `tts_server/supervise.py`). The STT engines get it from the upstream
-`pipecat-local-stt-server==0.5.0` CLI (`python -m stt_server serve --supervised`,
+`pipecat-local-stt-server==0.6.0` CLI (`python -m stt_server serve --supervised`,
 `prefetch --json`); the app no longer wraps `stt_server`. Older STT versions lack
 it, so an STT server on one is adopted by its hello but never app-started.
 
@@ -529,11 +569,12 @@ leaves it running).
 ### Delete
 
 - **Delete Model…** (right-click) asks first, then removes the service with its
-  model files: `remove(deleteModel: true)`.
+  model files from the Hugging Face cache: `remove(deleteModel: true)`.
 - The detail page's **Delete…** offers **Keep Model Files**
   (`deleteModel: false`: only the environment, or the variant's record in a
-  shared one) and, for a service with downloaded weights, **Delete Everything**
-  (`deleteModel: true`).
+  shared one) and, where `weightsLocation` allows it ([Model source](#model-source)),
+  **Delete Everything** (`deleteModel: true`), which removes the model files from
+  the Hugging Face cache.
 - Order: an install in flight is cancelled and unwinds first (dropping the
   family lock), then the server is stopped, then `EnvironmentManager.remove`
   runs under the family lock. The family environment goes with its last
@@ -640,7 +681,7 @@ the bare file name.
   requirement in `Service.swift`, regenerate them (network needed):
   `uv run python macos/scripts/compile_stt_constraints.py`. The TTS export from
   `uv.lock` stays `--no-hashes`.
-- **STT weights are pinned upstream, not by the app.** `pipecat-local-stt-server` 0.5.0
+- **STT weights are pinned upstream, not by the app.** `pipecat-local-stt-server` 0.6.0
   pins the four default models (Whisper large-v3-turbo, Kyutai 1B, Parakeet, Nemotron) to
   a recorded Hub commit in code (`PINNED_REVISIONS`); `prefetch --json` `start`/`check`
   events carry that `revision` (null for any other `--model`, which follows `main`). It has
@@ -664,12 +705,16 @@ The app reads the same JSON lines from two independent emitters: `tts_server`
 fields, types and error codes are fixed in `docs/supervised-contract.json`.
 `tests/test_supervised_contract.py` runs the TTS emitter on stub inputs and checks each
 line against it. The lean job cannot install the STT server, so the STT side is checked
-against recorded upstream artifacts instead: a real 0.5.0 `ready` and `error` line
-(`tests/fixtures/stt_supervised_lines.jsonl`), a real 0.5.0 kyutai `prefetch --check --json`
+against recorded upstream artifacts instead: a real 0.6.0 `ready` and `error` line
+(`tests/fixtures/stt_supervised_lines.jsonl`), a real 0.6.0 kyutai `prefetch --check --json`
 (`tests/fixtures/stt_prefetch_check_lines.jsonl`: the `check` row then the `summary` that
 `EnvironmentManager.cacheStatus` reads, recorded offline on an empty cache and re-recorded by
-the opt-in `-k verbatim` run), and a verbatim excerpt of the 0.5.0 source
-(`tests/fixtures/stt_server_0.5.0_source.txt`: its `CODE_*` error codes and backend
+the opt-in `-k verbatim` run), Moonshine's real 0.6.0 `prefetch` output
+(`tests/fixtures/stt_prefetch_*_moonshine_*.jsonl`: `--check` on an empty and a full cache,
+and a fetch with the weights cached; its rows name a synthetic `moonshine-voice/<arch>-<lang>`
+repo and a path outside the Hugging Face cache, and the Swift tests replay them through
+`cacheStatus` and `remove`), and a verbatim excerpt of the 0.6.0 source
+(`tests/fixtures/stt_server_0.6.0_source.txt`: its `CODE_*` error codes and backend
 registry, checked against the live package too where it is importable). The test also
 checks the Swift decoder (`ServerCLIEvent`), the error codes (`SupervisedErrorCode`, the
 union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against the contract.
@@ -680,8 +725,8 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
 |---|---|
 | Swift unit (`swift test`) | Line splitting, event decoding, PCM conversion and the one stt wire format, catalog ports and copy strings, variant commands, shared environments and deletion sets, the deletion roots (on disk, with symlinked leaves, backend directories and roots), logo parsing, `Subprocess` stdin and kill handling, exit-after-drain ordering and its lifecycle table (launch failure, stop before launch, descendants that obey or ignore SIGTERM), install cancel (kill escalation, cancellation vs finish, a cancelled queued install, every install ending against the variant marker, every child ending against the family lock), no probes after quit, a removal during quit keeping what a sibling may use, a reaped child's reused pid never signalled, the Try it request machine over every (state, event) cell (`Fixtures/tts_request_machine_table.txt`) and over random interleavings against a model server with its invariants asserted, real server frames driving it (`Fixtures/tts_wire_frames.json`, which also holds the request frames the server was sent), the driver's silence timeout, the lifecycle reducer's whole state space (every event against every phase, with the server current or replaced, Stop or removal under way, and quit under way) and its exits against every phase, the driver's start/ready/stop, late ready, ready timeout and supervised error, and quit during an Apple Speech install, download-size filters and pins, seamless resampling, `STTWebSocketServer` round trip, busy port, Origin rejection, stop during startup, connections outliving the server, the connection cap and one-at-a-time decodes, the unread-reply cap, which processes get `HF_TOKEN`. |
 | Live tone (needs `.venv`) | A supervised tone server, `TTSClient` speak (no `Origin` header, so no 403); `TTSRequestDriver` on one connection through a normal request, a busy refusal then retry, Stop mid-flight, Stop between append and commit, a refused voice and a dropped connection (reconnecting), and Stop while connecting. |
-| End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny, Kyutai, Parakeet (needs `ffmpeg`) and Nemotron against the built bundle, then serve and use each. |
-| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and checks its backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and the download-size snapshot table (against `prefetch_specs(model)`) against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server on stub inputs and replays recorded `stt_server` 0.4.0 lines (`tests/fixtures/stt_supervised_lines.jsonl`), checking every JSON line, per-emitter error code (`ModelInvalidError` is STT-only; the STT list equals the `CODE_*` set of a verbatim 0.4.0 source excerpt, `tests/fixtures/stt_server_0.4.0_source.txt`, which also backs the STT backend names and default models in the catalog drift test), the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, and the STT constraints against each engine's requirements. |
+| End-to-end (`PIPECAT_TOOLBAR_E2E=1`) | Real installs of tone, phonon, Phonon 8-bit beside phonon, Whisper Tiny, Kyutai, Parakeet (needs `ffmpeg`), Nemotron and Moonshine against the built bundle, then serve and use each. |
+| Python (`uv run pytest`) | `serve --supervised`, `prefetch`, a drift test that ties the app's TTS ports to the README and `justfile`, and `test_macos_catalog_drift.py`, which parses `Service.swift` (one parser, `tests/_macos_catalog.py`, variants included) and checks its backend names, ports (unique across variants), default model repos, streaming flags, Phonon `--model` aliases and the download-size snapshot table (against `prefetch_specs(model)`) against the Python sources and the `justfile`, and checks the Try it wire fixture against a live server; `test_supervised_contract.py`, which runs the TTS server on stub inputs and replays recorded `stt_server` 0.6.0 lines (`tests/fixtures/stt_supervised_lines.jsonl`), checking every JSON line, per-emitter error code (`ModelInvalidError` is STT-only; the STT list equals the `CODE_*` set of a verbatim 0.6.0 source excerpt, `tests/fixtures/stt_server_0.6.0_source.txt`, which also backs the STT backend names and default models in the catalog drift test), the Swift decoder's keys and `STTWire.rate` against `docs/supervised-contract.json`, and the STT constraints against each engine's requirements. |
 | Visual (`--snapshot <dir>`) | Renders every page in light and dark from sample states. |
 
 ## Security notes
@@ -691,8 +736,9 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
   app serves loopback only; any local process can connect. What a token would
   take, and why it is not done: [`loopback-auth.md`](loopback-auth.md).
 - **Credentials.** `HF_TOKEN`, when set, reaches only `prefetch` and `serve`
-  (`ProcessEnvironment.huggingFace()`), never `uv`, whose package builds run
-  third-party code.
+  (`ProcessEnvironment.huggingFace(for:)`, through `EnvironmentManager.prefetchSpec` for a
+  download; the offline `--check` gets none), never `uv`, whose package builds run
+  third-party code. Which services get it: [Model source](#model-source).
 - **No sandbox.** The app has no App Sandbox, so it can start `uv` and the
   per-service interpreters. The hardened runtime is on.
 - **Pinned downloads.**
@@ -701,7 +747,11 @@ union of both emitters' lists) and the stt wire rate (`STTWire.rate`) against th
     transitive dependency (see Pins).
   - Phonon's weights and Pocket TTS's voice embeddings are pinned to a commit.
     Other TTS repos (Dia's codec included) follow `main`; the default STT models are
-    pinned by upstream 0.5.0 itself and other STT models follow `main`.
+    pinned by upstream 0.6.0 itself and other STT models follow `main`.
+  - Moonshine's weights are fetched from `download.moonshine.ai` by `moonshine-voice`,
+    which checks each file by size and CRC32C against a manifest in its native
+    library. That catches corruption, not tampering: their integrity rests on TLS
+    and the CDN.
 - **Logs.** The app never writes audio or transcripts to disk itself. Each
   service's log file holds what that server prints at INFO level, plus the
   app's start and stop markers.

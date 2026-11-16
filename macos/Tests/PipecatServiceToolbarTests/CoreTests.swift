@@ -29,7 +29,7 @@ import Testing
             .tone: 8665, .kokoro: 8765, .voxtralTTS: 8865, .pocketTTS: 8965,
             .dia: 9065, .qwen3TTS: 9165, .fishTTS: 9265, .phonon: 9365,
             .appleSpeech: 9465, .whisper: 9565, .kyutai: 9665,
-            .parakeet: 9765, .nemotron: 9865,
+            .parakeet: 9765, .nemotron: 9865, .moonshine: 9965,
             // Variants: the family's port + 1, 2, ...
             .phononQ8: 9366, .phononQ4: 9367,
             .whisperLargeV3: 9566, .whisperMedium: 9567, .whisperSmall: 9568, .whisperBase: 9569, .whisperTiny: 9570,
@@ -46,7 +46,7 @@ import Testing
         #expect(families.map(\.rawValue).sorted() == [
             "dia", "fish_tts", "kokoro", "phonon", "pocket_tts", "qwen3_tts", "tone", "voxtral_tts",
         ])
-        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai, .parakeet, .nemotron])
+        #expect(ServiceCatalog.services(of: .stt).filter { $0.family == $0 } == [.appleSpeech, .whisper, .kyutai, .parakeet, .nemotron, .moonshine])
     }
 
     @Test func runtimes() {
@@ -83,8 +83,8 @@ import Testing
         let parakeet = Service.parakeet.info, nemotron = Service.nemotron.info
         #expect(parakeet.kind == .stt && nemotron.kind == .stt)
         #expect(parakeet.port == 9765 && nemotron.port == 9865)
-        #expect(parakeet.modelRepo == "mlx-community/parakeet-tdt-0.6b-v3")
-        #expect(nemotron.modelRepo == "mlx-community/nemotron-3.5-asr-streaming-0.6b")
+        #expect(parakeet.hubRepo == "mlx-community/parakeet-tdt-0.6b-v3")
+        #expect(nemotron.hubRepo == "mlx-community/nemotron-3.5-asr-streaming-0.6b")
         #expect(Service.parakeet.family == .parakeet && Service.nemotron.family == .nemotron)
         #expect(Service.parakeet.variants == [.parakeet] && Service.nemotron.variants == [.nemotron])
         #expect(parakeet.needsModelDownload && nemotron.needsModelDownload)
@@ -97,8 +97,8 @@ import Testing
             return
         }
         #expect(pEngine == "parakeet" && nEngine == "nemotron")
-        #expect(pReqs.contains("pipecat-local-stt-server[parakeet]==0.5.0"))
-        #expect(nReqs.contains("pipecat-local-stt-server[nemotron]==0.5.0"))
+        #expect(pReqs.contains("pipecat-local-stt-server[parakeet]==0.6.0"))
+        #expect(nReqs.contains("pipecat-local-stt-server[nemotron]==0.6.0"))
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-envs-\(UUID().uuidString.prefix(8))")
         let paths = AppPaths(
             supportDir: root, cacheDir: root.appending(path: "cache"), logsDir: root.appending(path: "logs"),
@@ -108,14 +108,14 @@ import Testing
     }
 
     @Test func everySTTEnvironmentPinsTheSameServerRelease() {
-        #expect(ServiceCatalog.sttServerRequirement == "pipecat-local-stt-server==0.5.0")
+        #expect(ServiceCatalog.sttServerRequirement == "pipecat-local-stt-server==0.6.0")
         for service in ServiceCatalog.services(of: .stt) {
             guard case .sttHelper(_, let reqs) = service.info.runtime else { continue }
-            #expect(reqs.contains { $0.hasPrefix("pipecat-local-stt-server") && $0.hasSuffix("==0.5.0") }, "\(service)")
+            #expect(reqs.contains { $0.hasPrefix("pipecat-local-stt-server") && $0.hasSuffix("==0.6.0") }, "\(service)")
         }
     }
 
-    /// Two real lines from the released 0.5.0 `stt_server` (the Python test checks them
+    /// Two real lines from the released 0.6.0 `stt_server` (the Python test checks them
     /// against the contract): the app's decoder reads them.
     @Test func recordedUpstreamLinesDecode() throws {
         let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -145,7 +145,7 @@ import Testing
     /// An STT default model is sized at upstream's pin, any other STT model at `main` (nil).
     @Test func sttSnapshotsCarryUpstreamsPinsForTheDefaultModelsOnly() {
         for service in ServiceCatalog.services(of: .stt) {
-            guard let repo = service.info.modelRepo else { continue }
+            guard let repo = service.info.hubRepo else { continue }
             let snapshots = ServiceCatalog.snapshots(for: service)
             #expect(snapshots.map(\.repo) == [repo], "\(service)")
             let pin = ServiceCatalog.sttPinnedRevisions[repo]
@@ -159,6 +159,175 @@ import Testing
         }
         #expect(ServiceCatalog.snapshots(for: .kyutai2B).first?.files == .allButDocs)
         #expect(ServiceCatalog.snapshots(for: .whisper).first?.files == .allButDocs)
+    }
+}
+
+/// `ServiceInfo.model` is the only stored model fact. Two properties switch on it
+/// (`weightsLocation`, `expectedModel`); every other policy is read off those two.
+@Suite struct ModelSourceTests {
+    /// One cell of the state space: a source on a runtime kind, against every operation.
+    struct Row: Sendable {
+        let source: ModelSource
+        let kind: ServiceKind
+        let needsModelDownload: Bool
+        let weightsLocation: WeightsLocation
+        let hubRepo: String?
+        let weightsInHubCache: Bool
+        let displayModel: String?
+        let expectedModel: String?
+        /// The `--model` value `serve` and `prefetch` pass; nil for no flag.
+        let cliModel: String?
+        /// The install's label after a `start` row naming `org/synthetic`.
+        let labelAfterStart: String
+    }
+
+    /// Every source (and both `.hub` shapes) on both runtimes. `.none` on STT is Apple Speech's
+    /// source, which has no CLI (`appleSpeech` runtime), so it is listed for TTS only.
+    static let rows: [Row] = [
+        Row(
+            source: .none, kind: .tts, needsModelDownload: false, weightsLocation: .none, hubRepo: nil,
+            weightsInHubCache: false, displayModel: nil, expectedModel: nil, cliModel: nil, labelAfterStart: ""),
+        Row(
+            source: .hub(repo: "org/repo"), kind: .tts, needsModelDownload: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "org/repo", cliModel: nil, labelAfterStart: "org/synthetic"),
+        Row(
+            source: .hub(repo: "org/repo"), kind: .stt, needsModelDownload: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "org/repo", cliModel: "org/repo", labelAfterStart: "org/synthetic"),
+        Row(
+            source: .hub(repo: "org/repo", alias: "repo-q8"), kind: .tts, needsModelDownload: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "repo-q8", cliModel: "repo-q8", labelAfterStart: "org/synthetic"),
+        Row(
+            source: .hub(repo: "org/repo", alias: "repo-q8"), kind: .stt, needsModelDownload: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            displayModel: "org/repo", expectedModel: "repo-q8", cliModel: "repo-q8", labelAfterStart: "org/synthetic"),
+        // The spec is never dropped: a TTS runtime would pass it too (the catalog keeps it STT-only).
+        Row(
+            source: .backendManaged(spec: "medium@en"), kind: .tts, needsModelDownload: true,
+            weightsLocation: .backendManaged, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
+            expectedModel: "medium@en", cliModel: "medium@en", labelAfterStart: "medium@en"),
+        Row(
+            source: .backendManaged(spec: "medium@en"), kind: .stt, needsModelDownload: true,
+            weightsLocation: .backendManaged, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
+            expectedModel: "medium@en", cliModel: "medium@en", labelAfterStart: "medium@en"),
+    ]
+
+    static func info(_ source: ModelSource, kind: ServiceKind = .tts) -> ServiceInfo {
+        ServiceInfo(
+            service: kind == .tts ? .kokoro : .kyutai, kind: kind, expectedBackendName: "x", displayName: "X", tagline: "",
+            runtime: kind == .tts ? .ttsServer(extra: nil) : .sttHelper(engine: "x", requirements: []),
+            port: 1, model: source, licence: .none, streaming: false, symbol: "")
+    }
+
+    private static func modelFlag(_ args: [String]?) -> String?? {
+        guard let args else { return .none }
+        guard let i = args.firstIndex(of: "--model") else { return .some(nil) }
+        return .some(args[i + 1])
+    }
+
+    @Test(arguments: rows) func everyOperationFollowsTheSource(_ row: Row) throws {
+        let info = Self.info(row.source, kind: row.kind)
+        let tag = "\(row.source) \(row.kind)"
+        #expect(info.needsModelDownload == row.needsModelDownload, "\(tag)")
+        #expect(info.weightsLocation == row.weightsLocation, "\(tag)")
+        #expect(info.hubRepo == row.hubRepo, "\(tag)")
+        #expect(info.weightsInHubCache == row.weightsInHubCache, "\(tag)")
+        #expect(info.displayModel == row.displayModel, "\(tag)")
+        #expect(info.expectedModel == row.expectedModel, "\(tag)")
+        #expect(info.cliModel == row.cliModel, "\(tag)")
+        // `serve --model` and `prefetch --model` (both modes) carry exactly `cliModel`.
+        let (manager, _) = try VariantTests.manager()
+        for args in [
+            manager.serveArguments(for: info, port: 1),
+            manager.prefetchArguments(for: info, check: false),
+            manager.prefetchArguments(for: info, check: true),
+        ] {
+            #expect(Self.modelFlag(args) == .some(row.cliModel), "\(tag)")
+        }
+        // The install label: `displayModel`, replaced by a `start` row's repo only for the Hub cache.
+        let start = try #require(ServerCLIEvent.parse(#"{"event":"start","repo":"org/synthetic"}"#))
+        #expect(EnvironmentManager.downloadLabel(start, current: info.displayModel ?? "", for: info) == row.labelAfterStart, "\(tag)")
+    }
+
+    /// `cliModel` keys on the runtime, not the kind: only `tts_server` omits a Hub repo with no
+    /// alias. Each runtime is paired with both kinds, so a rule keyed on `kind` fails a row.
+    @Test func cliModelFollowsTheRuntimeAndTheSource() {
+        let tts = ServiceRuntime.ttsServer(extra: nil)
+        let stt = ServiceRuntime.sttHelper(engine: "x", requirements: [])
+        let sources: [(ModelSource, tts: String?, stt: String?)] = [
+            (.none, nil, nil),
+            (.hub(repo: "org/repo"), nil, "org/repo"),
+            (.hub(repo: "org/repo", alias: "repo-q8"), "repo-q8", "repo-q8"),
+            // An alias spelled like its repo is still an alias: passed, never inferred away.
+            (.hub(repo: "org/repo", alias: "org/repo"), "org/repo", "org/repo"),
+            (.backendManaged(spec: "medium@en"), "medium@en", "medium@en"),
+        ]
+        for (source, ttsWant, sttWant) in sources {
+            for (runtime, want) in [(tts, ttsWant), (stt, sttWant), (.appleSpeech, sttWant)] {
+                for kind in [ServiceKind.tts, .stt] {
+                    let info = ServiceInfo(
+                        service: .kokoro, kind: kind, expectedBackendName: "x", displayName: "X", tagline: "",
+                        runtime: runtime, port: 1, model: source, licence: .none, streaming: false, symbol: "")
+                    #expect(info.cliModel == want, "\(source) \(runtime) \(kind)")
+                }
+            }
+        }
+        // The catalog: bare Hub TTS passes no flag, a Phonon alias passes the alias, every STT
+        // Python entry passes its model, and tone and Apple Speech pass none.
+        #expect(ServiceCatalog.info(for: .kokoro).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .phonon).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .phononQ8).cliModel == "phonon-q8")
+        #expect(ServiceCatalog.info(for: .phononQ4).cliModel == "phonon-q4")
+        #expect(ServiceCatalog.info(for: .tone).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .appleSpeech).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .moonshine).cliModel == "medium-streaming@en")
+        for service in Service.allCases where ServiceCatalog.info(for: service).kind == .stt {
+            let info = ServiceCatalog.info(for: service)
+            #expect(info.cliModel == info.expectedModel, "\(service)")
+        }
+    }
+
+    /// The same Hub-shaped `prefetch --check` output (a check row inside a hub cache, a
+    /// quantized summary) read for each source: repo ids and folders only for `.hub`; the
+    /// `cached` flag and the size for every source.
+    @Test(arguments: rows) func checkOutputKeepsReposOnlyForTheHubCache(_ row: Row) throws {
+        let lines = [
+            #"{"event":"check","repo":"org/repo","cached":true,"path":"/h/hub/models--org--repo/snapshots/abc","size_bytes":10}"#,
+            #"{"event":"summary","cached":true,"size_bytes":10,"quantized":true,"quantized_path":"/c/derived/x/key"}"#,
+        ]
+        let status = try #require(EnvironmentManager.cacheStatus(checkOutput: lines, for: Self.info(row.source, kind: row.kind)))
+        #expect(status.cached && status.sizeBytes == 10, "\(row.source)")
+        if row.weightsInHubCache {
+            #expect(status.repoIDs == ["org/repo"], "\(row.source)")
+            #expect(status.repoFolders.map(\.lastPathComponent) == ["models--org--repo"], "\(row.source)")
+            #expect(status.derivedFolders == [URL(filePath: "/c/derived/x/key")], "\(row.source)")
+        } else {
+            #expect(status.repoIDs.isEmpty && status.repoFolders.isEmpty && status.derivedFolders.isEmpty, "\(row.source)")
+        }
+    }
+
+    /// The catalog-wide invariants: `.backendManaged` is STT-only (no TTS backend fetches its own
+    /// weights, and its hello would carry the spec only through `stt_server`); Apple Speech has
+    /// no model; no empty repo, alias or spec. Each property's value per case is the table above.
+    @Test func catalogHoldsTheModelSourceInvariants() {
+        for service in Service.allCases {
+            let info = service.info
+            switch info.model {
+            case .none:
+                break
+            case .hub(let repo, let alias):
+                #expect(!repo.isEmpty && alias?.isEmpty != true, "\(service)")
+            case .backendManaged(let spec):
+                #expect(!spec.isEmpty, "\(service)")
+                #expect(info.kind == .stt, "\(service): .backendManaged outside STT")
+                if case .sttHelper = info.runtime {} else { Issue.record("\(service): .backendManaged outside the STT runtime") }
+            }
+            if info.runtime == .appleSpeech { #expect(info.model == .none, "\(service)") }
+        }
+        #expect(Service.moonshine.info.model == .backendManaged(spec: "medium-streaming@en"))
+        #expect(Service.phononQ8.info.model == .hub(repo: Service.phonon.info.hubRepo!, alias: "phonon-q8"))
     }
 }
 
@@ -222,6 +391,25 @@ import Testing
             "-m", "stt_server", "serve", "--supervised", "--backend", "nemotron",
             "--model", "mlx-community/nemotron-3.5-asr-streaming-0.6b", "--host", "127.0.0.1", "--port", "9865",
         ])
+        // Moonshine: no Hub repo; the model spec (English by default) is the `--model` argument.
+        let moonshine = try #require(manager.serveArguments(for: Service.moonshine.info, port: 9965))
+        #expect(moonshine == [
+            "-m", "stt_server", "serve", "--supervised", "--backend", "moonshine",
+            "--model", "medium-streaming@en", "--host", "127.0.0.1", "--port", "9965",
+        ])
+        let moonshineCheck = try #require(manager.prefetchArguments(for: Service.moonshine.info, check: true))
+        #expect(moonshineCheck == [
+            "-m", "stt_server", "prefetch", "--backend", "moonshine",
+            "--model", "medium-streaming@en", "--json", "--check",
+        ])
+        #expect(Service.moonshine.info.hubRepo == nil && Service.moonshine.info.needsModelDownload)
+        #expect(Service.moonshine.info.expectedModel == "medium-streaming@en")
+        // Its weights are outside the Hugging Face cache, the only place removal deletes from.
+        #expect(!Service.moonshine.info.weightsInHubCache)
+        for service in Service.allCases where service != .moonshine && service.info.needsModelDownload {
+            #expect(service.info.weightsInHubCache, "\(service)")
+        }
+        #expect(ServiceCatalog.snapshots(for: .moonshine).isEmpty)
         let kyutai = try #require(manager.serveArguments(for: Service.kyutai2B.info, port: 9666))
         #expect(Array(kyutai.prefix(6)) == ["-m", "stt_server", "serve", "--supervised", "--backend", "kyutai"])
         #expect(kyutai.contains("kyutai/stt-2.6b-en-mlx"))
@@ -248,7 +436,7 @@ import Testing
 
     /// STT environments install against their engine's hash-pinned constraints
     /// (`--require-hashes`); TTS against the `uv.lock` export, without hashes.
-    @Test(arguments: [Service.kyutai, .whisperSmall, .parakeet, .nemotron, .phonon])
+    @Test(arguments: [Service.kyutai, .whisperSmall, .parakeet, .nemotron, .moonshine, .phonon])
     func packagesInstallWithTheirConstraints(_ service: Service) async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "toolbar-pins-\(UUID().uuidString.prefix(8))")
         let paths = AppPaths(
@@ -257,7 +445,7 @@ import Testing
         try paths.prepare()
         let pins = root.appending(path: "constraints")
         try FileManager.default.createDirectory(at: pins, withIntermediateDirectories: true)
-        for engine in ["whisper", "kyutai", "parakeet", "nemotron"] {
+        for engine in ["whisper", "kyutai", "parakeet", "nemotron", "moonshine"] {
             FileManager.default.createFile(atPath: pins.appending(path: "stt-\(engine).txt").path, contents: Data())
         }
         let lock = root.appending(path: "constraints.txt")
@@ -490,17 +678,17 @@ import Testing
             EnvironmentManager.cacheStatus(checkOutput: [
                 check,
                 #"{"event":"summary","cached":true,"size_bytes":10,"quantized":false,"quantized_path":"\#(path)"}"#,
-            ]))
+            ], for: Service.phononQ8.info))
         #expect(!notYet.cached && notYet.derivedFolders.isEmpty)
         #expect(notYet.repoFolders.map(\.lastPathComponent) == ["models--gradium--phonon-31m-en"])
         let converted = try #require(
             EnvironmentManager.cacheStatus(checkOutput: [
                 check, #"{"event":"summary","cached":true,"size_bytes":10,"quantized":true,"quantized_path":"\#(path)"}"#,
-            ]))
+            ], for: Service.phononQ8.info))
         #expect(converted.cached && converted.derivedFolders == [URL(filePath: path)])
         // Unquantized backends report no `quantized` field.
         #expect(
-            EnvironmentManager.cacheStatus(checkOutput: [check, #"{"event":"summary","cached":true,"size_bytes":10}"#])?
+            EnvironmentManager.cacheStatus(checkOutput: [check, #"{"event":"summary","cached":true,"size_bytes":10}"#], for: Service.phonon.info)?
                 .cached == true)
     }
 }
@@ -976,9 +1164,14 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
 
     /// An environment whose `prefetch --check` prints `rows`, for removal tests.
     static func checkingEnvironment(_ service: Service, _ paths: AppPaths, rows: [String]) throws {
+        try recordingEnvironment(service, paths, lines: rows + [#"{"event":"summary","cached":false,"size_bytes":8}"#])
+    }
+
+    /// An environment whose `prefetch --check` prints exactly `lines`.
+    static func recordingEnvironment(_ service: Service, _ paths: AppPaths, lines: [String]) throws {
         let python = paths.python(service)
         try FileManager.default.createDirectory(at: python.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let json = (rows + [#"{"event":"summary","cached":false,"size_bytes":8}"#]).joined(separator: "\n")
+        let json = lines.joined(separator: "\n")
         try "#!/bin/sh\ncat <<'EOF'\n\(json)\nEOF\n".write(to: python, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
         try EnvironmentMarker(service: service.rawValue, fingerprint: "old.whl", python: "3.12.0", createdAt: Date())
@@ -1001,6 +1194,87 @@ private final class RaceBox<T: Sendable>: @unchecked Sendable {
         try await manager.remove(.pocketTTS, deleteModel: true)
         #expect(!FileManager.default.fileExists(atPath: cached.path))
         #expect(!FileManager.default.fileExists(atPath: partial.path), "a partial repo survived Delete Everything")
+    }
+
+    /// The core ignores `deleteModel` for a service whose weights are not in the Hugging Face
+    /// cache (Moonshine's): even a check naming a hub folder deletes nothing, while the
+    /// environment still goes. Hub-cache services delete as in the tests above.
+    @Test func removalKeepsModelFilesOfAServiceOutsideTheHubCache() async throws {
+        let (manager, paths) = try VariantTests.manager()
+        #expect(!Service.moonshine.info.weightsInHubCache && Service.pocketTTS.info.weightsInHubCache)
+        let repo = paths.hubDir.appending(path: "models--moonshine-voice--medium")
+        let snapshot = repo.appending(path: "snapshots/abc")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Self.checkingEnvironment(.moonshine, paths, rows: [
+            #"{"event":"check","repo":"moonshine-voice/medium","path":"\#(snapshot.path)","cached":true}"#
+        ])
+        try await manager.remove(.moonshine, deleteModel: true)
+        #expect(manager.environmentStatus(.moonshine) == .missing)
+        #expect(FileManager.default.fileExists(atPath: repo.path), "deleteModel deleted a non-Hub-cache service's files")
+    }
+
+    /// Real 0.6.0 `stt_server prefetch --json` output (`tests/fixtures`; the Python contract test
+    /// checks the same files against `docs/supervised-contract.json`).
+    static func recordedPrefetch(_ name: String) throws -> [String] {
+        let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appending(path: "tests/fixtures/\(name)")
+        return try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+    }
+
+    static let moonshineCached = "stt_prefetch_check_moonshine_cached_lines.jsonl"
+    static let moonshineMissing = "stt_prefetch_check_moonshine_missing_lines.jsonl"
+    static let kyutaiHub = "stt_prefetch_check_lines.jsonl"
+
+    /// Moonshine's recorded check rows name a synthetic, Hub-shaped repo id and a path outside the
+    /// Hugging Face cache: `cacheStatus` keeps neither for it, and the path is not deletable.
+    /// A recorded Hub row (Kyutai) names its real repo the same way.
+    @Test func recordedMoonshineCheckNamesNoDeletableFolder() throws {
+        let (_, paths) = try VariantTests.manager()
+        for name in [Self.moonshineCached, Self.moonshineMissing] {
+            let status = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(name), for: Service.moonshine.info), "\(name)")
+            #expect(status.repoFolders.isEmpty && status.derivedFolders.isEmpty, "\(name)")
+            // The synthetic repo id is not kept: Moonshine's weights are not in the Hub cache.
+            #expect(status.repoIDs.isEmpty, "\(name)")
+            #expect(status.cached == (name == Self.moonshineCached), "\(name)")
+        }
+        let cachedRow = try #require(ServerCLIEvent.parse(Self.recordedPrefetch(Self.moonshineCached)[0]))
+        let weights = try #require(cachedRow.path)
+        #expect(EnvironmentManager.repoFolder(fromSnapshot: weights) == nil)
+        #expect(EnvironmentManager.deletionTarget(URL(filePath: weights), hub: paths.hubDir, derived: paths.derivedModelsDir) == nil)
+        // The fetch's `start` labels the download with the same synthetic id; `done` is outside the cache too.
+        let fetch = try Self.recordedPrefetch("stt_prefetch_fetch_moonshine_lines.jsonl").compactMap(ServerCLIEvent.parse)
+        #expect(fetch.map(\.event) == ["start", "progress", "done", "complete"])
+        #expect(fetch[0].repo == "moonshine-voice/medium-streaming-en")
+        #expect(fetch[2].path.flatMap(EnvironmentManager.repoFolder(fromSnapshot:)) == nil)
+        // The install label keeps Moonshine's spec through the whole fetch; a Hub service's
+        // label would take the same `start` row's repo.
+        func label(_ info: ServiceInfo) -> String {
+            fetch.reduce(info.displayModel ?? "") { EnvironmentManager.downloadLabel($1, current: $0, for: info) }
+        }
+        #expect(label(Service.moonshine.info) == "medium-streaming@en")
+        #expect(label(Service.kyutai.info) == "moonshine-voice/medium-streaming-en")
+        let hub = try #require(EnvironmentManager.cacheStatus(checkOutput: Self.recordedPrefetch(Self.kyutaiHub), for: Service.kyutai.info))
+        #expect(hub.repoIDs == ["kyutai/stt-1b-en_fr-mlx"] && hub.repoFolders.isEmpty && !hub.cached)
+    }
+
+    /// Every recorded row, with Delete Everything on and off, against a hub folder planted at the
+    /// name `cacheFolderName` derives from the row's repo id: only the Hub row with `deleteModel`
+    /// deletes it; Moonshine's synthetic id never reaches the hub cache.
+    @Test(arguments: [LifecycleTests.moonshineCached, LifecycleTests.moonshineMissing, LifecycleTests.kyutaiHub], [true, false])
+    func removalOfARecordedCheckDeletesOnlyHubFolders(fixture: String, deleteModel: Bool) async throws {
+        let (manager, paths) = try VariantTests.manager()
+        let service: Service = fixture == Self.kyutaiHub ? .kyutai : .moonshine
+        let lines = try Self.recordedPrefetch(fixture)
+        let repo = try #require(ServerCLIEvent.parse(lines[0])?.repo)
+        let planted = paths.hubDir.appending(path: EnvironmentManager.cacheFolderName(repo: repo))
+        try FileManager.default.createDirectory(at: planted.appending(path: "blobs"), withIntermediateDirectories: true)
+        try Self.recordingEnvironment(service, paths, lines: lines)
+
+        try await manager.remove(service, deleteModel: deleteModel)
+
+        #expect(manager.environmentStatus(service) == .missing)
+        let deleted = fixture == Self.kyutaiHub && deleteModel
+        #expect(FileManager.default.fileExists(atPath: planted.path) == !deleted, "\(fixture) deleteModel=\(deleteModel)")
     }
 
     /// A reported folder the deletion guard refuses is a failure, never a silent success.
@@ -1815,6 +2089,52 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(ProcessEnvironment.huggingFace()["HF_TOKEN"] == "hf_test_secret")
     }
 
+    /// A user's cache locations reach every child, Moonshine's included (moonshine-voice reads
+    /// `MOONSHINE_VOICE_CACHE`), so the app's check and serve find the weights a CLI server does.
+    @Test func baseForwardsTheUsersCacheLocations() {
+        let inherited = [
+            "HF_HOME": "/hf", "HF_HUB_CACHE": "/hub", "XDG_CACHE_HOME": "/xdg", "MOONSHINE_VOICE_CACHE": "/moon",
+            "HF_TOKEN": "hf_test_secret", "UNRELATED": "x",
+        ]
+        let env = ProcessEnvironment.base(inherited: inherited)
+        for key in ["HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME", "MOONSHINE_VOICE_CACHE"] {
+            #expect(env[key] == inherited[key], "\(key)")
+        }
+        #expect(env["HF_TOKEN"] == nil && env["UNRELATED"] == nil)
+    }
+
+    /// A process that never contacts the Hub (Moonshine) gets no token; Hub-cache services keep it.
+    @Test func hubTokenReachesOnlyHubCacheServices() {
+        let saved = ProcessInfo.processInfo.environment["HF_TOKEN"]
+        setenv("HF_TOKEN", "hf_test_secret", 1)
+        defer { if let saved { setenv("HF_TOKEN", saved, 1) } else { unsetenv("HF_TOKEN") } }
+        #expect(ProcessEnvironment.huggingFace(for: .moonshine)["HF_TOKEN"] == nil)
+        #expect(ProcessEnvironment.serve(.moonshine)["HF_TOKEN"] == nil)
+        #expect(ProcessEnvironment.huggingFace(for: .kyutai)["HF_TOKEN"] == "hf_test_secret")
+        #expect(ProcessEnvironment.serve(.kyutai)["HF_TOKEN"] == "hf_test_secret")
+    }
+
+    /// The `prefetch` subprocess the install step and the cache probe actually run: a download
+    /// carries the token only for a Hub-cache service; the offline `--check` never does.
+    @Test func prefetchSubprocessGetsTheTokenOnlyForHubCacheDownloads() throws {
+        let saved = ProcessInfo.processInfo.environment["HF_TOKEN"]
+        setenv("HF_TOKEN", "hf_test_secret", 1)
+        defer { if let saved { setenv("HF_TOKEN", saved, 1) } else { unsetenv("HF_TOKEN") } }
+        let (manager, paths) = try VariantTests.manager()
+        let moonshine = try #require(manager.prefetchSpec(for: .moonshine, check: false))
+        #expect(moonshine.environment["HF_TOKEN"] == nil)
+        #expect(moonshine.executable == paths.python(.moonshine))
+        #expect(moonshine.arguments == manager.prefetchArguments(for: Service.moonshine.info, check: false))
+        let kyutai = try #require(manager.prefetchSpec(for: .kyutai, check: false))
+        #expect(kyutai.environment["HF_TOKEN"] == "hf_test_secret")
+        for service in Service.allCases where service.info.needsModelDownload {
+            let download = try #require(manager.prefetchSpec(for: service, check: false), "\(service)")
+            #expect((download.environment["HF_TOKEN"] != nil) == service.info.weightsInHubCache, "\(service)")
+            #expect(manager.prefetchSpec(for: service, check: true)?.environment["HF_TOKEN"] == nil, "\(service)")
+        }
+        #expect(manager.prefetchSpec(for: .appleSpeech, check: false) == nil)
+    }
+
     /// Parakeet's `serve` child sees Homebrew's `ffmpeg`; nothing else gets a wider `PATH`.
     @Test func onlyParakeetServeGetsTheHomebrewPath() {
         let base = ProcessEnvironment.base()["PATH"]
@@ -2000,6 +2320,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         for service in Service.kyutai.variants { #expect(service.info.expectedBackendName == "kyutai", "\(service)") }
         #expect(Service.parakeet.info.expectedBackendName == "parakeet")
         #expect(Service.nemotron.info.expectedBackendName == "nemotron")
+        #expect(Service.moonshine.info.expectedBackendName == "moonshine")
     }
 
     @Test func launchdLabelsExistPerFamilyOnly() {
@@ -2012,6 +2333,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
         #expect(Service.kyutai.info.launchdLabel == "pipecat.stt-server.kyutai")
         #expect(Service.parakeet.info.launchdLabel == "pipecat.stt-server.parakeet")
         #expect(Service.nemotron.info.launchdLabel == "pipecat.stt-server.nemotron")
+        #expect(Service.moonshine.info.launchdLabel == "pipecat.stt-server.moonshine")
         for service in Service.whisper.variants.dropFirst() + Service.kyutai.variants.dropFirst() {
             #expect(service.info.launchdLabel == nil, "\(service)")
         }
@@ -2047,7 +2369,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
 
     @Test func whisperVariantsAllReportMlx() throws {
         for service in Service.whisper.variants {
-            let repo = try #require(service.info.modelRepo)
+            let repo = try #require(service.info.hubRepo)
             let json = HelloFixtures.json(name: "mlx", model: repo, rate: 16000)
             #expect(try HelloFixtures.match(json, port: service.info.port)?.service == service, "\(service)")
             // The model decides which variant; another size's repo on this port is a mismatch.
@@ -2056,7 +2378,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
             }
         }
         // The family name is not the backend name.
-        let turbo = try #require(Service.whisper.info.modelRepo)
+        let turbo = try #require(Service.whisper.info.hubRepo)
         #expect(try HelloFixtures.match(HelloFixtures.json(name: "whisper", model: turbo), port: Service.whisper.info.port) == nil)
     }
 
@@ -2075,7 +2397,7 @@ final class ConcurrencyGauge: @unchecked Sendable {
 
     @Test func kokoroWithNoModelIsAMismatch() throws {
         // A missing model matches only an entry that pins none; kokoro pins its repo.
-        let repo = try #require(Service.kokoro.info.modelRepo)
+        let repo = try #require(Service.kokoro.info.hubRepo)
         #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: repo), port: 8765)?.service == .kokoro)
         #expect(try HelloFixtures.match(HelloFixtures.json(name: "kokoro", model: nil), port: 8765) == nil)
     }

@@ -18,6 +18,8 @@ extension Service {
         case .kyutai, .kyutai2B: .mint
         case .parakeet: .yellow
         case .nemotron: .brown
+        // A custom olive: the system colours are taken, and red reads as destructive or an error.
+        case .moonshine: Color(red: 0.55, green: 0.65, blue: 0.2)
         }
     }
 }

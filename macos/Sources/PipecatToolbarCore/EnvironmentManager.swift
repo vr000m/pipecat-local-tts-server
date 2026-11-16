@@ -157,10 +157,10 @@ public actor EnvironmentManager {
         switch info.runtime {
         case .ttsServer:
             args = ["-m", "tts_server", "prefetch", "--backend", info.family.rawValue, "--json"]
-            if let model = info.modelArgument { args += ["--model", model] }
+            if let model = info.cliModel { args += ["--model", model] }
         case .sttHelper:
-            guard let repo = info.modelRepo else { return nil }
-            args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", repo, "--json"]
+            guard let model = info.cliModel else { return nil }
+            args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", model, "--json"]
         case .appleSpeech:
             return nil
         }
@@ -168,19 +168,28 @@ public actor EnvironmentManager {
         return args
     }
 
+    /// The `prefetch` subprocess both callers run. The offline `--check` gets `base()` (no
+    /// token); a download gets `huggingFace(for:)`, so the token reaches only a service whose
+    /// weights come from the Hugging Face cache (never Moonshine's).
+    public nonisolated func prefetchSpec(for backend: Service, check: Bool) -> Subprocess.Spec? {
+        guard let args = prefetchArguments(for: backend.info, check: check) else { return nil }
+        let environment = check ? ProcessEnvironment.base() : ProcessEnvironment.huggingFace(for: backend)
+        return .init(executable: paths.python(backend), arguments: args, environment: environment)
+    }
+
     /// The supervised server command (run with the environment's python).
     public nonisolated func serveArguments(for info: ServiceInfo, port: Int) -> [String]? {
         switch info.runtime {
         case .ttsServer:
             var args = ["-m", "tts_server", "serve", "--backend", info.family.rawValue]
-            if let model = info.modelArgument { args += ["--model", model] }
+            if let model = info.cliModel { args += ["--model", model] }
             return args + [
                 "--host", ServiceCatalog.host, "--port", String(port), "--supervised", "--log-level", "INFO",
             ]
         case .sttHelper:
             // The same upstream CLI a LaunchAgent runs; TCP on the catalog port.
             var args = ["-m", "stt_server", "serve", "--supervised", "--backend", info.expectedBackendName]
-            if let repo = info.modelRepo { args += ["--model", repo] }
+            if let model = info.cliModel { args += ["--model", model] }
             return args + ["--host", ServiceCatalog.host, "--port", String(port)]
         case .appleSpeech:
             return nil
@@ -199,10 +208,8 @@ public actor EnvironmentManager {
         case .outdated where includeOutdated: break
         default: return nil
         }
-        guard let args = prefetchArguments(for: backend.info, check: true),
-            let stdout = await probe(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.base()))
-        else { return nil }
-        return Self.cacheStatus(checkOutput: stdout)
+        guard let spec = prefetchSpec(for: backend, check: true), let stdout = await probe(spec) else { return nil }
+        return Self.cacheStatus(checkOutput: stdout, for: backend.info)
     }
 
     /// Runs a short offline probe to completion and returns its stdout. None
@@ -218,14 +225,18 @@ public actor EnvironmentManager {
     /// Reads `prefetch --check --json` output: one `check` row per snapshot, then
     /// a `summary`. The TTS server and the upstream STT server write the same events
     /// (`docs/supervised-contract.json`, enforced by `tests/test_supervised_contract.py`).
-    static func cacheStatus(checkOutput lines: [String]) -> ModelCacheStatus? {
+    ///
+    /// Repo ids and folders are kept only for a service whose weights are in the Hugging Face
+    /// cache (`info.weightsInHubCache`): Moonshine's rows name a synthetic, Hub-shaped repo id
+    /// that is no Hub repo, so for it the status carries only `cached` and the size.
+    static func cacheStatus(checkOutput lines: [String], for info: ServiceInfo) -> ModelCacheStatus? {
         let events = lines.compactMap(ServerCLIEvent.parse)
         guard let summary = events.last(where: { $0.event == "summary" }) else { return nil }
-        let checks = events.filter { $0.event == "check" }
+        let checks = info.weightsInHubCache ? events.filter { $0.event == "check" } : []
         let paths = checks.compactMap(\.path)
         let repos = Array(Set(checks.compactMap(\.repo))).sorted()
         // A quantized Phonon variant also needs its converted copy of the weights.
-        let derived = summary.quantized == true ? [summary.quantizedPath].compactMap { $0.map { URL(filePath: $0) } } : []
+        let derived = info.weightsInHubCache && summary.quantized == true ? [summary.quantizedPath].compactMap { $0.map { URL(filePath: $0) } } : []
         return ModelCacheStatus(
             cached: (summary.cached ?? false) && summary.quantized != false, sizeBytes: summary.sizeBytes ?? 0,
             repoFolders: Array(Set(paths.compactMap(Self.repoFolder(fromSnapshot:)))), derivedFolders: derived, repoIDs: repos)
@@ -524,10 +535,10 @@ public actor EnvironmentManager {
     private func prefetch(_ backend: Service, emit: @escaping @Sendable (InstallEvent) -> Void) async throws {
         try Task.checkCancellation()
         if shuttingDown { throw CancellationError() }
-        guard let args = prefetchArguments(for: backend.info, check: false) else {
+        guard let spec = prefetchSpec(for: backend, check: false) else {
             throw InstallError(stage: .model, message: "This service has no model to download.", logTail: [])
         }
-        let sub = Subprocess(.init(executable: paths.python(backend), arguments: args, environment: ProcessEnvironment.huggingFace()))
+        let sub = Subprocess(spec)
         running[backend] = sub
         defer { running[backend] = nil }
         try sub.run()
@@ -538,7 +549,7 @@ public actor EnvironmentManager {
         }
         let outcome = Task { () -> ServerCLIEvent? in
             var failure: ServerCLIEvent?
-            var progress = DownloadProgress(repo: backend.info.modelRepo ?? "")
+            var progress = DownloadProgress(repo: backend.info.displayModel ?? "")
             for await line in sub.stdout {
                 guard let event = ServerCLIEvent.parse(line) else {
                     emit(.log(line))
@@ -546,7 +557,7 @@ public actor EnvironmentManager {
                 }
                 switch event.event {
                 case "start":
-                    progress = DownloadProgress(repo: event.repo ?? progress.repo)
+                    progress = DownloadProgress(repo: Self.downloadLabel(event, current: progress.repo, for: backend.info))
                     emit(.download(progress))
                 case "progress":
                     progress.downloadedBytes = event.downloadedBytes ?? progress.downloadedBytes
@@ -576,6 +587,14 @@ public actor EnvironmentManager {
             let message = failure?.message ?? tail.lines.last ?? "exit status \(status)"
             throw InstallError(stage: .model, message: "Model download failed: \(message)", logTail: tail.lines)
         }
+    }
+
+    /// The progress label after a `start` event. It starts as `displayModel` (a Phonon variant's
+    /// Hub repo, not its alias; Moonshine's spec). A `start` row's repo replaces it only when the
+    /// weights are in the Hugging Face cache: Moonshine's rows name a synthetic, Hub-shaped id.
+    static func downloadLabel(_ event: ServerCLIEvent, current: String, for info: ServiceInfo) -> String {
+        guard info.weightsInHubCache, let repo = event.repo else { return current }
+        return repo
     }
 
     /// The step's exit status, once its output `readers` finished or `drainLimit`
@@ -628,6 +647,12 @@ public actor EnvironmentManager {
     /// when the environment can't report them). The repo-to-folder mapping
     /// lives here. The family environment goes with its last variant.
     ///
+    /// Only Hugging Face repo folders and the derived-weights folders are ever deleted
+    /// (`deletionTarget`), so a model the backend fetches outside the Hub cache
+    /// (`WeightsLocation.backendManaged`: Moonshine's) stays on disk whatever `deleteModel` is:
+    /// the flag is honoured only in `weightsLocation`'s `.hubCache(repo:)` case, here, not left to
+    /// the UI or to `deletionTarget` (macos/docs/architecture.md, "Model source").
+    ///
     /// Invariant: a folder is deleted only when every installed sibling's check
     /// answered, in full, and named none of it. A sibling whose check gave no
     /// answer (it failed, or quit stopped it) keeps every candidate folder, and
@@ -641,17 +666,18 @@ public actor EnvironmentManager {
         var doomed: [URL] = []
         // Model folders kept because a sibling's use of them is unknown (reported).
         var kept: [URL] = []
-        if deleteModel {
+        // The same switch the UI copy reads: only `.hubCache` has weights the app deletes.
+        if deleteModel, case .hubCache(let hubRepo) = backend.info.weightsLocation {
             // An outdated environment (after an app update) still reports where its
             // weights are; only fall back to the cached/derived folders if it can't.
             // Every repo the check names counts, cached or partial, and so does the
             // service's model repo: a partial download is still gigabytes on disk.
             let status = await modelCacheStatus(backend, includeOutdated: true) ?? known
-            let repos = (status?.repoIDs ?? []) + [backend.info.modelRepo].compactMap { $0 }
+            let repos = (status?.repoIDs ?? []) + [hubRepo]
             let own = (status.map { $0.repoFolders + $0.derivedFolders } ?? [])
                 + repos.map { paths.hubDir.appending(path: Self.cacheFolderName(repo: $0)) }
             var shared: [URL] = []
-            var sharedRepos = siblings.compactMap(\.info.modelRepo)
+            var sharedRepos = siblings.compactMap(\.info.hubRepo)
             var siblingsKnown = true
             for sibling in siblings {
                 // nil is "unknown" (a failed probe, or one quit stopped), never

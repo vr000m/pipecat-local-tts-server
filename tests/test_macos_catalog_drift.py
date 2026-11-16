@@ -11,21 +11,21 @@ import Python, so these tests parse the Swift source (one parser,
   * the TTS family set equals ``BACKEND_CHOICES``;
   * each family's port equals the justfile ``_resolve`` port, and every port
     (variants included) is unique;
-  * each family's ``modelRepo`` equals the backend's ``DEFAULT_*_MODEL``
-    (``tone`` has none);
+  * each family's ``model: .hub(repo:)`` equals the backend's ``DEFAULT_*_MODEL``
+    (``tone`` is ``.none``);
   * each TTS entry's expected hello ``backend.name`` equals its backend's static
     ``backend_name`` and the model it expects equals what the backend reports
     (default repo, or the raw ``--model`` alias), read from source;
   * each TTS entry's ``streaming`` equals its backend's ``capabilities()``;
-  * each variant ``modelArgument`` is an alias its backend resolves to the
-    family's repo;
+  * each variant's ``.hub`` alias is an alias its backend resolves to the
+    variant's (the family's) repo;
   * ``ServiceCatalog.snapshots(for:)`` (the download-size table) equals each
     TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
     repo at upstream's ``PINNED_REVISIONS`` commit for a pinned default, else with no
-    revision (the app passes none: upstream 0.5.0 pins the default models itself);
-  * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
+    revision (the app passes none: upstream 0.6.0 pins the default models itself);
+  * the five STT families (Whisper, Kyutai, Parakeet, Nemotron, Moonshine) keep the STT
     repo's LaunchAgent labels and ports (written out here), and backend names and
-    default model repos that equal the upstream registry, read from the recorded
+    default models (repo or spec) that equal the upstream registry, read from the recorded
     excerpt of the installed release (``_stt_upstream``; the lean job never imports
     ``stt_server``);
   * the Try it wire fixture is what the server sends.
@@ -85,10 +85,12 @@ def test_swift_ports_are_unique_including_variants():
 
 
 def test_swift_model_repos_match_backend_defaults():
+    catalog = macos_catalog()
     for name, (_, repo) in _swift_families().items():
         if name == "tone":
-            assert repo is None
+            assert catalog[name].model_source == "none"
             continue
+        assert catalog[name].model_source == "hub", name
         source = (REPO / "tts_server" / "backends" / f"{name}.py").read_text()
         defaults = _DEFAULT_MODEL.findall(source)
         assert len(defaults) == 1, f"{name}: expected one DEFAULT_*_MODEL"
@@ -105,6 +107,25 @@ def _backend_streaming(family: str) -> bool:
     return flags[0] == "True"
 
 
+def test_swift_model_source_fields_follow_the_case():
+    """Each ``ModelSource`` case fixes which parsed fields are set: an alias belongs to a
+    ``.hub`` source only, and a ``.backendManaged`` entry is STT (no TTS backend fetches its
+    own weights; ``catalogHoldsTheModelSourceInvariants`` checks the same in Swift)."""
+    seen = set()
+    for entry in macos_catalog().values():
+        seen.add(entry.model_source)
+        fields = (entry.model_repo, entry.model_alias, entry.model_spec)
+        if entry.model_source == "none":
+            assert fields == (None, None, None), entry.name
+        elif entry.model_source == "hub":
+            assert entry.model_repo and entry.model_spec is None, entry.name
+        else:
+            assert entry.model_source == "backendManaged", entry.name
+            assert entry.model_spec and fields[:2] == (None, None), entry.name
+            assert entry.kind == "stt", entry.name
+    assert seen == {"none", "hub", "backendManaged"}
+
+
 def test_swift_streaming_flags_match_backend_capabilities():
     for entry in macos_catalog().values():
         if entry.kind == "tts":
@@ -117,16 +138,16 @@ def test_swift_model_arguments_are_backend_aliases():
     aliases = {"phonon": phonon._MODEL_ALIASES}
     seen = set()
     for entry in macos_catalog().values():
-        if entry.kind != "tts" or entry.model_argument is None:
+        if entry.kind != "tts" or entry.model_alias is None:
             continue
+        # TTS passes ``--model`` only for an alias (``cliModel``), which is a Hub source's.
+        assert entry.model_source == "hub", entry.name
         table = aliases.get(entry.family)
         assert table is not None, f"{entry.name}: {entry.family} has no --model aliases"
-        assert entry.model_argument in table, (
-            f"{entry.name}: {entry.model_argument!r} is not an alias"
-        )
-        repo, _bits = table[entry.model_argument]
+        assert entry.model_alias in table, f"{entry.name}: {entry.model_alias!r} is not an alias"
+        repo, _bits = table[entry.model_alias]
         assert repo == entry.model_repo, f"{entry.name}: alias fetches {repo!r}"
-        seen.add(entry.model_argument)
+        seen.add(entry.model_alias)
     # Every quantized alias is offered in the app; the bare default needs no argument.
     assert seen == {alias for alias, (_, bits) in phonon._MODEL_ALIASES.items() if bits is not None}
 
@@ -250,7 +271,7 @@ def test_swift_snapshots_match_prefetch_specs(monkeypatch):
             continue
         python = [
             Snapshot(s.repo_id, s.revision, tuple(s.allow_patterns), s.kind, s.required)
-            for s in prefetch.specs_for(entry.family, entry.model_argument)
+            for s in prefetch.specs_for(entry.family, entry.model_alias)
         ]
         assert snapshots[name] == python, name
     assert snapshots["phonon_q8"][0].revision, "the parser sees the Phonon pin"
@@ -261,14 +282,14 @@ def test_swift_stt_snapshots_are_the_model_repo_at_upstreams_pin():
     ``stt_server prefetch --backend <b> --model <repo>``, which takes no revision flag:
     upstream pins its default models itself (``PINNED_REVISIONS``, read from the recorded
     excerpt of the release the app installs). So one required model snapshot of the entry's
-    ``modelRepo``, at upstream's pin for a pinned default and ``revision`` nil (``main``) for
+    ``.hub`` repo, at upstream's pin for a pinned default and ``revision`` nil (``main``) for
     any other model. Whisper and Kyutai take everything but docs."""
     pinned = upstream_stt().pinned_revisions
     stt = {n: e for n, e in macos_catalog().items() if e.kind == "stt"}
     assert {"parakeet", "nemotron", "whisper", "kyutai"} <= set(stt)
     snapshots = macos_snapshots()
     for name, entry in stt.items():
-        if entry.model_repo is None:
+        if entry.model_source != "hub":
             assert snapshots[name] == [], name
             continue
         assert len(snapshots[name]) == 1, name
@@ -327,8 +348,8 @@ def test_swift_expected_models_match_what_the_backends_report():
     """The hello's ``backend.model`` is the backend's ``model`` attribute, which every
     backend sets to the ``--model`` it was given (``self.model = model``): the default
     repo for a family default, the raw alias (``phonon-q8``) for a quantized variant,
-    never the repo the alias resolves to. The app matches on ``modelArgument ??
-    modelRepo``; this pins that to the source of each side."""
+    never the repo the alias resolves to. The app matches on ``expectedModel`` (a
+    ``.hub`` source's alias, else its repo); this pins that to the source of each side."""
     for family in sorted(BACKEND_CHOICES):
         if family == "tone":
             assert "model = None" in _backend_source("tone")
@@ -337,23 +358,23 @@ def test_swift_expected_models_match_what_the_backends_report():
     for entry in macos_catalog().values():
         if entry.kind != "tts":
             continue
-        expected = entry.model_argument or entry.model_repo
         if entry.family == "tone":
-            assert expected is None, entry.name
+            assert entry.model_source == "none", entry.name
             continue
-        if entry.model_argument is None:
+        if entry.model_alias is None:
             defaults = _DEFAULT_MODEL.findall(_backend_source(entry.family))
-            assert expected == defaults[0], f"{entry.name}: expects {expected!r}"
+            assert entry.model_repo == defaults[0], f"{entry.name}: expects {entry.model_repo!r}"
         else:
             # A variant's hello carries its alias verbatim, which differs from its repo.
-            assert expected == entry.model_argument != entry.model_repo, entry.name
+            assert entry.model_alias != entry.model_repo, entry.name
 
 
-# The STT repo's (pipecat-local-stt-server 0.5.0) LaunchAgents, which the app's STT entries
-# agree with: ``backend.name`` the server reports, port, launchd label and default model repo
-# per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper`` engine name is the
-# app's own (it names the environment and the constraints file). The backend names and
-# default models are checked against the recorded upstream registry
+# The STT repo's (pipecat-local-stt-server 0.6.0) LaunchAgents, which the app's STT entries
+# agree with: ``backend.name`` the server reports, port, launchd label and default model
+# (repo or spec) per catalog family. Whisper is the ``mlx`` backend; the ``.sttHelper``
+# engine name is the app's own (it names the environment and the constraints file). The
+# fourth slot is the default model (a Hub repo id, or a model spec for Moonshine). The
+# backend names and default models are checked against the recorded upstream registry
 # (``test_stt_families_match_the_recorded_upstream_registry``); the ports and labels are the
 # STT repo's LaunchAgent plists (PR #16), which no released source carries yet.
 _STT_FAMILIES = {
@@ -371,16 +392,20 @@ _STT_FAMILIES = {
         "pipecat.stt-server.nemotron",
         "mlx-community/nemotron-3.5-asr-streaming-0.6b",
     ),
+    # Moonshine is not a Hub model: its model is a spec, passed as ``--model`` (the catalog's
+    # ``model: .backendManaged(spec:)``). STT 0.6.0, port 9965.
+    "moonshine": ("moonshine", 9965, "pipecat.stt-server.moonshine", "medium-streaming@en"),
 }
 
 
 def test_stt_families_match_the_recorded_upstream_registry():
     """Each family's ``backend.name`` is an upstream ``BACKENDS`` name whose default model is the
-    family's repo, read from the recorded excerpt of the release the app installs (and the live
-    registry when ``stt_server`` is importable), so an upstream rename or a new default fails here."""
+    family's default model, read from the recorded excerpt of the release the app installs (and
+    the live registry when ``stt_server`` is importable), so an upstream rename or a new default
+    fails here."""
     upstream = upstream_stt().default_models
-    for family, (backend, _, _, repo) in _STT_FAMILIES.items():
-        assert upstream.get(backend) == repo, family
+    for family, (backend, _, _, model) in _STT_FAMILIES.items():
+        assert upstream.get(backend) == model, family
     # Every upstream backend but the test-only ``echo`` is a catalog family.
     assert {name for name in upstream if name != "echo"} == {b for b, *_ in _STT_FAMILIES.values()}
     try:
@@ -424,15 +449,40 @@ def test_swift_stt_ports_and_labels_match_the_stt_launchagents():
 
 
 def test_swift_stt_model_repos_match_the_launchagents_and_defaults():
-    """The family entries' ``modelRepo``: Parakeet and Nemotron the models their
-    LaunchAgents serve, Whisper and Kyutai the upstream defaults. Each STT entry has
-    its own repo (variants differ from their family's)."""
+    """The family entries' model: Parakeet and Nemotron the models their LaunchAgents serve,
+    Whisper, Kyutai and Moonshine the upstream defaults. The source is ``.hub`` exactly when
+    that model is a Hub repo id, else ``.backendManaged``. Each STT entry has its own repo
+    (variants differ from their family's)."""
     catalog = macos_catalog()
-    for family, (_, _, _, repo) in _STT_FAMILIES.items():
-        assert catalog[family].model_repo == repo, family
+    for family, (_, _, _, model) in _STT_FAMILIES.items():
+        entry = catalog[family]
+        # The case, not a nil-combination: a Hub repo id (``<org>/<name>``) is ``.hub`` (the
+        # app deletes from, and passes ``HF_TOKEN`` for, ``.hub`` only); a spec (Moonshine's)
+        # is ``.backendManaged`` with the spec equal to upstream's default.
+        is_hub_repo = re.fullmatch(r"[\w.\-]+/[\w.\-]+", model) is not None
+        if is_hub_repo:
+            assert (
+                entry.model_source,
+                entry.model_repo,
+                entry.model_alias,
+                entry.model_spec,
+            ) == ("hub", model, None, None), family
+        else:
+            assert (
+                entry.model_source,
+                entry.model_repo,
+                entry.model_alias,
+                entry.model_spec,
+            ) == ("backendManaged", None, None, model), family
+    assert catalog["moonshine"].model_source == "backendManaged"
+    assert catalog["moonshine"].model_spec == upstream_stt().default_models["moonshine"]
+    # Every STT variant is a Hub repo with no alias (STT passes the repo itself).
+    for entry in catalog.values():
+        if entry.kind == "stt" and entry.is_variant:
+            assert (entry.model_source, entry.model_alias) == ("hub", None), entry.name
     repos = [e.model_repo for e in catalog.values() if e.kind == "stt" and e.model_repo]
     assert len(repos) == len(set(repos)), "each STT service has its own repo"
-    assert catalog["apple_speech"].model_repo is None
+    assert catalog["apple_speech"].model_source == "none"
 
 
 def test_swift_stt_server_requirement_is_one_release():
