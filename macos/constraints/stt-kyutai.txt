@@ -3,7 +3,7 @@
 # python-version: 3.12
 # python-platform: aarch64-apple-darwin
 # macos-deployment-target: 15.0
-# requirement: pipecat-local-stt-server==0.5.0
+# requirement: pipecat-local-stt-server==0.6.0
 # requirement: moshi_mlx==0.3.0
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \
@@ -380,9 +380,9 @@ charset-normalizer==3.5.2 \
     --hash=sha256:fd1fbe0f116b6e55da77aca2c6ddcddcfac2186cbf78bdebf40fc156efca389d \
     --hash=sha256:fe9753dfee015c570d73df76f899f18444d41388bffcde097deba51c4fadbb9f
     # via requests
-filelock==4.2.4 \
-    --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e \
-    --hash=sha256:c6d8663535e1650ee430507b4ffbac7b464dd64b7647ea0112a9f406499d163d
+filelock==4.2.10 \
+    --hash=sha256:9479aaeb4db20b5a53e3da28493edd24720b66b8a0b84030aa56ccdf243d6857 \
+    --hash=sha256:fcc3c0cb8bfe7f4b3bb0e231c04b15dbad068cb3c2515f343d8fde4dce93bd5d
     # via huggingface-hub
 frozenlist==1.8.0 \
     --hash=sha256:0325024fe97f94c41c08872db482cf8ac4800d80e79222c6b0b7b162d5b13686 \
@@ -799,9 +799,9 @@ packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
     # via huggingface-hub
-pipecat-local-stt-server==0.5.0 \
-    --hash=sha256:572fd9a501fd39fa81377a0629294b1ec1cc167c3cfcb913d2ee275dc8897211 \
-    --hash=sha256:910e451e0c3fa147162cb3059adce2083bfd8835a002c957b2eadf5116e34c14
+pipecat-local-stt-server==0.6.0 \
+    --hash=sha256:9f1f43f20c4300d36c77078181aa8e533c3fbf395b6604d37895039e9789062f \
+    --hash=sha256:b5490c1985227bcf42880c9c6042343ba6e340b5f74960cef68ccdb78f288242
     # via -r stt-kyutai.in
 propcache==0.5.4 \
     --hash=sha256:004e685b315646c410771836e72a44f143bbe624f29653a42687815069a303d5 \
