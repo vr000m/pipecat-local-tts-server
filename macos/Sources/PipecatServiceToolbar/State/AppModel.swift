@@ -275,7 +275,7 @@ final class AppModel {
     private func loadDownloadSizes() async {
         let defaults = UserDefaults.standard
         for model in services where !Task.isCancelled {
-            guard model.info.modelRepo != nil else { continue }
+            guard model.info.modelInHubCache else { continue }
             // Per service: a service's total spans several snapshots (the old `hubSize.<repo>` keys are left unread).
             let key = "hubSize.service.\(model.service.rawValue)"
             let stamp = defaults.double(forKey: key + ".at")

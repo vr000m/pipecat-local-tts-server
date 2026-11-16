@@ -164,11 +164,10 @@ for running both.
   **Copy Environment Variables**, Start/Stop, **Delete Model…** (an External
   service gets the Copy items, Test and Show Details only). Deleting
   removes the model's Python environment and, unless another installed variant
-  still uses them, its weights (Moonshine is the exception, see below). The
-  detail page's **Delete…** offers **Keep Model Files** or **Delete
-  Everything** (Moonshine is the exception, see below). Weights live in the shared Hugging
+  still uses them, its weights. The detail page's **Delete…** offers **Keep
+  Model Files** or **Delete Everything**. Weights live in the shared Hugging
   Face cache, so a command-line or launchd server using the same model
-  downloads them again after a delete. Moonshine's weights are not in that
+  downloads them again after a delete. Moonshine is the exception: its weights are not in that
   cache (`~/Library/Caches/moonshine_voice`): deleting Moonshine removes its
   environment only, the dialogs say its model files stay, and the detail page
   offers a single **Delete** instead of Keep Model Files or Delete Everything.
