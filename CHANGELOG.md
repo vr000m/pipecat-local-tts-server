@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-16
+
 ### Added
 
 - macOS app: Moonshine STT (port 9965, English only: model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model. Deleting it removes only its Python environment; its weights stay on disk (see "Model source" in `macos/docs/architecture.md`). The app forwards `MOONSHINE_VOICE_CACHE` to its child processes and never deletes that directory.
@@ -733,7 +735,8 @@ backends land.
   `PIPECAT_TTS_KOKORO_EXTRA_LANGS` (e.g. `ja,zh`); the advertised set is logged at
   startup. (Reported by adversarial review.)
 
-[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.3...v0.9.0
 [0.8.3]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/vr000m/pipecat-local-tts-server/compare/v0.8.1...v0.8.2
