@@ -538,14 +538,14 @@ struct RemoveSection: View {
     let model: ServiceModel
     @State private var confirming = false
 
-    /// The confirmation copy for each `ModelRemovalPolicy`.
-    static func detail(_ policy: ModelRemovalPolicy, size: Int64?) -> String {
-        switch policy {
-        case .nothing:
+    /// The confirmation copy for each `WeightsLocation`.
+    static func detail(_ location: WeightsLocation, size: Int64?) -> String {
+        switch location {
+        case .none:
             "The Python environment is deleted. This service has no downloaded model."
-        case .hubDeletable:
+        case .hubCache:
             "The Python environment is deleted. Model files live in the shared Hugging Face cache; delete them too to free \(size.map(Format.bytes) ?? "their space")."
-        case .keptByBackend:
+        case .backendManaged:
             "The Python environment is deleted. This model is downloaded by the backend outside the Hugging Face cache, and its files (\(size.map(Format.bytes) ?? "unknown size")) stay on disk."
         }
     }
@@ -555,7 +555,7 @@ struct RemoveSection: View {
             if confirming {
                 Text("Delete \(model.info.displayName)?")
                     .font(.system(size: 12.5, weight: .semibold))
-                Text(Self.detail(model.info.removalPolicy, size: model.diskBytes))
+                Text(Self.detail(model.info.weightsLocation, size: model.diskBytes))
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -563,13 +563,13 @@ struct RemoveSection: View {
                     Button("Cancel") { withAnimation(.snappy) { confirming = false } }
                         .buttonStyle(PillButtonStyle(tint: .secondary))
                     Spacer()
-                    switch model.info.removalPolicy {
-                    case .hubDeletable:
+                    switch model.info.weightsLocation {
+                    case .hubCache:
                         Button("Keep Model Files") { model.remove(deleteModel: false) }
                             .buttonStyle(PillButtonStyle(tint: .red))
                         Button("Delete Everything") { model.remove(deleteModel: true) }
                             .buttonStyle(PillButtonStyle(tint: .red, prominent: true))
-                    case .nothing, .keptByBackend:
+                    case .none, .backendManaged:
                         // Nothing the app can delete beyond the environment: one honest button.
                         Button("Delete") { model.remove(deleteModel: false) }
                             .buttonStyle(PillButtonStyle(tint: .red, prominent: true))

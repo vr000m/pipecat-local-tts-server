@@ -163,14 +163,14 @@ import Testing
 }
 
 /// `ServiceInfo.model` is the only stored model fact. Two properties switch on it
-/// (`removalPolicy`, `expectedModel`); every other policy is read off those two.
+/// (`weightsLocation`, `expectedModel`); every other policy is read off those two.
 @Suite struct ModelSourceTests {
     /// One cell of the state space: a source on a runtime kind, against every operation.
     struct Row: Sendable {
         let source: ModelSource
         let kind: ServiceKind
         let needsModelDownload: Bool
-        let removalPolicy: ModelRemovalPolicy
+        let weightsLocation: WeightsLocation
         let hubRepo: String?
         let weightsInHubCache: Bool
         let displayModel: String?
@@ -185,32 +185,32 @@ import Testing
     /// source, which has no CLI (`appleSpeech` runtime), so it is listed for TTS only.
     static let rows: [Row] = [
         Row(
-            source: .none, kind: .tts, needsModelDownload: false, removalPolicy: .nothing, hubRepo: nil,
+            source: .none, kind: .tts, needsModelDownload: false, weightsLocation: .none, hubRepo: nil,
             weightsInHubCache: false, displayModel: nil, expectedModel: nil, cliModel: nil, labelAfterStart: ""),
         Row(
             source: .hub(repo: "org/repo"), kind: .tts, needsModelDownload: true,
-            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
             displayModel: "org/repo", expectedModel: "org/repo", cliModel: nil, labelAfterStart: "org/synthetic"),
         Row(
             source: .hub(repo: "org/repo"), kind: .stt, needsModelDownload: true,
-            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
             displayModel: "org/repo", expectedModel: "org/repo", cliModel: "org/repo", labelAfterStart: "org/synthetic"),
         Row(
             source: .hub(repo: "org/repo", alias: "repo-q8"), kind: .tts, needsModelDownload: true,
-            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
             displayModel: "org/repo", expectedModel: "repo-q8", cliModel: "repo-q8", labelAfterStart: "org/synthetic"),
         Row(
             source: .hub(repo: "org/repo", alias: "repo-q8"), kind: .stt, needsModelDownload: true,
-            removalPolicy: .hubDeletable(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
+            weightsLocation: .hubCache(repo: "org/repo"), hubRepo: "org/repo", weightsInHubCache: true,
             displayModel: "org/repo", expectedModel: "repo-q8", cliModel: "repo-q8", labelAfterStart: "org/synthetic"),
         // The spec is never dropped: a TTS runtime would pass it too (the catalog keeps it STT-only).
         Row(
             source: .backendManaged(spec: "medium@en"), kind: .tts, needsModelDownload: true,
-            removalPolicy: .keptByBackend, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
+            weightsLocation: .backendManaged, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
             expectedModel: "medium@en", cliModel: "medium@en", labelAfterStart: "medium@en"),
         Row(
             source: .backendManaged(spec: "medium@en"), kind: .stt, needsModelDownload: true,
-            removalPolicy: .keptByBackend, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
+            weightsLocation: .backendManaged, hubRepo: nil, weightsInHubCache: false, displayModel: "medium@en",
             expectedModel: "medium@en", cliModel: "medium@en", labelAfterStart: "medium@en"),
     ]
 
@@ -231,7 +231,7 @@ import Testing
         let info = Self.info(row.source, kind: row.kind)
         let tag = "\(row.source) \(row.kind)"
         #expect(info.needsModelDownload == row.needsModelDownload, "\(tag)")
-        #expect(info.removalPolicy == row.removalPolicy, "\(tag)")
+        #expect(info.weightsLocation == row.weightsLocation, "\(tag)")
         #expect(info.hubRepo == row.hubRepo, "\(tag)")
         #expect(info.weightsInHubCache == row.weightsInHubCache, "\(tag)")
         #expect(info.displayModel == row.displayModel, "\(tag)")
@@ -249,6 +249,44 @@ import Testing
         // The install label: `displayModel`, replaced by a `start` row's repo only for the Hub cache.
         let start = try #require(ServerCLIEvent.parse(#"{"event":"start","repo":"org/synthetic"}"#))
         #expect(EnvironmentManager.downloadLabel(start, current: info.displayModel ?? "", for: info) == row.labelAfterStart, "\(tag)")
+    }
+
+    /// `cliModel` keys on the runtime, not the kind: only `tts_server` omits a Hub repo with no
+    /// alias. Each runtime is paired with both kinds, so a rule keyed on `kind` fails a row.
+    @Test func cliModelFollowsTheRuntimeAndTheSource() {
+        let tts = ServiceRuntime.ttsServer(extra: nil)
+        let stt = ServiceRuntime.sttHelper(engine: "x", requirements: [])
+        let sources: [(ModelSource, tts: String?, stt: String?)] = [
+            (.none, nil, nil),
+            (.hub(repo: "org/repo"), nil, "org/repo"),
+            (.hub(repo: "org/repo", alias: "repo-q8"), "repo-q8", "repo-q8"),
+            // An alias spelled like its repo is still an alias: passed, never inferred away.
+            (.hub(repo: "org/repo", alias: "org/repo"), "org/repo", "org/repo"),
+            (.backendManaged(spec: "medium@en"), "medium@en", "medium@en"),
+        ]
+        for (source, ttsWant, sttWant) in sources {
+            for (runtime, want) in [(tts, ttsWant), (stt, sttWant), (.appleSpeech, sttWant)] {
+                for kind in [ServiceKind.tts, .stt] {
+                    let info = ServiceInfo(
+                        service: .kokoro, kind: kind, expectedBackendName: "x", displayName: "X", tagline: "",
+                        runtime: runtime, port: 1, model: source, licence: .none, streaming: false, symbol: "")
+                    #expect(info.cliModel == want, "\(source) \(runtime) \(kind)")
+                }
+            }
+        }
+        // The catalog: bare Hub TTS passes no flag, a Phonon alias passes the alias, every STT
+        // Python entry passes its model, and tone and Apple Speech pass none.
+        #expect(ServiceCatalog.info(for: .kokoro).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .phonon).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .phononQ8).cliModel == "phonon-q8")
+        #expect(ServiceCatalog.info(for: .phononQ4).cliModel == "phonon-q4")
+        #expect(ServiceCatalog.info(for: .tone).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .appleSpeech).cliModel == nil)
+        #expect(ServiceCatalog.info(for: .moonshine).cliModel == "medium-streaming@en")
+        for service in Service.allCases where ServiceCatalog.info(for: service).kind == .stt {
+            let info = ServiceCatalog.info(for: service)
+            #expect(info.cliModel == info.expectedModel, "\(service)")
+        }
     }
 
     /// The same Hub-shaped `prefetch --check` output (a check row inside a hub cache, a

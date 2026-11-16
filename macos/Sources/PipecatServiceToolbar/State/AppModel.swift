@@ -399,15 +399,15 @@ final class AppModel {
         var detail: String
         let size = model.diskBytes.map { " (\(Format.bytes($0)))" } ?? ""
         if keeping.isEmpty {
-            switch model.info.removalPolicy {
-            case .nothing:
+            switch model.info.weightsLocation {
+            case .none:
                 detail = "This removes its Python environment."
-            case .hubDeletable:
+            case .hubCache:
                 // The weights live in the shared Hugging Face cache, not in the app.
                 detail = "This removes its Python environment and downloaded model files\(size)."
                     + " The model files are in the shared Hugging Face cache, so a command-line or launchd "
                     + "server using the same model will download them again."
-            case .keptByBackend:
+            case .backendManaged:
                 // A model the backend fetches itself (Moonshine): outside the cache the app deletes from.
                 detail = "This removes its Python environment. The model files\(size)"
                     + " are downloaded by the backend outside the Hugging Face cache and stay on disk."

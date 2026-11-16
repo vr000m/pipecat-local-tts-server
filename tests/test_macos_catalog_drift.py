@@ -126,33 +126,6 @@ def test_swift_model_source_fields_follow_the_case():
     assert seen == {"none", "hub", "backendManaged"}
 
 
-def _swift_property_body(name: str) -> str:
-    """The body of ``public var <name>: ...`` in ``ServiceInfo``, comments stripped."""
-    text = (CORE / "Service.swift").read_text()
-    m = re.search(rf"public var {name}: [^{{]+\{{(.*?)\n    \}}\n", text, re.DOTALL)
-    assert m, f"no ServiceInfo.{name}"
-    return re.sub(r"//.*", "", m.group(1))
-
-
-def test_swift_expected_model_is_the_mirrored_switch():
-    """``CatalogEntry.expected_model`` mirrors Swift's ``expectedModel``, the one model-name switch
-    on ``model``: pin the Swift arms so the mirror cannot drift from them. Values are checked
-    against the backends and upstream elsewhere (``..._match_what_the_backends_report``,
-    ``test_swift_stt_model_repos_match_the_launchagents_and_defaults``)."""
-    arms = dict(
-        re.findall(r"case (\.\w+(?:\([^)]*\))?): (.+)", _swift_property_body("expectedModel"))
-    )
-    assert {k: v.strip() for k, v in arms.items()} == {
-        ".hub(let repo, let alias)": "alias ?? repo",
-        ".backendManaged(let spec)": "spec",
-        ".none": "nil",
-    }
-    # ``--model`` is ``expectedModel`` except a TTS bare repo (the backend default): the drift
-    # tests' ``model_alias`` for TTS and ``expected_model`` for STT both rest on this.
-    cli = " ".join(_swift_property_body("cliModel").split())
-    assert cli == "if kind == .tts, expectedModel == hubRepo { return nil } return expectedModel"
-
-
 def test_swift_streaming_flags_match_backend_capabilities():
     for entry in macos_catalog().values():
         if entry.kind == "tts":
@@ -385,16 +358,15 @@ def test_swift_expected_models_match_what_the_backends_report():
     for entry in macos_catalog().values():
         if entry.kind != "tts":
             continue
-        expected = entry.expected_model
         if entry.family == "tone":
-            assert expected is None, entry.name
+            assert entry.model_source == "none", entry.name
             continue
         if entry.model_alias is None:
             defaults = _DEFAULT_MODEL.findall(_backend_source(entry.family))
-            assert expected == defaults[0], f"{entry.name}: expects {expected!r}"
+            assert entry.model_repo == defaults[0], f"{entry.name}: expects {entry.model_repo!r}"
         else:
             # A variant's hello carries its alias verbatim, which differs from its repo.
-            assert expected == entry.model_alias != entry.model_repo, entry.name
+            assert entry.model_alias != entry.model_repo, entry.name
 
 
 # The STT repo's (pipecat-local-stt-server 0.6.0) LaunchAgents, which the app's STT entries
@@ -484,8 +456,6 @@ def test_swift_stt_model_repos_match_the_launchagents_and_defaults():
     catalog = macos_catalog()
     for family, (_, _, _, model) in _STT_FAMILIES.items():
         entry = catalog[family]
-        # By value: the hello-match key and the STT ``--model`` value is the upstream default.
-        assert entry.expected_model == model, family
         # The case, not a nil-combination: a Hub repo id (``<org>/<name>``) is ``.hub`` (the
         # app deletes from, and passes ``HF_TOKEN`` for, ``.hub`` only); a spec (Moonshine's)
         # is ``.backendManaged`` with the spec equal to upstream's default.

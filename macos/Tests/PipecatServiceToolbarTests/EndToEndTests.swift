@@ -323,7 +323,7 @@ struct EndToEndTests {
         server.closeStdin()
         #expect(await server.waitForExit() == 0)
         // Deleting "everything" removes the environment only: the weights are not in the Hub cache,
-        // so the app leaves them (`ServiceInfo.removalPolicy` is `.keptByBackend`).
+        // so the app leaves them (`ServiceInfo.weightsLocation` is `.backendManaged`).
         // Smoke check only that the weights are untouched; the policy itself is covered by
         // `removalKeepsModelFilesOfAServiceOutsideTheHubCache` in CoreTests.swift.
         // Where moonshine-voice keeps them: `MOONSHINE_VOICE_CACHE`, which the app forwards, else its default.

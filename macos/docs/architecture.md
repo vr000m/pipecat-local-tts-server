@@ -103,7 +103,7 @@ once installed, each is an ordinary row.
 
 Each catalog entry states where its weights come from as one explicit field,
 `ServiceInfo.model: ModelSource`. Only two properties in `Service.swift` switch on it:
-`removalPolicy` (where the weights live) and `expectedModel` (the model's name on the
+`weightsLocation` (where the weights live) and `expectedModel` (the model's name on the
 wire). Every other policy is read off those two, and no call site re-derives the kind:
 
 | Case | Entries | Weights |
@@ -112,13 +112,13 @@ wire). Every other policy is read off those two, and no call site re-derives the
 | `.hub(repo:alias:)` | every other TTS and STT entry | the shared Hugging Face cache; `alias` is the backend's `--model` alias (Phonon `phonon-q8` / `phonon-q4`) |
 | `.backendManaged(spec:)` | Moonshine (`medium-streaming@en`), STT only | fetched by the backend from its own CDN into `~/Library/Caches/moonshine_voice` (moonshine-voice 0.1.6 `get_cache_dir`: `MOONSHINE_VOICE_CACHE`, else `platformdirs.user_cache_dir("moonshine_voice")`), outside the Hugging Face cache |
 
-- **Delete** (`removalPolicy`: `.nothing`, `.hubDeletable(repo:)`, `.keptByBackend`):
-  Delete Everything deletes model files only for `.hubDeletable`, from the Hugging Face
+- **Delete** (`weightsLocation`: `.none`, `.hubCache(repo:)`, `.backendManaged`):
+  Delete Everything deletes model files only for `.hubCache`, from the Hugging Face
   cache (plus their derived folders). `EnvironmentManager.remove`, the detail page and the
-  delete dialog all switch on `removalPolicy`. A `.keptByBackend` service keeps its weights
-  whatever is chosen. Only `.hubDeletable` offers **Keep Model Files** and **Delete
+  delete dialog all switch on `weightsLocation`. A `.backendManaged` service keeps its weights
+  whatever is chosen. Only `.hubCache` offers **Keep Model Files** and **Delete
   Everything**; the others show a single **Delete**.
-- **Hub repo** (`hubRepo`): the repo of `.hubDeletable`, so a repo exists exactly when
+- **Hub repo** (`hubRepo`): the repo of `.hubCache`, so a repo exists exactly when
   removal may delete one. It is the repo sized, mapped to a cache folder, linked on the
   Details card and compared with siblings' on removal.
 - **Hub cache** (`weightsInHubCache`, `hubRepo != nil`): `HF_TOKEN` reaches only such a
@@ -134,9 +134,9 @@ wire). Every other policy is read off those two, and no call site re-derives the
 - **Display name** (`displayModel`, `hubRepo ?? expectedModel`): the install's progress
   label until a Hub `start` row, and the Details card's Model row (text unless `hubRepo`
   is set).
-- **`--model`** (`cliModel`): both runtimes pass `expectedModel`, except that TTS omits a
-  bare Hub repo. `tts_server` then loads the backend's default, which equals the catalog
-  repo. A spec or an alias is always passed.
+- **`--model`** (`cliModel`): `expectedModel`, except that the `tts_server` runtime omits
+  a Hub repo with no alias. `tts_server` then loads the backend's default, which equals the
+  catalog repo. A spec or an alias is always passed.
 
 ## Lifecycle state machine
 
@@ -572,7 +572,7 @@ leaves it running).
   model files from the Hugging Face cache: `remove(deleteModel: true)`.
 - The detail page's **Delete…** offers **Keep Model Files**
   (`deleteModel: false`: only the environment, or the variant's record in a
-  shared one) and, where `removalPolicy` allows it ([Model source](#model-source)),
+  shared one) and, where `weightsLocation` allows it ([Model source](#model-source)),
   **Delete Everything** (`deleteModel: true`), which removes the model files from
   the Hugging Face cache.
 - Order: an install in flight is cancelled and unwinds first (dropping the

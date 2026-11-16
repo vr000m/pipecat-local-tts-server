@@ -58,13 +58,6 @@ class CatalogEntry:
     def is_variant(self) -> bool:
         return self.name != self.family
 
-    @property
-    def expected_model(self) -> str | None:
-        """``ServiceInfo.expectedModel``: alias or repo for ``.hub``, the spec for
-        ``.backendManaged``, None for ``.none``. ``test_macos_catalog_drift`` pins the Swift
-        switch this mirrors (``test_swift_expected_model_is_the_mirrored_switch``)."""
-        return self.model_alias or self.model_repo or self.model_spec
-
 
 _MODEL = re.compile(
     r"model: (?:"

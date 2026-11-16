@@ -124,17 +124,17 @@ public enum ModelSource: Equatable, Sendable {
     case backendManaged(spec: String)
 }
 
-/// Where a service's weights live, and so what removing it can do with them
-/// (`ServiceInfo.removalPolicy`). The one weights-location fact: `hubRepo` and
-/// `weightsInHubCache` are read off it, so a repo exists exactly for `.hubDeletable`.
-public enum ModelRemovalPolicy: Equatable, Sendable {
-    /// No weights to delete (`.none`).
-    case nothing
-    /// Weights in the shared Hugging Face cache: Delete Everything may delete them (`.hub`).
-    case hubDeletable(repo: String)
-    /// Weights the backend keeps outside the Hugging Face cache, which the app never deletes
-    /// (`.backendManaged`: Moonshine's).
-    case keptByBackend
+/// Where a service's weights live (`ServiceInfo.weightsLocation`). The one weights-location
+/// fact: removal, `hubRepo` and `weightsInHubCache` are read off it, so a repo exists exactly
+/// for `.hubCache`.
+public enum WeightsLocation: Equatable, Sendable {
+    /// No weights (`ModelSource.none`).
+    case none
+    /// The shared Hugging Face cache: Delete Everything may delete them (`ModelSource.hub`).
+    case hubCache(repo: String)
+    /// Outside the Hugging Face cache, kept by the backend; the app never deletes them
+    /// (`ModelSource.backendManaged`: Moonshine's).
+    case backendManaged
 }
 
 /// Static facts about a service, mirrored from the server READMEs.
@@ -171,17 +171,17 @@ public struct ServiceInfo: Sendable, Equatable {
 
     // MARK: Model policies, each derived from `model` (macos/docs/architecture.md, "Model source")
 
-    // Two canonical properties switch on `model`: `removalPolicy` (where the weights live) and
+    // Two canonical properties switch on `model`: `weightsLocation` (where the weights live) and
     // `expectedModel` (the model's name on the wire). Every other policy is read off those two.
 
-    /// Where the weights live, and what removing the service can do with them. The only
-    /// weights-location switch on `model`: `EnvironmentManager.remove` deletes only in its
-    /// `.hubDeletable(repo:)` case, and the detail page and the delete dialog switch on it.
-    public var removalPolicy: ModelRemovalPolicy {
+    /// Where the weights live. The only weights-location switch on `model`:
+    /// `EnvironmentManager.remove` deletes only in its `.hubCache(repo:)` case, and the detail
+    /// page and the delete dialog switch on it.
+    public var weightsLocation: WeightsLocation {
         switch model {
-        case .none: .nothing
-        case .hub(let repo, _): .hubDeletable(repo: repo)
-        case .backendManaged: .keptByBackend
+        case .none: .none
+        case .hub(let repo, _): .hubCache(repo: repo)
+        case .backendManaged: .backendManaged
         }
     }
     /// What a server's hello must report as `backend.model` to be this entry: a `.hub` source's
@@ -196,15 +196,15 @@ public struct ServiceInfo: Sendable, Equatable {
     }
     /// Whether installing the service has a model step (download, size, cached check, the
     /// "Loading model…" wording): every source but `.none`.
-    public var needsModelDownload: Bool { removalPolicy != .nothing }
-    /// The Hugging Face repo of `.hubDeletable`, else nil: the repo the app sizes, maps to a cache
+    public var needsModelDownload: Bool { weightsLocation != .none }
+    /// The Hugging Face repo of `.hubCache`, else nil: the repo the app sizes, maps to a cache
     /// folder, links to on the Hub, and compares against siblings' repos on removal.
     public var hubRepo: String? {
-        if case .hubDeletable(let repo) = removalPolicy { return repo }
+        if case .hubCache(let repo) = weightsLocation { return repo }
         return nil
     }
     /// Whether the weights live in, and are fetched from, the shared Hugging Face cache
-    /// (`.hubDeletable`). The credential (`ProcessEnvironment.huggingFace(for:)`), the Hub size
+    /// (`.hubCache`). The credential (`ProcessEnvironment.huggingFace(for:)`), the Hub size
     /// estimate, the install's progress label and reading a `prefetch --check`
     /// (`EnvironmentManager.cacheStatus`) rest on it.
     public var weightsInHubCache: Bool { hubRepo != nil }
@@ -212,15 +212,17 @@ public struct ServiceInfo: Sendable, Equatable {
     /// repo, not its alias), else `expectedModel` (Moonshine's spec). The install's progress label
     /// and the Details card's Model row (a link only when `hubRepo` is set).
     public var displayModel: String? { hubRepo ?? expectedModel }
-    /// The `--model` value both runtimes pass to `serve` and `prefetch`, nil for no flag. It is
-    /// `expectedModel`, except that TTS omits a bare Hub repo: `tts_server` then loads the
-    /// backend's `DEFAULT_*_MODEL`, which the drift tests pin equal to the catalog repo. STT always
-    /// passes it (`stt_server` applies its own Hub pin to a default repo). Nothing is dropped: a
-    /// spec or an alias is always passed. `EnvironmentManager.prefetchArguments` /
-    /// `serveArguments` are its only readers.
+    /// The `--model` value `serve` and `prefetch` get, nil for no flag. It is `expectedModel`,
+    /// except that the `tts_server` runtime omits a Hub repo with no alias: `tts_server` then
+    /// loads the backend's `DEFAULT_*_MODEL`, which the drift tests pin equal to the catalog
+    /// repo. `stt_server` always gets it (it applies its own Hub pin to a default repo). A spec
+    /// or an alias is always passed. `EnvironmentManager.prefetchArguments` / `serveArguments`
+    /// are its only readers.
     public var cliModel: String? {
-        if kind == .tts, expectedModel == hubRepo { return nil }
-        return expectedModel
+        switch (runtime, model) {
+        case (.ttsServer, .hub(_, alias: nil)): nil
+        default: expectedModel
+        }
     }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and
