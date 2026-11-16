@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- macOS app: Moonshine STT (port 9965, English by default via the model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model. The app now installs STT through `pipecat-local-stt-server` 0.6.0 (all engines; constraints regenerated, source excerpt re-recorded).
+- macOS app: Moonshine STT (port 9965, English by default via the model spec `medium-streaming@en`). It is not a Hugging Face model, so the app passes the spec as `--model` and shows it as the model. The app now installs STT through `pipecat-local-stt-server` 0.6.0 (all engines; constraints regenerated, source excerpt re-recorded). Regenerating also re-resolved the transitive pins of the Whisper, Parakeet and Nemotron environments.
 
 ### Fixed
 

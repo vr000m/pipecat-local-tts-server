@@ -23,7 +23,7 @@ import Python, so these tests parse the Swift source (one parser,
     TTS service's ``prefetch_specs(model)``; an STT service sizes its one model
     repo at upstream's ``PINNED_REVISIONS`` commit for a pinned default, else with no
     revision (the app passes none: upstream 0.6.0 pins the default models itself);
-  * the four STT families (Whisper, Kyutai, Parakeet, Nemotron) keep the STT
+  * the five STT families (Whisper, Kyutai, Parakeet, Nemotron, Moonshine) keep the STT
     repo's LaunchAgent labels and ports (written out here), and backend names and
     default model repos that equal the upstream registry, read from the recorded
     excerpt of the installed release (``_stt_upstream``; the lean job never imports

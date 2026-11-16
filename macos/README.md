@@ -219,7 +219,7 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
 - **TTS**: `uv pip install "pipecat-local-tts-server[<backend>] @ <bundled wheel>"`,
   pinned to `uv.lock`, then `python -m tts_server prefetch` and
   `serve --supervised`.
-- **Whisper, Kyutai, Parakeet, Nemotron**: PyPI packages hash-pinned to the last
+- **Whisper, Kyutai, Parakeet, Nemotron, Moonshine**: PyPI packages hash-pinned to the last
   transitive dependency (`constraints/stt-<engine>.txt`, `uv pip install
   --require-hashes`; a bundled app missing that file refuses the install rather
   than resolve unpinned), run by the upstream CLI (`python -m stt_server prefetch`
@@ -227,7 +227,7 @@ App diagnostics: `log stream --predicate 'subsystem == "ai.pipecat.ServiceToolba
   Kyutai 1B, Parakeet, Nemotron) are pinned to a recorded Hub commit by upstream 0.6.0
   itself (`PINNED_REVISIONS`; `prefetch --json` reports the `revision`). The app passes
   no revision flag (there is none), only `--model <repo>`: a model other than a pinned
-  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
+  default (the other Whisper sizes, Kyutai 2.6B) follows the repo's `main`. Moonshine is not a Hub model: its weights come from `download.moonshine.ai`, fixed by the `moonshine-voice` version in its constraints, and the app passes the model spec as `--model`. Kyutai runs as a `moshi_mlx` backend inside `stt_server`.
   Parakeet needs `ffmpeg` installed (Homebrew: `/opt/homebrew/bin` or
   `/usr/local/bin`; the app adds those to Parakeet's server `PATH` only). Without
   it the server exits with `BackendStartError: FFmpeg is not installed or not in
