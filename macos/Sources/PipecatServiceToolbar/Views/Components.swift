@@ -18,6 +18,7 @@ extension Service {
         case .kyutai, .kyutai2B: .mint
         case .parakeet: .yellow
         case .nemotron: .brown
+        case .moonshine: .red
         }
     }
 }

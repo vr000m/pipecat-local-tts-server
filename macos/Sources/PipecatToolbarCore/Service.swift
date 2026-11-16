@@ -42,6 +42,7 @@ public enum Service: String, CaseIterable, Identifiable, Sendable, Codable {
     case kyutai2B = "kyutai_2_6b"
     case parakeet
     case nemotron
+    case moonshine
 
     public var id: String { rawValue }
     public var info: ServiceInfo { ServiceCatalog.info(for: self) }
@@ -141,7 +142,8 @@ public struct ServiceInfo: Sendable, Equatable {
     public var modelArgument: String? = nil
 
     public var family: Service { service.family }
-    public var needsModelDownload: Bool { modelRepo != nil }
+    /// True for a Hugging Face model repo, or a model spec the backend fetches itself (Moonshine).
+    public var needsModelDownload: Bool { modelRepo != nil || modelArgument != nil }
     /// The LaunchAgent a `just` recipe installs for this family's default entry, if any:
     /// `pipecat.tts-server.<backend>` for every TTS backend (tone included) and
     /// `pipecat.stt-server[.<engine>]` for the STT families. Variants (Phonon q8/q4,
@@ -155,6 +157,7 @@ public struct ServiceInfo: Sendable, Equatable {
             case .kyutai: "pipecat.stt-server.kyutai"
             case .parakeet: "pipecat.stt-server.parakeet"
             case .nemotron: "pipecat.stt-server.nemotron"
+            case .moonshine: "pipecat.stt-server.moonshine"
             default: nil
             }
         }
@@ -390,6 +393,16 @@ public enum ServiceCatalog {
                 runtime: .sttHelper(engine: "nemotron", requirements: ["pipecat-local-stt-server[nemotron]==0.5.0"]),
                 port: 9865, modelRepo: "mlx-community/nemotron-3.5-asr-streaming-0.6b", licence: .other,
                 streaming: false, symbol: "brain")
+        case .moonshine:
+            // Not a Hugging Face model: the backend takes a spec (`[<arch>][@<lang>,...]`) and downloads
+            // from download.moonshine.ai, so `modelRepo` is nil and the spec is the `--model` argument.
+            // The default is English; no language detection (`auto` falls back to `en`).
+            ServiceInfo(
+                service: .moonshine, kind: .stt, expectedBackendName: "moonshine", displayName: "Moonshine",
+                tagline: "Small, fast streaming English recognition",
+                runtime: .sttHelper(engine: "moonshine", requirements: ["pipecat-local-stt-server[moonshine]==0.5.0"]),
+                port: 9965, modelRepo: nil, licence: .mit, streaming: false, symbol: "moon.stars",
+                modelArgument: "medium-streaming@en")
         }
     }
 }

@@ -159,8 +159,8 @@ public actor EnvironmentManager {
             args = ["-m", "tts_server", "prefetch", "--backend", info.family.rawValue, "--json"]
             if let model = info.modelArgument { args += ["--model", model] }
         case .sttHelper:
-            guard let repo = info.modelRepo else { return nil }
-            args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", repo, "--json"]
+            guard let model = info.expectedModel else { return nil }
+            args = ["-m", "stt_server", "prefetch", "--backend", info.expectedBackendName, "--model", model, "--json"]
         case .appleSpeech:
             return nil
         }
@@ -180,7 +180,7 @@ public actor EnvironmentManager {
         case .sttHelper:
             // The same upstream CLI a LaunchAgent runs; TCP on the catalog port.
             var args = ["-m", "stt_server", "serve", "--supervised", "--backend", info.expectedBackendName]
-            if let repo = info.modelRepo { args += ["--model", repo] }
+            if let model = info.expectedModel { args += ["--model", model] }
             return args + ["--host", ServiceCatalog.host, "--port", String(port)]
         case .appleSpeech:
             return nil
@@ -538,7 +538,7 @@ public actor EnvironmentManager {
         }
         let outcome = Task { () -> ServerCLIEvent? in
             var failure: ServerCLIEvent?
-            var progress = DownloadProgress(repo: backend.info.modelRepo ?? "")
+            var progress = DownloadProgress(repo: backend.info.expectedModel ?? "")
             for await line in sub.stdout {
                 guard let event = ServerCLIEvent.parse(line) else {
                     emit(.log(line))

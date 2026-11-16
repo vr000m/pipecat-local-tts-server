@@ -462,6 +462,12 @@ struct DetailsCard: View {
                     .help(repo)
                 }
             }
+            if model.info.modelRepo == nil, let spec = model.info.modelArgument {
+                // A model the backend downloads itself (Moonshine), not a Hugging Face repo.
+                InfoRow(label: "Model") {
+                    Text(spec).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(spec)
+                }
+            }
             if let variant = model.info.variantLabel {
                 InfoRow(label: "Variant") { Text(variant) }
             }
