@@ -19,7 +19,7 @@
 #    (8665) is adopted at launch (the bootstrap log line says `external(`) and is
 #    still alive after Quit. Skipped when 8665 is held, a tone LaunchAgent is loaded
 #    or the repo .venv cannot import tts_server. The script never starts or stops anything on 8965 or
-#    9565-9865 (real LaunchAgents run there); the app's own discovery does probe them,
+#    9565-9965 (real LaunchAgents run there); the app's own discovery does probe them,
 #    read-only, at every launch.
 # 6. Restore: with that server still up, a launch whose persisted wanted set names tone
 #    (`restore.wanted` = tone, `restoreOnLaunch` = YES) shows tone External, logs no
