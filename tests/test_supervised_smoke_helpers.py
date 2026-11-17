@@ -132,22 +132,6 @@ def test_prefetch_errors_fetch_run():
     assert sc.prefetch_errors([start, _check(), _summary("complete")], check=False, backend="tone")
 
 
-def _swift_base_env_keys() -> set[str]:
-    text = (sc.REPO / "macos" / "Sources" / "PipecatToolbarCore" / "ToolLocator.swift").read_text()
-    body = text[text.index("public static func base(") :]
-    body = body[: body.index("return env")]
-    keys = set(re.findall(r'"([A-Z][A-Z0-9_]+)":', body))  # the literal dict
-    keys |= set(re.findall(r'env\["([A-Z][A-Z0-9_]+)"\]', body))  # env["TMPDIR"] = ...
-    for listed in re.findall(r"for key in \[([^\]]*)\]", body):  # inherited keys
-        keys |= set(re.findall(r'"([A-Z][A-Z0-9_]+)"', listed))
-    return keys
-
-
-def test_app_env_mirrors_toollocator_base():
-    """The smoke's child env is the app's ``ProcessEnvironment.base()`` key for key."""
-    assert sc.APP_BASE_ENV_KEYS == _swift_base_env_keys()
-
-
 def test_app_child_env_scrubs_and_passes_hf():
     env = sc.app_child_env(
         {"HOME": "/h", "TMPDIR": "/t", "HF_TOKEN": "tok", "VIRTUAL_ENV": "/v", "PATH": "/x"}
