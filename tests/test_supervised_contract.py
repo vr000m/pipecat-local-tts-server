@@ -1,38 +1,9 @@
-"""The supervised/prefetch JSON-lines contract: LEAN drift guard.
+"""Server-side supervised/prefetch JSON-lines contract checks.
 
-Two independent emitters speak one contract to the macOS app: ``tts_server``
-(``serve --supervised``, ``prefetch --json``) and the upstream STT CLI
-(``python -m stt_server``, pipecat-local-stt-server 0.6.0). ``docs/supervised-contract.json``
-fixes every event's fields and types, the error ``code`` values per emitter, and the
-stt wire rate. The lean job has no STT server installed, so:
-
-  * the TTS emitter runs on stub inputs, and every line it writes conforms to its
-    event's contract entry (exact required keys, optional keys only from the
-    contract, JSON types); every contract event is exercised;
-  * the STT emitter's lines are a recorded 0.6.0 fixture
-    (``tests/fixtures/stt_supervised_lines.jsonl``: a real ``ready`` and ``error``
-    line) and ``tests/fixtures/stt_prefetch_check_lines.jsonl`` (a real kyutai
-    ``prefetch --check --json``: a ``check`` row then the ``summary``, recorded offline on
-    an empty cache), checked against the same contract and against the key sets the TTS
-    emitter writes for the same events; the lean job never imports ``stt_server``;
-  * Moonshine's non-Hub prefetch output is recorded too (``stt_prefetch_*_moonshine_*``:
-    ``--check`` on an empty and on a full cache, and a fetch with the weights cached), run
-    with the app's installed 0.6.0 environment (moonshine-voice 0.1.6) and
-    ``MOONSHINE_VOICE_CACHE`` set to a temporary root linked to the real cache, so no home
-    path is recorded. Its rows carry a synthetic, Hub-shaped ``repo``, which only the
-    catalog's ``model: .backendManaged`` source keeps out of ``EnvironmentManager.remove`` (the Swift
-    tests feed these files through ``cacheStatus`` and ``remove``);
-  * every ``"event": "<name>"`` literal in ``tts_server`` is a contract event;
-  * error codes, per emitter: the ``tts`` list == ``supervise.CODE_*``; the ``stt``
-    list == upstream ``stt_server.supervise.CODE_*``, read from a verbatim recorded
-    excerpt of the release the app installs (``tests/_stt_upstream.py``) and from the
-    live package when it is importable; Swift ``SupervisedErrorCode`` == the union;
-  * the Swift decoder (``ServerCLIEvent.CodingKeys``) reads only contract fields;
-  * wire rate: contract == fixture ``ready.rate`` == Swift ``STTWire.rate``;
-  * the contract's ``version`` is pinned to a digest of its shape (``CONTRACT_SHAPES``), so
-    a change to its keys, fields or types cannot ship without a version bump;
-  * each STT engine's requirements are hash-pinned in ``macos/constraints`` and name
-    ``pipecat-local-stt-server`` at exactly the Swift ``sttServerRequirement`` version.
+TTS emitters, recorded STT 0.6.0 fixtures, error codes and schema shape stay
+owned by this repository. The toolbar repository owns Swift decoder/catalog
+parity and app-installed STT constraint checks against its pinned server release.
+Recorded STT source can be reverified with PIPECAT_STT_SERVER_SITE.
 """
 
 from __future__ import annotations
@@ -56,7 +27,6 @@ from tts_server import supervise
 from tts_server.backend import ToneBackend
 
 from ._helpers import running_server
-from ._macos_catalog import macos_catalog
 from ._stt_upstream import FIXTURE as STT_EXCERPT
 from ._stt_upstream import excerpt_drift, upstream_stt
 from .smoke._supervised_contract import event_errors
@@ -64,8 +34,6 @@ from .test_prefetch_cli import PH, _run, fake_hub  # noqa: F401 - fake_hub is a 
 
 REPO = Path(__file__).resolve().parents[1]
 CONTRACT = json.loads((REPO / "docs" / "supervised-contract.json").read_text())
-CORE = REPO / "macos" / "Sources" / "PipecatToolbarCore"
-SERVICE_SWIFT = CORE / "Service.swift"
 STT_FIXTURE = REPO / "tests" / "fixtures" / "stt_supervised_lines.jsonl"
 STT_PREFETCH_FIXTURE = REPO / "tests" / "fixtures" / "stt_prefetch_check_lines.jsonl"
 FIXTURES = REPO / "tests" / "fixtures"
@@ -234,9 +202,6 @@ def test_tts_check_dialect_is_check_rows_then_summary(emitted):
     for i, kind in enumerate(kinds):
         if kind == "summary":
             assert i > 0 and kinds[i - 1] == "check", "summary without check rows"
-    swift = (CORE / "EnvironmentManager.swift").read_text()
-    body = swift.split("static func cacheStatus(checkOutput", 1)[1].split("\n    }\n", 1)[0]
-    assert "summary.path" not in body
 
 
 def stt_prefetch_check_lines() -> list[dict]:
@@ -348,12 +313,6 @@ def test_every_event_literal_in_the_emitter_is_a_contract_event():
 # --- error codes (per emitter) -------------------------------------------------
 
 
-def _swift_error_codes() -> set[str]:
-    text = (CORE / "PrefetchEvent.swift").read_text()
-    body = text.split("enum SupervisedErrorCode", 1)[1].split("}", 1)[0]
-    return set(re.findall(r'case \w+ = "(\w+)"', body))
-
-
 def test_error_codes_are_listed_per_emitter():
     assert sorted(CONTRACT["error_codes"]) == ["stt", "tts"]
     for emitter, codes in CONTRACT["error_codes"].items():
@@ -416,7 +375,7 @@ def test_stt_codes_equal_what_the_recorded_upstream_release_can_emit():
     release the app installs (not a hand-typed copy), so a code upstream adds or drops
     fails here once the excerpt is re-recorded for a new pin."""
     upstream = upstream_stt()
-    assert upstream.version == _swift_stt_server_version(), (
+    assert upstream.version == "0.6.0", (
         "re-record the STT excerpt for the new pin, then check it against that release's source:"
         " PIPECAT_STT_SERVER_SITE=<dir with stt_server/ and its dist-info> uv run pytest"
         " tests/test_supervised_contract.py -k verbatim"
@@ -494,13 +453,6 @@ def test_excerpt_drift_catches_what_the_excerpt_leaves_out(tmp_path):
     assert [d for d in excerpt_drift(pin) if d.startswith("PINNED_REVISIONS")], excerpt_drift(pin)
 
 
-def test_swift_supervised_error_codes_are_the_union_of_both_lists():
-    swift = _swift_error_codes()
-    assert swift == TTS_CODES | STT_CODES
-    # The codes only the STT emitter has are the ones the TTS emitter can never write.
-    assert swift - TTS_CODES == STT_CODES - TTS_CODES == {"ModelInvalidError"}
-
-
 def test_download_module_prefixes_match():
     contract = set(CONTRACT["download_error_module_prefixes"])
     assert set(supervise._DOWNLOAD_MODULE_PREFIXES) == contract
@@ -544,114 +496,6 @@ def test_classify_only_emits_tts_contract_codes(exc):
     assert supervise.classify_startup_error(exc)[0] in TTS_CODES
 
 
-# --- Swift consumer --------------------------------------------------------------
-
-
-def _swift_coding_keys() -> set[str]:
-    text = (CORE / "PrefetchEvent.swift").read_text()
-    body = text.split("enum CodingKeys: String, CodingKey {", 1)[1].split("}", 1)[0]
-    keys = set()
-    for line in body.splitlines():
-        line = line.strip()
-        if not line.startswith("case "):
-            continue
-        if m := re.fullmatch(r'case \w+ = "(\w+)"', line):
-            keys.add(m.group(1))
-        else:
-            keys.update(name.strip() for name in line[len("case ") :].split(","))
-    return keys
-
-
-def test_swift_decoder_reads_only_contract_fields():
-    fields = {
-        key
-        for scope in SCOPES
-        for entry in CONTRACT[scope].values()
-        for key in (*entry["fields"], *entry.get("optional", {}))
-    }
-    swift = _swift_coding_keys()
-    assert {"event", "size_bytes", "quantized_path", "rate"} <= swift, "the parser sees the keys"
-    assert swift <= fields, sorted(swift - fields)
-
-
 def test_stt_wire_rate_is_one_constant():
-    swift = re.search(
-        r"enum STTWire \{.*?public static let rate = (\d+)",
-        (CORE / "PCMStreamConverter.swift").read_text(),
-        re.DOTALL,
-    )
-    assert swift, "the parser sees STTWire.rate"
     ready = next(line for line in stt_fixture_lines() if line["event"] == "ready")
-    assert CONTRACT["stt_wire_rate"] == ready["rate"] == int(swift.group(1))
-
-
-# --- catalog ----------------------------------------------------------------------
-
-
-def _stt_entries():
-    return [e for e in macos_catalog().values() if e.engine]
-
-
-def _swift_stt_server_version() -> str:
-    m = re.search(
-        r'static let sttServerRequirement = "pipecat-local-stt-server==([^"]+)"',
-        SERVICE_SWIFT.read_text(),
-    )
-    assert m, "the parser sees ServiceCatalog.sttServerRequirement"
-    return m.group(1)
-
-
-def _pins(text: str) -> dict[str, str]:
-    return {
-        name.lower().replace("_", "-"): version
-        for name, version in re.findall(r"^([A-Za-z0-9_.\-]+)==(\S+)", text, re.MULTILINE)
-    }
-
-
-def test_every_stt_family_has_its_own_engine():
-    families = {e.family for e in macos_catalog().values() if e.kind == "stt"}
-    engines = {e.engine for e in _stt_entries() if not e.is_variant}
-    assert engines == {"whisper", "kyutai", "parakeet", "nemotron", "moonshine"}
-    assert families == engines | {"apple_speech"}
-    # Variants share their family's engine (one environment); no two families share one.
-    by_family = {e.family: e.engine for e in _stt_entries()}
-    assert len(set(by_family.values())) == len(by_family) == 5
-
-
-def test_every_stt_engine_has_hash_pinned_constraints():
-    engines = {e.engine: e.requirements for e in _stt_entries() if not e.is_variant}
-    folder = REPO / "macos" / "constraints"
-    assert {p.name for p in folder.glob("stt-*.txt")} == {f"stt-{e}.txt" for e in engines}
-    swift_python = re.search(
-        r'pythonVersion = "([\d.]+)"', (CORE / "EnvironmentManager.swift").read_text()
-    ).group(1)
-    server_version = _swift_stt_server_version()
-    for engine, requirements in engines.items():
-        text = (folder / f"stt-{engine}.txt").read_text()
-        assert text.strip(), f"{engine}: empty constraints"
-        assert f"# python-version: {swift_python}\n" in text, engine
-        # Regenerated from exactly these requirements...
-        listed = re.findall(r"^# requirement: (.+)$", text, re.MULTILINE)
-        assert listed == list(requirements)
-        # ...of which one names the upstream server at exactly the Swift release.
-        servers = [r for r in listed if r.startswith("pipecat-local-stt-server")]
-        assert len(servers) == 1, f"{engine}: {listed}"
-        assert re.fullmatch(
-            rf"pipecat-local-stt-server(\[[^\]]+\])?=={re.escape(server_version)}", servers[0]
-        ), f"{engine}: {servers[0]} != sttServerRequirement {server_version}"
-        pins = _pins(text)
-        assert pins.get("pipecat-local-stt-server") == server_version, engine
-        for requirement in requirements:
-            name, version = re.fullmatch(
-                r"([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?==(\S+)", requirement
-            ).groups()
-            assert pins.get(name.lower().replace("_", "-")) == version, f"{engine}: {requirement}"
-        # ...and every pin carries a hash (uv pip install --require-hashes).
-        blocks = re.split(r"^(?=[A-Za-z0-9])", text, flags=re.MULTILINE)[1:]
-        assert len(blocks) == len(pins) > len(requirements)
-        for block in blocks:
-            pin, first, *_ = block.splitlines()
-            # A hash only counts as the pin's own when the line continues into it.
-            assert pin.endswith(" \\") and first.startswith("    --hash=sha256:"), (
-                f"{engine}: {pin}"
-            )
+    assert CONTRACT["stt_wire_rate"] == ready["rate"]

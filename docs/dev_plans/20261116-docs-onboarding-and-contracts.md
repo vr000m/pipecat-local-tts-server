@@ -223,3 +223,11 @@ prefetch link, and corrects the Fish plan's stale PR #16 status while preserving
 its original status in a dated note. Other sibling plans need no material
 correction. These audit updates extend the original documentation allowlist to
 `CHANGELOG.md` and the Fish plan. No version or runtime change is introduced.
+
+
+### Toolbar repository extraction — 2026-11-16
+
+The toolbar implementation, app guides and screenshots now belong to
+[pipecat-service-toolbar](https://github.com/pipecat-ai/pipecat-service-toolbar). Paths to `macos/` in this completed
+plan describe the historical source layout. The current extraction contract is
+[the migration plan](20261116-refactor-extract-service-toolbar.md).

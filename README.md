@@ -153,24 +153,11 @@ character limits, truncation guards, quantized aliases, and cancellation caveats
 
 ## macOS menu bar app
 
-[`macos/`](https://github.com/vr000m/pipecat-local-tts-server/tree/main/macos)
-contains **Pipecat Service Toolbar**, a native SwiftUI menu bar app that installs
-and runs every TTS backend plus local STT services on fixed loopback ports.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/vr000m/pipecat-local-tts-server/main/docs/images/service-toolbar-panel.png" alt="Pipecat Service Toolbar showing running Phonon TTS and Nemotron STT services" width="350">
-  <img src="https://raw.githubusercontent.com/vr000m/pipecat-local-tts-server/main/docs/images/service-toolbar-settings.png" alt="Pipecat Service Toolbar settings and quit menu" width="300">
-</p>
-
-```sh
-just app-open
-just app-install
-```
-
-The app restores wanted services, adopts matching external servers without
-owning them, and asks before quitting while a client is connected to a server
-it started. See the
-[macOS guide](https://github.com/vr000m/pipecat-local-tts-server/blob/main/macos/README.md).
+[Pipecat Service Toolbar](https://github.com/pipecat-ai/pipecat-service-toolbar)
+is the native menu bar app for installing and running local TTS and STT services.
+Its source, build/install commands, tests and release history now live in that
+repository. Existing app settings, installed environments and model caches are
+preserved by the move; see its [installation guide](https://github.com/pipecat-ai/pipecat-service-toolbar#quickstart).
 
 ## Running the server
 
@@ -247,7 +234,7 @@ reference scripts require a source checkout:
 - [Backends](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
 - [Server operations](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md)
 - [WebSocket protocol](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/protocol.md)
-- [macOS app](https://github.com/vr000m/pipecat-local-tts-server/blob/main/macos/README.md)
+- [macOS app](https://github.com/pipecat-ai/pipecat-service-toolbar)
 - [Profiling](https://github.com/vr000m/pipecat-local-tts-server/blob/main/scripts/profiling/README.md)
 - [Live smoke tests](https://github.com/vr000m/pipecat-local-tts-server/blob/main/tests/smoke/README.md)
 

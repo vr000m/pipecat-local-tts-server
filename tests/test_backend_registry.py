@@ -3,7 +3,7 @@
 ``tts_server.backends.BACKENDS`` drives ``make_backend``, the default-model
 fallback, the ``prefetch`` hooks and the CLI ``--backend`` choices. Invariant:
 every place that enumerates or dispatches on a backend name agrees with it,
-across the whole space (every backend x serve / prefetch / Swift catalog /
+across the whole space (every backend x serve / prefetch /
 justfile), and resolving any of it stays lean (no mlx / numpy / torch /
 huggingface_hub at import or construction).
 """
@@ -21,7 +21,6 @@ from tts_server.backend import BackendPrefetch, TTSBackend
 from tts_server.backends import BACKEND_NAMES, BACKENDS, get_backend, make_backend
 
 from ._helpers import lean_import_offenders
-from ._macos_catalog import macos_catalog
 
 REPO = Path(__file__).resolve().parents[1]
 BACKENDS_DIR = REPO / "tts_server" / "backends"
@@ -48,7 +47,6 @@ def _modules_with_prefetch_hooks() -> set[str]:
 
 def test_every_name_source_equals_the_registry():
     names = set(BACKENDS)
-    swift = {e.name for e in macos_catalog().values() if e.kind == "tts" and not e.is_variant}
     justfile = {name for name, _port in _RESOLVE.findall((REPO / "justfile").read_text())}
     sources = {
         "BACKEND_NAMES": set(BACKEND_NAMES),
@@ -58,7 +56,6 @@ def test_every_name_source_equals_the_registry():
         # tone is the one backend with nothing to fetch (hooks None).
         "prefetch dispatch": {n for n in names if get_backend(n).prefetch_hooks()} | {"tone"},
         "backend modules with prefetch_specs": _modules_with_prefetch_hooks() | {"tone"},
-        "Swift catalog TTS families": swift,
         "justfile _resolve": justfile,
     }
     mismatched = {k: sorted(v ^ names) for k, v in sources.items() if v != names}
@@ -92,12 +89,6 @@ def test_entry_resolves_factory_default_model_and_prefetch_hooks(name):
         assert specs and all(isinstance(s, PF.SnapshotSpec) for s in specs)
         # The first snapshot is the model ``serve`` loads by default.
         assert specs[0].repo_id == default
-
-
-@pytest.mark.parametrize("name", BACKEND_NAMES)
-def test_swift_model_repo_equals_registry_default(name):
-    (entry,) = [e for e in macos_catalog().values() if e.name == name and not e.is_variant]
-    assert entry.model_repo == get_backend(name).default_model()
 
 
 def test_unknown_name_is_a_valueerror_everywhere():

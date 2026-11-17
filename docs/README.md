@@ -11,7 +11,7 @@ quickstart. The guides below are the canonical homes for detailed behaviour.
 | Connect a Python application | [Packaged Python client](clients.md#write-a-wav-with-the-python-client) |
 | Connect a Pipecat bot | [Reference adapter](clients.md#use-the-pipecat-adapter) |
 | Choose a model and voice | [Backend comparison](backends.md#choose-a-backend) |
-| Manage speech services from the menu bar | [Pipecat Service Toolbar](../macos/README.md#quickstart) |
+| Manage speech services from the menu bar | [Pipecat Service Toolbar](https://github.com/pipecat-ai/pipecat-service-toolbar/blob/main/README.md#quickstart) |
 | Run a server at login | [Launchd lifecycle](operations.md#running-multiple-backends-with-launchd) |
 | Diagnose a failed or slow request | [Troubleshooting](operations.md#troubleshooting) |
 | Implement another client | [WebSocket protocol](protocol.md) |
@@ -26,7 +26,7 @@ quickstart. The guides below are the canonical homes for detailed behaviour.
   authentication, launchd, health checks, prefetch, and supervised mode.
 - [WebSocket protocol](protocol.md) — wire messages, lifecycle, capabilities,
   backpressure, errors, and client requirements.
-- [Pipecat Service Toolbar](../macos/README.md) — native macOS menu bar app.
+- [Pipecat Service Toolbar](https://github.com/pipecat-ai/pipecat-service-toolbar/blob/main/README.md) — native macOS menu bar app.
 
 ## Validation and performance
 

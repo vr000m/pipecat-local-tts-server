@@ -14,8 +14,8 @@ smoke script itself (same-directory top-level import, like ``_gate_helpers``).
   for (backend, model, loopback host, the real port, the child's pid).
 - :data:`APP_BASE_ENV_KEYS` / :func:`app_child_env` mirror the environment the
   macOS app gives its children (``ProcessEnvironment.base()`` /
-  ``huggingFace()`` in ``macos/Sources/PipecatToolbarCore/ToolLocator.swift``;
-  drift-tested).
+  ``huggingFace()`` in ``pipecat-service-toolbar/Sources/PipecatToolbarCore/ToolLocator.swift``;
+  parity-tested in the toolbar repository).
 """
 
 from __future__ import annotations

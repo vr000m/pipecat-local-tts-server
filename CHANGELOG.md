@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Move Pipecat Service Toolbar source, app build/install recipes and app CI to
+  [pipecat-service-toolbar](https://github.com/pipecat-ai/pipecat-service-toolbar). The standalone app retains existing
+  settings, environments and model caches. Historical toolbar release entries
+  remain here; ongoing app changes use its own changelog. Server CLI, supervised
+  mode, prefetch, launchd recipes and wire protocol are unchanged.
+
 ### Added
 
 - Client integration guide with a standalone Python WAV example, Pipecat adapter setup,
