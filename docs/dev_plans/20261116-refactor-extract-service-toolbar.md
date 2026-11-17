@@ -286,7 +286,8 @@ destructive tests against the user's real installation or shared model cache.
 - [x] Phase 1: Import history and define standalone packaging
 - [x] Phase 2: Relocate compatibility tests and verify upgrade invariants
 - [x] Phase 3: Complete standalone documentation, changelog and CI
-- [ ] Phase 4: Remove app ownership from TTS and prepare linked PRs
+- [x] Phase 4: Remove app ownership from TTS and prepare linked PRs
+- [ ] Cutover: both PRs green, then destination-first regular merges when authorised
 
 ## Findings
 
@@ -315,7 +316,16 @@ destructive tests against the user's real installation or shared model cache.
 
 ## Final Results
 
-Implementation is complete; committed-diff review, PR creation and CI are pending.
+Implementation and review are complete. The linked PRs are open; cutover remains
+pending their CI and a later merge instruction.
+
+- [Toolbar import PR #1](https://github.com/pipecat-ai/pipecat-service-toolbar/pull/1)
+  must merge before [TTS removal PR #35](https://github.com/vr000m/pipecat-local-tts-server/pull/35).
+- Logic and security reviews found no defects. Architecture and documentation
+  each reported the same minor checkout-instruction issue; `35be747` fixes both,
+  independently verified by the documentation reviewer. Review reconciliation:
+  raw 2, unique 2, related 1, dropped 0. No unresolved code findings.
+- Latest CI status is recorded on the linked PRs rather than frozen into this plan.
 
 - Destination history import `22b7cf8`: 103 app files initially byte-identical;
   standalone packaging/tests `3a625a2`; changelog/docs/CI `861a7f9`.

@@ -444,7 +444,3 @@ smoke-supervised backend="tone" *args:
 # backend whose weights are not cached or whose extra is not installed).
 smoke-supervised-all *args:
     uv run --no-sync python tests/smoke/supervised_smoke.py --all {{args}}
-
-# ---------------------------------------------------------------------------
-# macOS menu bar app ("Pipecat Service Toolbar", macos/). See macos/README.md.
-# ---------------------------------------------------------------------------
