@@ -3,7 +3,8 @@
 Operator/agent contract for this repo. Human-facing docs start at
 [`README.md`](README.md); detailed backend and operator guidance is indexed in
 [`docs/README.md`](docs/README.md), and [`docs/protocol.md`](docs/protocol.md) is
-the wire spec. This file is the quick command/convention reference. Mirrors the sibling
+the wire spec. [`docs/clients.md`](docs/clients.md) covers the packaged Python client
+and checkout-only Pipecat adapter. This file is the quick command/convention reference. Mirrors the sibling
 [`pipecat-local-stt-server`](https://github.com/vr000m/pipecat-local-stt-server).
 
 ## What this is
@@ -185,6 +186,6 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
   - `macos/scripts/quit_app.sh` — quit a running app by bundle id and wait for it (one `QUIT_WAIT_SECS` deadline; used by `app-open` / `app-install`).
   - `macos/scripts/resolve_sign_identity.sh` — prints the signing identity for `app-open` (`Code Signing`, else ad hoc) and `app-install` (`--require`).
   - `macos/scripts/has_sign_identity.sh` — its private keychain probe (advisory: case-insensitive identity name substring or full SHA-1 hash in any case; codesign decides an ambiguous name).
-- `docs/README.md` / `docs/backends.md` / `docs/operations.md` — documentation
-  index, canonical backend reference, and canonical server-operations guide.
+- `docs/README.md` / `docs/clients.md` / `docs/backends.md` / `docs/operations.md` —
+  task-based index, client integration, canonical backend reference, and server operations.
 - `docs/protocol.md`, `docs/dev_plans/` — wire spec and historic decision records.
