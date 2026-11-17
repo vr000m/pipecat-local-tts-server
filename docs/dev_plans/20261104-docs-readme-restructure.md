@@ -254,3 +254,12 @@ bar screenshots, and retained compatibility anchors and the tested port map.
 ### Follow-up Work
 
 - None required for this local documentation change.
+
+### Correction — 2026-11-16
+
+The quickstart's completion claim above assumed a source checkout:
+`examples/reference_client.py` is not included in the installed wheel. The
+[onboarding follow-up](20261116-docs-onboarding-and-contracts.md) replaces that
+step with a standalone packaged-client WAV example and adds `docs/clients.md`
+as the canonical integration guide. The guide ownership, compatibility anchors,
+and canonical README port table established here remain in effect.
