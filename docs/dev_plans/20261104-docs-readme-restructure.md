@@ -263,3 +263,11 @@ The quickstart's completion claim above assumed a source checkout:
 step with a standalone packaged-client WAV example and adds `docs/clients.md`
 as the canonical integration guide. The guide ownership, compatibility anchors,
 and canonical README port table established here remain in effect.
+
+
+### Toolbar repository extraction — 2026-11-16
+
+The toolbar implementation, app guides and screenshots now belong to
+[pipecat-service-toolbar](https://github.com/pipecat-ai/pipecat-service-toolbar). Paths to `macos/` in this completed
+plan describe the historical source layout. The current extraction contract is
+[the migration plan](20261116-refactor-extract-service-toolbar.md).

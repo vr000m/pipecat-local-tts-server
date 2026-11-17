@@ -208,7 +208,7 @@ reports ready.
 ## Supervised mode
 
 `serve --supervised` is for a parent process that manages the server, such as the
-[macOS menu bar app](../macos/README.md). Logging on stderr is unchanged. In
+[macOS menu bar app](https://github.com/pipecat-ai/pipecat-service-toolbar/blob/main/README.md). Logging on stderr is unchanged. In
 addition:
 
 - **stdout is reserved for JSON lines.** Once the listener is bound and the model
@@ -235,7 +235,7 @@ file descriptor 1 can bypass the redirect.
 
 Start with a probe against the **same endpoint** the client uses, then inspect
 the server's stderr or `just tts-logs <backend>`. For toolbar-managed services,
-see the [app's log locations](../macos/README.md#where-things-live).
+see the [app's log locations](https://github.com/pipecat-ai/pipecat-service-toolbar/blob/main/README.md#where-things-live).
 
 | Symptom | Check | Remedy |
 |---|---|---|
