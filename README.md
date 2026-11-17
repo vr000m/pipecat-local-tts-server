@@ -15,13 +15,15 @@ The server owes every client two contracts:
 
 1. **An exact advertised rate.** `server.hello.audio.rate` is the model's true
    rate. Every audio frame is int16-LE mono PCM at that rate.
-2. **A steady response stream.** Once a response starts, each completed model
-   segment is emitted immediately so playback can continue without whole-result
-   buffering.
+2. **Audio as segments complete.** The server emits each completed model segment
+   without waiting for the whole utterance. Queueing and generation can delay
+   audio; clients still need playback buffering.
 
 ## Install
 
-Install a real backend on Apple Silicon:
+Requires **Python 3.12+**. Model backends require **Apple Silicon**; the lean
+client and synthetic `tone` backend do not require MLX. Use `uv init` first in a
+new project, then install Kokoro with:
 
 ```sh
 uv add "pipecat-local-tts-server[kokoro]"
@@ -41,7 +43,7 @@ equivalent `pipecat-tts` console script.
 
 See the
 [backend guide](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
-for every extra, model, voice and platform requirement.
+for every extra, model, voice, and platform requirement.
 
 ## Quickstart
 
@@ -54,19 +56,71 @@ uv run python -m tts_server serve --backend kokoro \
     --socket-path ~/Library/Caches/pipecat-tts/tts.sock
 ```
 
-In another shell, probe the server and synthesize a WAV:
+In another shell in the same Python project, probe the server:
 
 ```sh
 uv run python -m tts_server status \
     --socket-path ~/Library/Caches/pipecat-tts/tts.sock
-
-uv run python examples/reference_client.py \
-    --socket-path ~/Library/Caches/pipecat-tts/tts.sock \
-    --text "Hello from the local TTS server." \
-    --out hello.wav
 ```
 
-Use `--backend tone` for a dependency-free protocol test with no model weights.
+Save this as `synthesize.py`. It uses the installed package and writes a WAV at
+exactly the rate advertised by the server:
+
+```python
+import asyncio
+import base64
+import os
+import sys
+import wave
+
+from tts_server.client import TTSClient
+
+
+async def main(socket_path, timeout=60):
+    client = TTSClient(
+        socket_path=socket_path, auth_token=os.environ.get("TTS_WS_TOKEN")
+    )
+    pcm = bytearray()
+    try:
+        async with asyncio.timeout(timeout):
+            hello = await client.connect()
+            rate = hello["audio"]["rate"]
+            await client.append("Hello from the local TTS server.")
+            await client.commit()
+            async for event in client.events():
+                if event["type"] == "response.audio.delta":
+                    pcm.extend(base64.b64decode(event["audio"]))
+                elif event["type"] == "response.audio.done":
+                    break
+                elif event["type"] in {"error", "response.failed", "response.cancelled"}:
+                    raise RuntimeError(event)
+            else:
+                raise RuntimeError("Connection closed before audio completed")
+    finally:
+        await client.close()
+
+    with wave.open("hello.wav", "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        output.writeframes(pcm)
+    print(f"Wrote hello.wav: {len(pcm) // 2} samples at {rate} Hz")
+
+
+if __name__ == "__main__":
+    asyncio.run(main(sys.argv[1]))
+```
+
+```sh
+uv run python synthesize.py ~/Library/Caches/pipecat-tts/tts.sock
+```
+
+The request has a 60-second timeout and reports failures instead of saving
+incomplete audio. See [Client integration](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/clients.md)
+for TCP, capabilities, authentication, retries, and Pipecat usage.
+
+Use `serve --backend tone` with the same socket flag for a protocol test with
+no model weights; the WAV will contain a tone rather than speech.
 For TCP, authentication, model cache checks, launchd agents, keepalive settings,
 and process supervision, see
 [Server operations](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md).
@@ -175,15 +229,21 @@ See the complete
 
 ## Examples
 
+Start with [Client integration](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/clients.md)
+for the packaged Python client and a Pipecat pipeline sketch. The following
+reference scripts require a source checkout:
+
 - [`examples/reference_client.py`](https://github.com/vr000m/pipecat-local-tts-server/blob/main/examples/reference_client.py)
   is a lightweight wire-protocol oracle that writes the received PCM to WAV.
 - [`examples/pipecat_tts_service.py`](https://github.com/vr000m/pipecat-local-tts-server/blob/main/examples/pipecat_tts_service.py)
   provides `LocalTTSService`, a Pipecat `TTSService` adapter with interruption
-  and bounded busy-retry handling. Install it with `uv sync --extra examples`.
+  and bounded busy-retry handling. Install its dependencies from the checkout
+  with `uv sync --extra examples`; the adapter is not included in the wheel.
 
 ## Documentation
 
 - [Documentation index](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/README.md)
+- [Client integration](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/clients.md)
 - [Backends](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/backends.md)
 - [Server operations](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/operations.md)
 - [WebSocket protocol](https://github.com/vr000m/pipecat-local-tts-server/blob/main/docs/protocol.md)

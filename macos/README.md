@@ -191,8 +191,16 @@ for running both.
 
 ## Use a service from Pipecat
 
+These are service-construction snippets, not complete bots. For TTS, run from
+this source checkout after `uv sync --extra examples`, or copy the reference
+adapter into your bot project and adjust the import. See
+[Client integration](../docs/clients.md#use-the-pipecat-adapter) for a pipeline
+sketch and the packaged Python client's WAV example.
+
 ```python
 # TTS: examples/pipecat_tts_service.py in this repo
+from examples.pipecat_tts_service import LocalTTSService
+
 tts = LocalTTSService(host="127.0.0.1", port=8765)
 
 # STT: pip install "pipecat-local-stt-server[client]"
@@ -200,7 +208,11 @@ from stt_server.examples.pipecat_stt_service import LocalWebSocketSTTService
 stt = LocalWebSocketSTTService(host="127.0.0.1", port=9465)
 ```
 
-Or set `TTS_WS_HOST`/`TTS_WS_PORT` and `STT_WS_HOST`/`STT_WS_PORT`.
+The TTS adapter takes explicit endpoint arguments; environment variables alone
+do not configure it. To use `TTS_WS_HOST`/`TTS_WS_PORT`, resolve and pass them as
+shown in [Endpoints and authentication](../docs/clients.md#endpoints-and-authentication).
+For STT setup, consult the
+[STT client documentation](https://github.com/vr000m/pipecat-local-stt-server).
 
 ## Where things live
 

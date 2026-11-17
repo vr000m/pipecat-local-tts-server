@@ -4,6 +4,14 @@ Run, inspect, prefetch, and supervise local TTS servers. For model selection,
 licenses, voices, languages, and backend limits, see [Backends](backends.md).
 For wire messages and client behavior, see the [protocol](protocol.md).
 
+- [Starting a server](#starting-a-server)
+- [Launchd lifecycle](#running-multiple-backends-with-launchd)
+- [Environment and authentication](#environment-variables)
+- [Health checks](#checking-server-health)
+- [Model downloads](#prefetching-models)
+- [Process supervision](#supervised-mode)
+- [Troubleshooting](#troubleshooting)
+
 ## Starting a server
 
 ```sh
@@ -20,6 +28,9 @@ uv run python -m tts_server serve --backend kokoro \
 uv run python -m tts_server serve --backend kokoro --host 127.0.0.1 --port 8765
 ```
 
+Choose a listener explicitly: `--socket-path` takes precedence over
+`--host`/`--port`. Without a socket, supply both host and port. `serve` has no
+`--uri` flag and does not read the client `TTS_WS_*` endpoint variables.
 
 ## Running multiple backends with launchd
 
@@ -35,10 +46,25 @@ just tts-list            # every pipecat.tts-server* agent + live backend probe
 just tts-status kokoro   # probe one backend's canonical host:port
 ```
 
-> `kokoro=8765` is assumed free and is **not** collision-checked — it matches
-> this repo's own kokoro examples. A launchd tts agent binds a loopback port, so
-> two installed agents never collide; the only risk is an ad-hoc process you run
-> by hand on the same port.
+Each backend has a distinct canonical port, but installation does not reserve
+or collision-check it. Another process, including a toolbar-managed server or
+an ad-hoc server, may already hold it. Check with `just tts-status kokoro` before
+starting another Kokoro instance.
+
+| Command | Effect |
+|---|---|
+| `just tts-install <backend>` | Write the plist and start a login agent with KeepAlive. |
+| `just tts-start <backend>` | Start a loaded agent; leave it alone if already running. |
+| `just tts-restart <backend>` | Force-restart a loaded agent. |
+| `just tts-stop <backend>` | Send SIGTERM; **KeepAlive restarts it**. |
+| `just tts-disable <backend>` | Unload until next login; keep the plist. |
+| `just tts-enable <backend>` | Reload and start an agent from its existing plist. |
+| `just tts-uninstall <backend>` | Unload the agent and remove its plist. |
+| `just tts-logs <backend>` | Tail the agent's stdout and stderr logs. |
+
+Use `tts-disable` to keep an agent down for the current login session, or
+`tts-uninstall` to remove automatic startup. These recipes require a source
+checkout and `just`; they are macOS operator commands, not package CLI commands.
 
 > **launchd does not inherit your shell environment.** Server-runtime env you set
 > for an ad-hoc `serve` is *not* carried into an installed agent, so it is handled
@@ -65,8 +91,13 @@ is already listening there (the socket is genuinely in use).
 
 ## Environment variables
 
-Endpoint precedence (server and client both): **URI > socket > host+port**. The
-`TTS_WS_*` vars mirror `STT_WS_*`.
+Client endpoint precedence is **URI > socket > host+port**. The `status` command
+reads `TTS_WS_*` when no endpoint flag is supplied; explicit endpoint flags form
+the whole endpoint rather than merging with environment settings. `TTSClient`
+and the reference `LocalTTSService` take explicit arguments; applications can
+call `resolve_endpoint_from_env` as shown in [Client integration](clients.md#endpoints-and-authentication).
+The server listener uses `--socket-path` or `--host`/`--port`, not these client
+variables. `TTS_WS_*` mirrors the sibling STT client's naming convention.
 
 | Variable | Side | Purpose |
 |---|---|---|
@@ -133,10 +164,9 @@ recipes mirroring the sibling stt server. Read-only probes: `just tts-list` list
 `just tts-status` runs the wire `status` probe against the canonical socket by
 default; pass a backend name to probe its canonical port (`just tts-status
 kokoro`) or a socket path to probe a specific socket (`just tts-status
-/path/to/tts.sock`). Lifecycle recipes: `just tts-install <backend>`,
-`just tts-uninstall <backend>`, `just tts-enable <backend>`,
-`just tts-disable <backend>`, `just tts-start <backend>`, `just tts-restart <backend>`,
-`just tts-stop <backend>`, `just tts-logs <backend>` (all operator-manual; not CI-verified).
+/path/to/tts.sock`). See the [lifecycle table](#running-multiple-backends-with-launchd)
+for start, stop, disable, and uninstall semantics. Launchd lifecycle operations
+are operator-manual, not CI-verified.
 
 ## Prefetching models
 
@@ -181,12 +211,11 @@ reports ready.
 [macOS menu bar app](../macos/README.md). Logging on stderr is unchanged. In
 addition:
 
-- **stdout carries only JSON lines.** Once the listener is bound and the model is
-  warm, the server prints one
-  `{"event":"ready","backend","model","host","port","socket_path","rate","pid"}`
-  line. With `--port 0` the `port` field is the real port.
-- **A fatal error prints `{"event":"error","code","message","exc_type"}`** and
-  exits 1. Codes: `EADDRINUSE` (reported before the model loads), `EACCES`,
+- **stdout is reserved for JSON lines.** Once the listener is bound and the model
+  is warm, the server prints one `ready` event with `backend`, `model`, `host`,
+  `port`, `socket_path`, `rate`, and `pid`. With `--port 0`, `port` is the real port.
+- **A fatal error prints an `error` event** with `code`, `message`, and `exc_type`,
+  then exits 1. Codes: `EADDRINUSE` (reported before the model loads), `EACCES`,
   `SocketPathConflict`, `ModuleNotFoundError` (backend extra missing),
   `ModelDownloadError`, `ConfigError`, `BackendStartError`.
 - **stdin EOF stops the server** exactly like SIGTERM. The parent keeps a pipe
@@ -201,3 +230,22 @@ addition:
 
 Skip any stdout line that does not parse as JSON: native code writing straight to
 file descriptor 1 can bypass the redirect.
+
+## Troubleshooting
+
+Start with a probe against the **same endpoint** the client uses, then inspect
+the server's stderr or `just tts-logs <backend>`. For toolbar-managed services,
+see the [app's log locations](../macos/README.md#where-things-live).
+
+| Symptom | Check | Remedy |
+|---|---|---|
+| `EADDRINUSE` or “address already in use” | Probe the intended socket or host/port with `status`; for agents, run `just tts-list`. | Use the matching running server, stop it through its owner, or choose a free endpoint. Do not remove a live socket. |
+| `ModuleNotFoundError` at startup | Confirm the backend extra is installed in the environment running `serve`. | In a checkout, run `uv sync --extra <backend>`; in a consumer project, add `pipecat-local-tts-server[<backend>]`. Run through that environment. |
+| Server not reachable during first start | Read startup logs; run `prefetch --backend <backend> --check`. | Download with `prefetch` if needed, then allow model load/warmup to finish. A check's exit code 0 means the probe ran; inspect `cached` for its answer. |
+| Authentication rejected | Check the client uses the intended endpoint and token. | Supply the matching `TTS_WS_TOKEN` to `status`, `--auth-token-file` to the probe, or explicit `auth_token` to a Python client. Never use the server variable as a client fallback. |
+| `ConfigError` with a token file | Read the diagnostic for token contents; for installation, also check ownership, permissions, symlinks, and parent directories. | Correct the file according to the [auth rules](#environment-variables), then restart. Do not bypass the error by dropping authentication. |
+| `invalid_config` for a voice or language | Inspect `status` and `server.hello.capabilities`. | Choose an advertised value. Qwen3 language names differ from Kokoro's; Phonon voices must be enabled before server startup. |
+| `busy` | Inspect synthesis queue depth with `status`. | Wait for `retry_after_ms` and retry only the commit with bounded retries. Clear abandoned text before a new request; see [client recovery](clients.md#persistent-connections-retries-and-cancellation). |
+| Slow first audio or gaps between segments | Check backend streaming support, commit size, cold-start logs, and competing model processes. | Use sentence-sized commits and appropriate playback buffering. Compare with the dated [profiling results](../scripts/profiling/README.md); `response.created` is not an audio-ready signal. |
+| Cancel stops audio but the next request waits | Check the backend's [cancellation caveats](backends.md). | Allow the current model segment to finish; use smaller commits next time. Cancellation acknowledgement does not promise immediate GPU release. |
+| An agent comes back after `tts-stop` | Inspect the [launchd lifecycle](#running-multiple-backends-with-launchd). | Use `tts-disable` until next login or `tts-uninstall` to remove its plist. |

@@ -3,7 +3,8 @@
 Operator/agent contract for this repo. Human-facing docs start at
 [`README.md`](README.md); detailed backend and operator guidance is indexed in
 [`docs/README.md`](docs/README.md), and [`docs/protocol.md`](docs/protocol.md) is
-the wire spec. This file is the quick command/convention reference. Mirrors the sibling
+the wire spec. [`docs/clients.md`](docs/clients.md) covers the packaged Python client
+and checkout-only Pipecat adapter. This file is the quick command/convention reference. Mirrors the sibling
 [`pipecat-local-stt-server`](https://github.com/vr000m/pipecat-local-stt-server).
 
 ## What this is
@@ -33,15 +34,18 @@ uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 
 ## CLI (`python -m tts_server <subcommand>`)
 
-Also installed as the `pipecat-tts` console script (same `main()`). Endpoint
-precedence everywhere: **URI > socket > host+port**.
+Also installed as the `pipecat-tts` console script (same `main()`). Client endpoint
+precedence: **URI > socket > host+port**. The server listener uses socket >
+host+port and has no URI flag. `status` resolves client environment variables;
+`TTSClient` and `LocalTTSService` require explicit endpoint/token arguments (use
+`resolve_endpoint_from_env` in application code when wanted).
 
 | Subcommand | Flags | Notes |
 |---|---|---|
 | `serve` (default) | `--backend {tone,kokoro,voxtral_tts,pocket_tts,dia,qwen3_tts,fish_tts,phonon}` (default `tone`), `--model <id>`, `--socket-path`, `--host`, `--port`, `--auth-token-file <path>`, `--log-level <LEVEL>` (default `INFO`), `--supervised` | Runs the server. `--supervised` (for the macOS app): stdout carries only JSON lines (`ready` once listening, or `error{code}`, e.g. `EADDRINUSE` before the model load), and stdin EOF stops the server like SIGTERM. `--model` defaults per backend (Kokoro repo for `kokoro`; none for `tone`). `phonon` also accepts the aliases `phonon` (fp), `phonon-q8`, `phonon-q4` (converted once into `$XDG_CACHE_HOME/pipecat-tts-server/phonon/`). No `--uri` (the listener is built from socket-path/host+port). |
 | `status` | `--socket-path`, `--host`, `--port`, `--uri <ws://…>`, `--auth-token-file`, `--timeout <s>` (default `3.0`), `--json` | Preflight health probe: handshake + `server.status`, prints backend/model/rate/caps/queue-depth/voices/uptime/pid. Exits non-zero if unreachable. `--json` emits raw `hello`+`status`. |
 | `voices` | `--backend <name>` (default `phonon`; any other exits non-zero), `--language <code>`, `--json`, `--refresh` | Lists the bundled Phonon voice catalog (slug, language, enabled via `PIPECAT_TTS_PHONON_VOICES`, cached in the HF cache; `cached` is `?`/JSON `null` when `huggingface_hub` is not installed). `--refresh` diffs the live `voices.jsonl` (added/removed/changed, plus duplicate and invalid/reserved slugs) and changes nothing. Never talks to a server. |
-| `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `convert` (phonon aliases), `warning` (an optional snapshot failed), `check`/`summary`, `error`; fields in README). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
+| `prefetch` | `--backend <name>` (required), `--model <id>`, `--check`, `--json`, `--log-level` (default `WARNING`) | Downloads what `serve` would fetch (model repo, dia codec, pocket voice embeddings, phonon pin + enabled voices; runs the phonon-q8/q4 conversion) into the standard HF cache. `--check` is offline and reports `cached`. `--json` emits JSON-lines events (`start`/`progress`/`done`/`complete`, `convert` (phonon aliases), `warning` (an optional snapshot failed), `check`/`summary`, `error`; fields in [Server operations](docs/operations.md#prefetching-models)). Per-backend specs live in each backend module's `prefetch_specs(model)`. |
 
 A plaintext `--auth-token` flag is **intentionally unsupported** (`ps` exposure) —
 use `--auth-token-file`. `serve` reads that file strictly (`tts_server.env.read_token_file`): an
@@ -182,6 +186,6 @@ are validated against the advertised lists (fail-closed); `speed` is clamped to
   - `macos/scripts/quit_app.sh` — quit a running app by bundle id and wait for it (one `QUIT_WAIT_SECS` deadline; used by `app-open` / `app-install`).
   - `macos/scripts/resolve_sign_identity.sh` — prints the signing identity for `app-open` (`Code Signing`, else ad hoc) and `app-install` (`--require`).
   - `macos/scripts/has_sign_identity.sh` — its private keychain probe (advisory: case-insensitive identity name substring or full SHA-1 hash in any case; codesign decides an ambiguous name).
-- `docs/README.md` / `docs/backends.md` / `docs/operations.md` — documentation
-  index, canonical backend reference, and canonical server-operations guide.
+- `docs/README.md` / `docs/clients.md` / `docs/backends.md` / `docs/operations.md` —
+  task-based index, client integration, canonical backend reference, and server operations.
 - `docs/protocol.md`, `docs/dev_plans/` — wire spec and historic decision records.

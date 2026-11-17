@@ -8,6 +8,42 @@ canonical reference for shipped backend behavior.
 > below preserves the repository's documented snapshot and qualifiers; it is not
 > legal advice or a fresh legal review. Re-check upstream terms before deployment.
 
+## Choose a backend
+
+Kokoro is the starting point used in the quickstart. Compare the controls and
+limits below before choosing another backend; consult the licence table before
+using its weights. `streaming` means sub-segment generation, not a guaranteed
+cadence. Non-streaming backends still emit completed segments over WebSocket.
+
+| Backend | Streaming | Languages | Voice selection | Text cap | Main caveat |
+|---|---|---|---|---:|---|
+| `tone` | No | Synthetic test signal | Test voice | 2000 | Tests the protocol, not speech quality. |
+| [Kokoro](#kokoro-capabilities-as-shipped) | No | `en`, `es`, `fr`, `hi`, `it`, `pt`; opt-in `ja`/`zh` | Named voices | 2000 | Chunk at sentence/newline boundaries; extra G2P needed for `ja`/`zh`. |
+| [Phonon](#phonon-capabilities-and-voice-selection) | Yes | `en` | `default` plus operator-enabled voices | 2000 | Long individual sentences can hit the model's audio ceiling. |
+| [Pocket](#pocket-tts-capabilities-as-shipped) | Yes | `en` | Eight named voices | 2000 | No reference-audio cloning transport. |
+| [Voxtral](#voxtral-tts-capabilities-as-shipped) | Yes | Nine advertised languages | Twenty voice presets choose language | 2000 | Language selection follows the voice preset. |
+| [Qwen3](#qwen3-tts-capabilities-as-shipped) | Yes | Model-native names, e.g. `english`, plus `auto` | Nine CustomVoice speakers; none on Base | 800 | Use the advertised language vocabulary; generation has a token ceiling. |
+| [Dia](#dia-capabilities-as-shipped) | No | `en` verified | In-text `[S1]`/`[S2]`, not a voice parameter | 2000 | Dialogue context resets between commits; generation can be slower than playback. |
+| [Fish](#fish_tts-capabilities-as-shipped) | No | 38 advertised; request language ignored | In-text speaker tags, not a voice parameter | 500 | Rejects untagged lead-ins before speaker tags; generation has a token ceiling. |
+
+Text caps count characters per commit. Query the running server's capabilities
+and `status` voice list; loaded model variants and operator settings can change
+what is available. Measurements below retain their original dates/runtime
+context. Compare latency and memory using the hardware-labelled
+[profiling results](../scripts/profiling/README.md), not a universal speed ranking.
+
+## Contents
+
+- [Install a backend](#install-a-backend)
+- [Backends and licences](#backends--licenses)
+- [Kokoro](#kokoro-capabilities-as-shipped), [languages](#kokoro-language-support-advertised--synthesizable), and [cancellation](#kokoro-cancellation-caveat)
+- [Phonon and voices](#phonon-capabilities-and-voice-selection)
+- [Voxtral](#voxtral-tts-capabilities-as-shipped)
+- [Pocket](#pocket-tts-capabilities-as-shipped)
+- [Dia](#dia-capabilities-as-shipped) and [cancellation](#dia-cancellation-caveat)
+- [Qwen3](#qwen3-tts-capabilities-as-shipped)
+- [Fish](#fish_tts-capabilities-as-shipped)
+
 ## Install a backend
 
 Choose the extra that matches the backend name:
@@ -26,8 +62,10 @@ uv add "pipecat-local-tts-server[phonon]"
 uv sync --extra kokoro
 ```
 
-The base package is the lean client install. `uv sync --extra examples` adds the
-reference Pipecat adapter and its pinned framework dependency. Model extras are
+The base package is the lean client install. From a checkout,
+`uv sync --extra examples` installs the reference Pipecat adapter's pinned
+framework dependency; the adapter itself remains a source file. See
+[Client integration](clients.md#use-the-pipecat-adapter). Model extras are
 Apple-Silicon MLX runtimes; `tone` stays dependency-free for protocol testing.
 Every model extra pins `mlx-audio==0.6.1`. Kokoro also installs `misaki[en]`,
 whose G2P stack brings heavier packages such as spaCy, num2words, and Torch;
@@ -69,6 +107,76 @@ Operators are responsible for honouring each model's license.
 > (their Hugging Face card metadata as of 2026-10-21, recorded in the Phonon dev plan's
 > Phase 0 findings; re-check the cards before relying on it); they are not supported
 > here (the backend targets the 31M English model only).
+
+> Capability/latency figures in the per-backend sections below were measured on
+> mlx-audio 0.4.4; the pin is now 0.6.1 and an A/B re-run showed no steady-state
+> TTFB/RTF change (see the [profiling results](../scripts/profiling/README.md)).
+
+## Kokoro capabilities (as shipped)
+
+Built per-backend (`server.hello.capabilities`). Verified against
+mlx-community/Kokoro-82M-bf16 (mlx-audio 0.4.4):
+
+| Field | Value | Note |
+|---|---|---|
+| rate | **24000** | from `server.hello.audio.rate`, not capabilities |
+| `streaming` | `false` | no sub-segment streaming; segments still stream per `\n+` |
+| `binary_audio` | `false` | base64-in-JSON for v1 |
+| `text_formats` | `["plain"]` | ssml/ipa not supported |
+| `languages` | `["en","es","fr","hi","it","pt"]` | from voice prefixes, minus languages needing extra G2P — **`ja`/`zh` are off by default** (opt-in, see below) |
+| `voice_count` | `54` | full list via `status` |
+| `extras` | `["speed"]` | Kokoro's only effective `generate()` kwarg |
+| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
+| `max_text_chars` | `2000` | hard server cap |
+
+<a id="kokoro-language-support-advertised--synthesizable"></a>
+
+## Kokoro language support (advertised = synthesizable)
+
+The advertised `languages` list reflects what this deployment can actually
+synthesize, not just what voices the model ships. The default `kokoro` extra
+pins `misaki[en]` only; verified live against mlx-community/Kokoro-82M-bf16:
+
+- **`en`** uses misaki[en]; **`es`/`fr`/`it`/`pt`/`hi`** route through the
+  espeak-ng G2P bundled with misaki[en] — all synthesize fine and are advertised.
+  (`hi`'s first call loads its G2P lazily and can exceed a 60 s client timeout.)
+- **`ja` and `zh` need an extra G2P package** — `misaki[ja]` (`pyopenjtalk`) and
+  `misaki[zh]` (`ordered_set`) respectively, which the `kokoro` extra does not
+  install. Because synthesis would fail at runtime (`response.failed`,
+  `code=backend_error`) without them, **they are not advertised by default** and
+  a request for them is rejected up front with `invalid_config` (before a
+  synthesis slot is consumed) rather than failing mid-response.
+
+**Enabling `ja` / `zh`** is a two-step, build-time decision:
+
+1. Install the G2P package(s):
+   `uv pip install "misaki[ja]" "misaki[zh]"`
+2. Opt the language(s) back into the advertised set:
+   `export PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh`
+
+The server logs its advertised language set at startup (including a reminder of
+any languages left disabled). The opt-in only *re-adds* a language the model
+already ships voices for; it cannot advertise one the model lacks. If you set the
+env var without installing the package, that language is advertised again and
+will fail at synthesis — install first.
+
+See [`tests/smoke/`](../tests/smoke/) for the live end-to-end smoke scripts that
+verify this (`just smoke-tone` / `just smoke-kokoro` / `just smoke-multilingual`).
+
+## Kokoro cancellation caveat
+
+Kokoro yields one segment per `\n+` boundary and the cancel flag is only checked
+at a segment boundary. The **client-visible** cancel is prompt regardless: a
+`response.cancel` is acknowledged with `response.cancelled` in ~1 ms (measured on
+Apple Silicon), and no audio follows it. What runs to the segment boundary is the
+backend worker / Metal lock: a **long single-segment** commit keeps the lock
+until its `generate()` reaches the yield (≈ the full single-segment synthesis
+time — a few seconds for a ~1700-char segment, bounded by `drain_timeout_seconds`),
+so the *next* commit can't start synthesizing until then. To free the lock sooner
+for back-to-back commits, **clients should chunk at sentence/newline boundaries**
+for Kokoro. The server's hard guarantee is "no more audio after
+`response.cancelled`". (See the dev plan's *Phase 2 measured results* for the full
+re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifact.)
 
 ## Phonon capabilities and voice selection
 
@@ -132,10 +240,6 @@ PIPECAT_TTS_PHONON_VOICES=zoey,juniper just smoke-phonon
 
 ## Voxtral TTS capabilities (as shipped)
 
-> Capability/latency figures in the per-backend sections below were measured on
-> mlx-audio 0.4.4; the pin is now 0.6.1 and an A/B re-run showed no steady-state
-> TTFB/RTF change (see the [profiling results](../scripts/profiling/README.md)).
-
 `streaming:true` sub-segment streamer (native `stream`/`streaming_interval`,
 locked to 0.3 s — measured TTFB 0.395 s, see the dev-plan Findings). Verified
 against mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 (mlx-audio 0.4.4):
@@ -186,7 +290,7 @@ decision #2). Verified against mlx-community/Dia-1.6B-fp16 (mlx-audio 0.4.4):
 | rate | **44100** | from `server.hello.audio.rate`, read from `model.sample_rate` (NOT 24000) |
 | `streaming` | `false` | no sub-segment streaming; each `\n`-separated turn streams as it completes |
 | `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | dialogue `[S1]`/`[S2]` tags ride **inside** plain text (see the [protocol](protocol.md), §6, Option A/B) |
+| `text_formats` | `["plain"]` | dialogue `[S1]`/`[S2]` tags ride **inside** plain text (see [in-text tag dialects](protocol.md#in-text-tag-dialects)) |
 | `languages` | `["en"]` | English verified on-host |
 | `voice_count` | `0` | no enumerable voices; speakers are in-text `[S1]`/`[S2]` tags |
 | `extras` | `["temperature","top_p"]` | dia's effective sampling kwargs (`ref_audio`/`ref_text` never advertised — no cloning) |
@@ -267,12 +371,12 @@ Phase 0 gate):
 | rate | **44100** | from `server.hello.audio.rate`, read from `model.sample_rate` (NOT 24000, matches `dia`) |
 | `streaming` | `false` | segment-level; one `GenerationResult` per text batch |
 | `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | `<|speaker:N|>` and `[tag]` markup ride **inside** plain text (see the [protocol](protocol.md), §6, Option A/B) |
+| `text_formats` | `["plain"]` | `<\|speaker:N\|>` and `[tag]` markup ride **inside** plain text (see [in-text tag dialects](protocol.md#in-text-tag-dialects)) |
 | `languages` | 38-language static list (`en`, `zh`, `ja`, `ko`, `es`, …) | from the upstream model card (Phase 0 Q6); no `language` kwarg exists in `generate()`'s signature |
 | `voice_count` | `0` | no enumerable voices; speakers (if any) are addressed via in-text `<|speaker:N|>` tags |
 | `extras` | `["temperature","top_k","top_p","instruct"]` | fish's effective sampling kwargs, plus `instruct` — the first backend to advertise a string-typed style-control extra (`ref_audio`/`ref_text` never advertised — no cloning) |
 | `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | **`500`** | hard server cap — well below kokoro/voxtral_tts/pocket_tts/dia's 2000 (qwen3_tts is lower still, at 800); derived from Phase 0's per-batch token-ceiling calibration, not from license class — a truncation tripwire (`FishTruncationError` → `response.failed`/`BACKEND_ERROR`) also guards the real per-batch token ceiling (see the dev plan Findings for the calibration) |
+| `max_text_chars` | **`500`** | hard server cap — well below kokoro/voxtral_tts/pocket_tts/dia's 2000 (qwen3_tts has an 800-character cap); derived from Phase 0's per-batch token-ceiling calibration, not from license class — a truncation tripwire (`FishTruncationError` → `response.failed`/`BACKEND_ERROR`) also guards the real per-batch token ceiling (see the dev plan Findings for the calibration) |
 
 **Multi-speaker tag syntax — `<|speaker:N|>` — is NOT `dia`'s `[S1]`/`[S2]`
 syntax.** A caller must pick the right dialect for the backend it targets; the
@@ -336,69 +440,3 @@ between `instruct` and an in-text
 performs no arbitration and forwards both unmodified apart from
 whitespace-stripping of `instruct`; this is untested, do not assume one
 overrides the other without observing actual model output.
-
-## Kokoro capabilities (as shipped)
-
-Built per-backend (`server.hello.capabilities`). Verified against
-mlx-community/Kokoro-82M-bf16 (mlx-audio 0.4.4):
-
-| Field | Value | Note |
-|---|---|---|
-| rate | **24000** | from `server.hello.audio.rate`, not capabilities |
-| `streaming` | `false` | no sub-segment streaming; segments still stream per `\n+` |
-| `binary_audio` | `false` | base64-in-JSON for v1 |
-| `text_formats` | `["plain"]` | ssml/ipa not supported |
-| `languages` | `["en","es","fr","hi","it","pt"]` | from voice prefixes, minus languages needing extra G2P — **`ja`/`zh` are off by default** (opt-in, see below) |
-| `voice_count` | `54` | full list via `status` |
-| `extras` | `["speed"]` | Kokoro's only effective `generate()` kwarg |
-| `ideal_words` | `40` | soft target; client rounds up to a sentence boundary |
-| `max_text_chars` | `2000` | hard server cap |
-
-<a id="kokoro-language-support-advertised--synthesizable"></a>
-
-## Kokoro language support (advertised = synthesizable)
-
-The advertised `languages` list reflects what this deployment can actually
-synthesize, not just what voices the model ships. The default `kokoro` extra
-pins `misaki[en]` only; verified live against mlx-community/Kokoro-82M-bf16:
-
-- **`en`** uses misaki[en]; **`es`/`fr`/`it`/`pt`/`hi`** route through the
-  espeak-ng G2P bundled with misaki[en] — all synthesize fine and are advertised.
-  (`hi`'s first call loads its G2P lazily and can exceed a 60 s client timeout.)
-- **`ja` and `zh` need an extra G2P package** — `misaki[ja]` (`pyopenjtalk`) and
-  `misaki[zh]` (`ordered_set`) respectively, which the `kokoro` extra does not
-  install. Because synthesis would fail at runtime (`response.failed`,
-  `code=backend_error`) without them, **they are not advertised by default** and
-  a request for them is rejected up front with `invalid_config` (before a
-  synthesis slot is consumed) rather than failing mid-response.
-
-**Enabling `ja` / `zh`** is a two-step, build-time decision:
-
-1. Install the G2P package(s):
-   `uv pip install "misaki[ja]" "misaki[zh]"`
-2. Opt the language(s) back into the advertised set:
-   `export PIPECAT_TTS_KOKORO_EXTRA_LANGS=ja,zh`
-
-The server logs its advertised language set at startup (including a reminder of
-any languages left disabled). The opt-in only *re-adds* a language the model
-already ships voices for; it cannot advertise one the model lacks. If you set the
-env var without installing the package, that language is advertised again and
-will fail at synthesis — install first.
-
-See [`tests/smoke/`](../tests/smoke/) for the live end-to-end smoke scripts that
-verify this (`just smoke-tone` / `just smoke-kokoro` / `just smoke-multilingual`).
-
-## Kokoro cancellation caveat
-
-Kokoro yields one segment per `\n+` boundary and the cancel flag is only checked
-at a segment boundary. The **client-visible** cancel is prompt regardless: a
-`response.cancel` is acknowledged with `response.cancelled` in ~1 ms (measured on
-Apple Silicon), and no audio follows it. What runs to the segment boundary is the
-backend worker / Metal lock: a **long single-segment** commit keeps the lock
-until its `generate()` reaches the yield (≈ the full single-segment synthesis
-time — a few seconds for a ~1700-char segment, bounded by `drain_timeout_seconds`),
-so the *next* commit can't start synthesizing until then. To free the lock sooner
-for back-to-back commits, **clients should chunk at sentence/newline boundaries**
-for Kokoro. The server's hard guarantee is "no more audio after
-`response.cancelled`". (See the dev plan's *Phase 2 measured results* for the full
-re-measurement; the earlier "≈ tens of seconds" figure was a bridge-bug artifact.)

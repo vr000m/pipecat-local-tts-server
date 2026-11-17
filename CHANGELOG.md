@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Client integration guide with a standalone Python WAV example, Pipecat adapter setup,
+  capability discovery, and persistent-connection recovery guidance.
+
+### Changed
+
+- README quickstart now works with the installed package without checkout-only scripts.
+  Added task-based documentation navigation, a backend comparison, and troubleshooting.
+- Clarified client/server endpoint configuration, response admission versus audio availability,
+  cancellation versus backend worker release, and launchd stop/disable behaviour.
+
 ## [0.9.1] - 2026-11-16
 
 ### Added
