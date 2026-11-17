@@ -151,12 +151,12 @@ successful tone synthesis. This is within the user's approved implementation sco
 Local evidence: `.review-plan/latest-codex.json`. The runtime has no close-agent
 tool; all review workers returned terminal reports and are no longer running.
 
-Final documentation audit checked the uncommitted worktree explicitly: the
-committed `main...HEAD` range is empty. All ten changed files match the allowlist.
+The pre-commit documentation audit checked the uncommitted worktree explicitly;
+at that point the committed `main...HEAD` range was empty. All ten changed files match the allowlist.
 Sibling-plan search matched the previous documentation plan plus six feature/fix
 records; only the previous quickstart completion claim needed correction. Other
-records retain valid historical decisions and links. No release, changelog, or
-PR update is needed for this uncommitted documentation-only change.
+records retained valid historical decisions and links. Release and PR preparation
+were outside that implementation pass; the subsequent audit is recorded below.
 
 Implementation verification found that neither `TTSClient` nor `LocalTTSService`
 automatically reads client environment variables, despite a stale adapter source
@@ -210,3 +210,16 @@ The user subsequently requested meaningful commits, superseding the original
 no-commit restriction. Group the changes into protocol/operations corrections,
 client onboarding, and backend navigation with the completion record. This
 authorization does not include a push or PR.
+
+### Documentation audit and PR preparation — 2026-11-16
+
+The implementation is recorded in `4605a52` (contracts/operations), `c4a56a3`
+(client onboarding), and `06e51b4` (backend selection and validation). The user
+then authorised `update-docs --apply` and PR creation with merge preparation.
+This supersedes the earlier no-push/no-PR boundary; merging is not authorised.
+
+The audit adds an Unreleased changelog entry, fixes the agent reference's
+prefetch link, and corrects the Fish plan's stale PR #16 status while preserving
+its original status in a dated note. Other sibling plans need no material
+correction. These audit updates extend the original documentation allowlist to
+`CHANGELOG.md` and the Fish plan. No version or runtime change is introduced.

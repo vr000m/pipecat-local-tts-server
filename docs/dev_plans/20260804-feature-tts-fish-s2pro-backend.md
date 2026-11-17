@@ -1,6 +1,6 @@
 # Task: tts-server — `fish_tts` (Fish Audio S2 Pro) backend
 
-**Status**: Complete — implementation done on `feature/tts-fish-s2pro-backend`; PR #16 open, reviews pending
+**Status**: Complete — merged in PR #16 on 2026-08-09
 **Component**: tts-server (backends)
 **Assigned to**: Varun Singh
 **Priority**: Medium
@@ -876,7 +876,7 @@ matching the Phase 1 correction at lines 441-449 that the latter suite does not 
   entry (verifies "no server CODE changes"; `docs/protocol.md` is expected and not a violation).
 - `ruff format` + `ruff check` clean.
 
-<!-- reviewed: 2026-08-06 @ 69591cb1e51cc0bb35254f6cbdf964092a449b9a -->
+<!-- reviewed: 2026-11-17 @ ff9f3c3a97c4026903290ddbc710e3edb7815285 -->
 
 ## Progress
 
@@ -1494,3 +1494,12 @@ the four numbered phases above — recorded here since it materially changed the
   `_segment_stream.py`), `tts_server/backends/_truncation_util.py` (new),
   `tts_server/backends/_introspect_util.py` (new, Phase 1's shared signature-verification guard,
   listed here for completeness), `SupportsTextValidation` in `tts_server/backend.py` (new protocol).
+
+### Status correction — 2026-11-16
+
+The earlier header recorded "Complete — implementation done on
+`feature/tts-fish-s2pro-backend`; PR #16 open, reviews pending". GitHub confirms
+[PR #16](https://github.com/vr000m/pipecat-local-tts-server/pull/16) merged on
+2026-08-09. The [documentation audit](20261116-docs-onboarding-and-contracts.md)
+updates that stale status; the original implementation decisions and findings
+remain unchanged.
