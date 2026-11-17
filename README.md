@@ -15,9 +15,9 @@ The server owes every client two contracts:
 
 1. **An exact advertised rate.** `server.hello.audio.rate` is the model's true
    rate. Every audio frame is int16-LE mono PCM at that rate.
-2. **A steady response stream.** Once a response starts, each completed model
-   segment is emitted immediately so playback can continue without whole-result
-   buffering.
+2. **Audio as segments complete.** The server emits each completed model segment
+   without waiting for the whole utterance. Queueing and generation can delay
+   audio; clients still need playback buffering.
 
 ## Install
 

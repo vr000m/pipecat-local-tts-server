@@ -3,27 +3,32 @@
 **`PROTOCOL_VERSION = "0.1"`**
 
 This is the wire contract for the local TTS server: **text in, audio out** over a
-WebSocket. It is the authoritative reference that Phase 1 (`tts_server/protocol.py`)
-implements and that clients (incl. the reference client in `examples/reference_client.py`)
-speak. It mirrors the sibling `pipecat-local-stt-server` protocol philosophy
+WebSocket. It describes the shipped protocol implemented by
+[`tts_server/protocol.py`](../tts_server/protocol.py) and
+[`tts_server/server.py`](../tts_server/server.py). For Python and Pipecat usage,
+see [Client integration](clients.md). It mirrors the sibling
+`pipecat-local-stt-server` protocol philosophy
 (OpenAI-Realtime-inspired event subset) inverted for synthesis.
 
-> Status: design spec, authored ahead of implementation (dev plan
-> `docs/dev_plans/20260624-feature-tts-server-v1.md`). Where a value is a backend fact it
-> is marked **VERIFIED** (mlx-audio 0.4.4, 2026-06-24; `generate()` signatures re-checked unchanged on 0.6.1, 2026-10-21); where it is a chosen default it is
-> marked so. Exact `ErrorCode` string values mirror stt's enum and are pinned in
-> `protocol.py` at implementation; this doc lists their semantics.
+Backend measurements marked **VERIFIED** are dated observations: mlx-audio
+0.4.4 on 2026-06-24, with generation signatures re-checked on 0.6.1 on
+2026-10-21. Current backend details live in [Backends](backends.md); historical
+rationale lives in the [original design plan](dev_plans/20260624-feature-tts-server-v1.md).
+Error codes below are the literal wire strings defined in `protocol.py`.
 
 ---
 
 ## 1. Transport
 
 - **Default:** WebSocket over a **Unix domain socket**.
-- Also: `ws://host:port` and a full WebSocket URI.
-- **Endpoint precedence:** `URI > socket > host+port`. Env vars `TTS_WS_*` mirror
-  `STT_WS_*`.
-- **Auth (optional):** bearer token. Server reads `PIPECAT_TTS_AUTH_TOKEN`; client reads
-  `TTS_WS_TOKEN` (the client MUST NOT fall back to the server's env var). A server with a
+- Also: loopback TCP. Clients may connect using a full WebSocket URI.
+- **Client endpoint precedence:** `URI > socket > host+port`. The server listener
+  uses `--socket-path` or `--host`/`--port`; it has no URI flag. See
+  [endpoint configuration](operations.md#environment-variables) for CLI and
+  library environment handling.
+- **Auth (optional):** bearer token. Server reads `PIPECAT_TTS_AUTH_TOKEN` or its
+  token file. Clients use the separate `TTS_WS_TOKEN` credential; library callers
+  pass it explicitly (the client MUST NOT fall back to the server's env var). A server with a
   token set rejects unauthenticated connections (`unauthorized`). A token-less server bound
   to a **non-loopback TCP** address logs a cleartext-remote warning; a Unix socket does not.
 
@@ -64,7 +69,7 @@ plus event-specific fields:
 
 ## 3. Session lifecycle
 
-```
+```text
 connect ─▶ server.hello ─▶ [session.update ⇄ session.updated]*
         ─▶ input_text.append* ─▶ input_text.commit
         ◀─ input_text.committed{response_id} ◀─ response.created{response_id}
@@ -145,16 +150,16 @@ holding the lock for the duration of one commit.
 |---|---|---|
 | `server.hello` | `{protocol_version, backend:{name,model}, audio:{format,rate,channels}, capabilities}` | Sent once on connect. `audio.rate` is the canonical rate (§2). |
 | `session.created` / `session.updated` | `{…}` | Ack of the session config (created on first `session.update`, updated after). |
-| `input_text.committed` | `{response_id}` | The commit was accepted; synthesis starts. |
+| `input_text.committed` | `{response_id}` | The commit was accepted; synthesis may wait for shared model capacity. |
 | `input_text.cleared` | `{}` | The uncommitted buffer was cleared. |
-| `response.created` | `{response_id}` | A response has begun. |
+| `response.created` | `{response_id}` | A response has been admitted. This does not mean audio is ready. |
 | `response.audio.delta` | `{response_id, seq, audio}` | One audio frame. `seq` starts at 0 and increments by 1 with no gaps per `response_id`. `audio` is base64 pcm16 (20 ms, last frame MAY be short). |
 | `response.audio.done` | `{response_id, duration_ms}` | Synthesis finished. `duration_ms` is from the original sample count (not `frames × 20 ms`). Fired on generator exhaustion. |
 | `response.cancelled` | `{response_id}` | The response was cancelled; no further `delta` for it. Emitted **only** when an active response was actually cancelled (see `response.cancel` in §4) — `response_id` is always a concrete id, never null. |
 | `response.failed` | `{response_id, error?}` | The response errored mid-synthesis; carries `{code, message}`. The session stays usable. |
 | `session.closed` | `{session_id, reason}` | Sent in reply to `session.cancel` (`reason: "client_cancel"`) or `session.close` (`reason: "client_close"`) immediately before the server closes the socket. |
 | `server.status` | `{backend:{name,model}, audio:{…}, …queue/voice info}` | Health/status snapshot. |
-| `error` | `{code, message, retry_after_ms?}` | Session-level error. `retry_after_ms` is present iff `code == busy` (synthesis-backlog backpressure, §7). |
+| `error` | `{error:{type, code, message, event_id?, retry_after_ms?}, retry_after_ms?}` | Session-level error. `retry_after_ms` appears both inside `error` and at the top level iff `error.code == busy`; see the full envelope in §7. |
 
 ---
 
@@ -176,64 +181,33 @@ lives in the [backend guide](backends.md).
 | `ideal_words` | int | Soft per-commit size hint; client rounds **up to the next sentence boundary**. Not a hard limit. |
 | `max_text_chars` | int | Hard cap on buffered text per commit; over-limit → error. |
 
-### In-text tag dialects + the `text_formats` overload (Option A, and the Option B upgrade path)
+<a id="in-text-tag-dialects--the-text_formats-overload-option-a-and-the-option-b-upgrade-path"></a>
 
-Two shipped backends overload the `text_format: "plain"` payload with their own
-in-text tag dialect, riding purely as ordinary substrings the server never parses:
+### In-text tag dialects
 
-- `dia` is a multi-speaker **dialogue** backend: a client addresses speakers purely
-  in-text with `[S1]`/`[S2]` tags (`voice_count: 0`; `voice` is ignored).
-- `fish_tts` has **two independent, non-overlapping** dialect mechanisms, neither of
-  which is `dia`'s `[S1]`/`[S2]` syntax:
-  - **`<|speaker:N|>` multi-speaker tags** (e.g. `<|speaker:0|>Hello there.\n<|speaker:1|>Hi!`)
-    address distinct speakers within one committed utterance (`voice_count: 0`;
-    `voice` is ignored, same as `dia`). **Mixed-input rejection:** any untagged prose
-    preceding the *first* `<|speaker:N|>` tag would otherwise be silently dropped by
-    the model's own text-splitting logic — the server rejects it instead, at commit
-    time, with `error {code: "invalid_config"}` (`fish_tts`'s `validate_text` hook),
-    so a client mixing untagged lead-in text with tagged turns gets a clear,
-    client-visible error rather than losing the lead-in with no signal. Consecutive
-    tagged turns within one committed utterance also **share generation context**
-    (each batch's prompt includes the previous batch's audio codes), so callers
-    composing multi-turn tagged text should expect that context-sharing, not
-    independent per-turn generation — confirmed in the Phase-0 gate (dev plan
-    `docs/dev_plans/20260804-feature-tts-fish-s2pro-backend.md` → Findings, Q1).
-  - **`[tag]` inline emotion/expression markup** (e.g. `[whisper]`, `[laughing]`,
-    `[excited]`) is free-form bracketed text accepted anywhere in the payload.
-    See [fish_tts capabilities](backends.md#fish_tts-capabilities-as-shipped) for
-    example vocabulary and the upstream reference.
-  - `fish_tts` also advertises a separate, non-in-text style-control surface:
-    `instruct`, a plain string extra (`extras` table above). The precedence between
-    `instruct` and an in-text `[tag]` when they conflict is **undefined and
-    model-determined** — the server performs no arbitration and forwards both
-    unmodified apart from whitespace-stripping of `instruct`; do not assume one
-    overrides the other without observing actual model output.
+All shipped backends advertise `text_formats: ["plain"]`. Some models interpret
+speaker or expression tags inside that plain text:
 
-For both backends, the server does **not** parse or interpret in-text tags — it
-forwards the committed buffer to `generate()` untouched, so each dialect lives
-**only in client convention** (this is the deliberate "Option A — no server-side
-change"; `text_formats` stays `["plain"]` for every backend). A client **must know
-which backend it is targeting** before choosing a tag dialect — the server cannot
-disambiguate or reject a wrong-dialect tag.
+- Dia uses `[S1]` and `[S2]` for dialogue speakers.
+- Fish uses `<|speaker:N|>` for speakers and free-form `[tag]` expressions. Its
+  separate `instruct` extra carries style instructions; precedence between
+  `instruct` and conflicting in-text tags is model-determined.
 
-**Accepted cost (prominent on purpose):** because dialect text rides inside `plain`,
-the wire format is undocumented and the server cannot tell dialect text from
-ordinary plain text. It therefore **cannot reject** a `dia` `[S1]`/`[S2]` tag or a
-`fish_tts` `<|speaker:N|>` tag aimed at the wrong (or a non-dialect) backend — e.g. a
-`fish_tts` `<|speaker:1|>` tag sent to Kokoro would be read aloud literally, not
-interpreted, and the same is true of a `dia` `[S1]` tag sent to `fish_tts` (the two
-dialects are not interchangeable). This is a silent-misrender vector the moment a
-second dialect-aware consumer or a mixed-backend deployment appears.
-`examples/pipecat_tts_service.py` sends none of these tags today (verified
-2026-08-05) — using them is a caller-side text-authoring decision, not adapter
-behavior.
+The server forwards these tags to the model without translating dialects.
+Fish's commit-time validation rejects untagged prose before the first speaker
+tag, because the model would otherwise discard that lead-in. This check does
+not identify tags intended for another backend. A wrong-dialect tag is not
+rejected reliably and may be spoken literally. Clients must choose syntax for
+the connected backend. Consecutive Fish speaker turns within a commit share
+generation context rather than generating independently.
 
-**Option B (deferred upgrade path):** if a fail-loud guarantee is later wanted, make
-`text_formats` a genuine per-backend capability and the server's text-format
-validation capability-driven (advertise e.g. `dialogue` for `dia`, a fish-specific
-tag for `fish_tts`, reject either dialect for backends that don't list it). This is
-the documented upgrade from the Option A overload — not optional once mixed-backend
-or multi-consumer deployments arrive.
+See [Dia](backends.md#dia-capabilities-as-shipped) and
+[Fish](backends.md#fish_tts-capabilities-as-shipped) for syntax, examples, and
+limitations. The reference Pipecat adapter does not insert these tags; callers
+author them in the text they send. The historical
+[Fish backend plan](dev_plans/20260804-feature-tts-fish-s2pro-backend.md#implementation-checklist)
+records the accepted plain-text convention (Option A) and the deferred design
+for explicit dialect formats (Option B). That future design is not part of v0.1.
 
 ---
 
@@ -315,13 +289,16 @@ honest `queue_depth` in `server.status`; it does not change any wire frame.
 
 ## 8. Notes for implementers / clients
 
-- **Steady stream:** once `response.created` fires, audio must arrive continuously — the
-  server emits each segment as it completes (does not buffer the whole utterance) and never
-  stalls mid-response. Clients carry a deep playback buffer (gamealerts uses 8192 frames) to
-  absorb normal jitter.
-- **Cancel latency:** cancellation lands at the next model yield/segment boundary. The hard
-  guarantee is "no more `delta` after `response.cancelled`"; sub-segment promptness for long
-  single-segment utterances depends on the backend.
+- **Audio availability:** the server emits audio as the backend produces it.
+  Queueing and generation can delay the first frame or later segments.
+  `response.created` acknowledges admission, not playback readiness. Clients
+  must buffer enough audio for their playback needs; the protocol promises no
+  fixed cadence or maximum time to first audio.
+- **Cancellation:** after `response.cancelled`, no further `delta` is emitted
+  for that response. This client-visible acknowledgement does not wait for the
+  backend worker to finish its current segment. The worker may retain the
+  GPU/Metal lock until its next yield boundary, delaying subsequent work (§7).
+  Idle or stale cancellation requests are no-ops and receive no acknowledgement.
 - **Reordering:** reassemble audio strictly by `(response_id, seq)`.
 - **Versioning:** clients SHOULD check `server.hello.protocol_version`; `"0.1"` is the
   current contract.

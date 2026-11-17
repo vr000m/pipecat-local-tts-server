@@ -33,8 +33,11 @@ uv sync --extra examples    # reference Pipecat adapter (pins pipecat-ai==1.4.0)
 
 ## CLI (`python -m tts_server <subcommand>`)
 
-Also installed as the `pipecat-tts` console script (same `main()`). Endpoint
-precedence everywhere: **URI > socket > host+port**.
+Also installed as the `pipecat-tts` console script (same `main()`). Client endpoint
+precedence: **URI > socket > host+port**. The server listener uses socket >
+host+port and has no URI flag. `status` resolves client environment variables;
+`TTSClient` and `LocalTTSService` require explicit endpoint/token arguments (use
+`resolve_endpoint_from_env` in application code when wanted).
 
 | Subcommand | Flags | Notes |
 |---|---|---|
