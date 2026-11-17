@@ -1,6 +1,6 @@
 # Task: Extract Pipecat Service Toolbar into its own repository
 
-**Status**: In Progress
+**Status**: Complete (2026-11-17)
 **Component**: macos
 **Assigned to**: Codex
 **Priority**: High
@@ -275,19 +275,20 @@ destructive tests against the user's real installation or shared model cache.
 - Toolbar changelog, documentation, attribution and CI are complete in destination.
 - Both linked PRs identify their merge dependency and passing validation evidence.
 
-<!-- reviewed: 2026-11-17 @ 295456c7240b7629a1b11908af2b8505f6dcdb4e -->
+<!-- reviewed: 2026-11-17 @ 3718012654d9c366d4255acb17cc23c89401f9e4 -->
 
 ## Progress
 
 - Architecture confirmed by the user. Five review lenses and the contradiction
   pass completed: one sequencing finding, corrected by placing commits before
   committed-diff review. No other findings. Implementation authorised by the
-  user's “go ahead”; no merge or publication is authorised.
+  user's “go ahead”. This records implementation-stage authorisation; later
+  cutover authorisation and merges are recorded below. No release was published.
 - [x] Phase 1: Import history and define standalone packaging
 - [x] Phase 2: Relocate compatibility tests and verify upgrade invariants
 - [x] Phase 3: Complete standalone documentation, changelog and CI
 - [x] Phase 4: Remove app ownership from TTS and prepare linked PRs
-- [ ] Cutover: both PRs green, then destination-first regular merges when authorised
+- [x] Cutover: both PRs passed CI and merged in destination-first order on 2026-11-17.
 
 ## Findings
 
@@ -316,11 +317,20 @@ destructive tests against the user's real installation or shared model cache.
 
 ## Final Results
 
-Implementation and review are complete. The linked PRs are open; cutover remains
-pending their CI and a later merge instruction.
+### Cutover completed — 2026-11-17
+
+Implementation, review and repository cutover are complete.
 
 - [Toolbar import PR #1](https://github.com/pipecat-ai/pipecat-service-toolbar/pull/1)
-  must merge before [TTS removal PR #35](https://github.com/vr000m/pipecat-local-tts-server/pull/35).
+  merged first at `1561f24`, followed by
+  [TTS removal PR #35](https://github.com/vr000m/pipecat-local-tts-server/pull/35)
+  at `caf6147`. Both used regular merges, preserving individual commits.
+- Post-merge CI passed in both repositories. The TTS macOS job initially could
+  not acquire a hosted runner; its retry passed in
+  [run 44155302927](https://github.com/vr000m/pipecat-local-tts-server/actions/runs/44155302927).
+- An actual installed-app upgrade and bundled quit/relaunch smoke remain a
+  toolbar follow-up requiring a planned interruption of the running app. The
+  compatibility checks below used isolated fixtures and read-only comparisons.
 - Logic and security reviews found no defects. Architecture and documentation
   each reported the same minor checkout-instruction issue; `35be747` fixes both,
   independently verified by the documentation reviewer. Review reconciliation:
@@ -341,5 +351,6 @@ pending their CI and a later merge instruction.
 - Source: 807 passed, 5 skipped, then native shutdown exit 138; wheel build passed;
   supervised tone smoke 6 passed, 0 skipped, 0 failed. Runtime/dependencies/operator
   scripts are unchanged. Active source documentation links: 61 checked.
-- Evidence logs live in `/private/tmp/pipecat-toolbar-migration/`; no installation,
-  preference reset, real model download, cache deletion, PR merge or release occurred.
+- Implementation evidence logs were written to `/private/tmp/pipecat-toolbar-migration/`
+  (temporary local artifacts). Repository cutover did not replace the installed app,
+  reset preferences, download real models, delete caches or publish a release.
